@@ -11,6 +11,10 @@ Its core principle is that strict domain models, semantic transactions, and immu
 are the single source of truth. DOM, Canvas, SVG, and WebGL are renderers and interaction layers
 only.
 
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
+
 ## Local development
 
 ```bash
