@@ -1,27 +1,31 @@
 # OpenDocs
 
-OpenDocs 是一个多 Artifact 在线办公平台，统一支持文档、表格、演示文稿、思维导图与白板。
+OpenDocs is a multi-artifact online productivity platform for documents, spreadsheets,
+presentations, mind maps, and whiteboards.
 
-> **项目状态声明**：本项目是一个纯 AI Vibe Coding 项目，目前仍处于早期开发阶段，
-> 不具备生产或日常使用的可用性。请勿将其用于重要数据、关键业务或任何需要可靠性保证的场景。
+> **Project status**: This is a pure AI Vibe Coding project. It is still at an early stage of
+> development and is not ready for production or everyday use. Do not use it for important data,
+> critical workflows, or any scenario that requires reliability guarantees.
 
-核心原则是以严格的领域模型、语义事务与不可变快照作为唯一真相；DOM、Canvas、SVG 和 WebGL
-仅承担渲染与交互职责。
+Its core principle is that strict domain models, semantic transactions, and immutable snapshots
+are the single source of truth. DOM, Canvas, SVG, and WebGL are renderers and interaction layers
+only.
 
-## 开源协议
+## License
 
-本项目采用 [Apache License 2.0](LICENSE) 开源。
+This project is licensed under the [Apache License 2.0](LICENSE).
 
-## 本地开发
+## Local development
 
 ```bash
 cargo run -p oo-server
 cd web && pnpm --filter @open-office/editor dev -- --host 127.0.0.1 --port 5174
 ```
 
-- 前端：`http://127.0.0.1:5174`
-- 后端：`http://127.0.0.1:8787`
+- Frontend: `http://127.0.0.1:5174`
+- Backend: `http://127.0.0.1:8787`
 
-详细架构和贡献约定见 [AGENTS.md](AGENTS.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for architecture and
+contribution conventions.
 
-English version: [README.en.md](README.en.md)
+中文版本：[README.zh-CN.md](README.zh-CN.md)
