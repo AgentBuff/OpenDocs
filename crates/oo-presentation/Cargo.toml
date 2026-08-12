@@ -1,0 +1,21 @@
+[package]
+name = "oo-presentation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "open-office Presentation Scene Graph engine"
+
+[dependencies]
+oo-schema = { workspace = true }
+oo-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[[bench]]
+name = "v5_projection"
+harness = false
+
+[[bench]]
+name = "v5_engine"
+harness = false

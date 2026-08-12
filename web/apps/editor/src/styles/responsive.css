@@ -1,0 +1,62 @@
+.editor__statusbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  height: 32px;
+  padding: 0 1rem;
+  background: var(--oo-color-surface-muted);
+  border-top: 1px solid var(--oo-color-border);
+  color: var(--oo-color-text-muted);
+  font-size: 0.78rem;
+}
+
+@media (max-width: 960px) {
+  .oo-toolbar__row {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .oo-toolbar__row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .toolbar__utility-button:not(.toolbar__utility-button--primary) {
+    width: 30px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+  }
+
+  .toolbar__utility-button-label { display: none; }
+
+  .block-editor__page {
+    padding-right: 56px;
+    padding-left: 56px;
+  }
+}
+
+@media (max-width: 720px) {
+  .oo-toolbar {
+    padding-right: var(--oo-space-3);
+    padding-left: var(--oo-space-3);
+  }
+
+  .toolbar__utility {
+    margin-left: 0;
+  }
+
+  .editor__status,
+  .editor__star {
+    display: none;
+  }
+
+  .editor__surface--blocks {
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .block-editor__page {
+    min-height: calc(100vh - 150px);
+    padding: 48px 28px 80px;
+  }
+}

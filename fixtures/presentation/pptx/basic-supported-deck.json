@@ -1,0 +1,44 @@
+{
+  "pageSpec": { "width": 12192000, "height": 6858000, "unit": "emu" },
+  "slides": [
+    {
+      "id": "intro",
+      "orderKey": "00000000",
+      "nodes": [
+        {
+          "id": "title",
+          "orderKey": "00000000",
+          "transform": { "x": 720000, "y": 480000, "width": 7200000, "height": 900000 },
+          "kind": {
+            "type": "text",
+            "data": {
+              "frame": {
+                "body": { "text": "Open Office", "runs": [] },
+                "verticalAlign": "top",
+                "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+                "autoFit": "shrinkText"
+              }
+            }
+          }
+        },
+        {
+          "id": "accent-shape",
+          "orderKey": "00000001",
+          "transform": { "x": 720000, "y": 1800000, "width": 3600000, "height": 1800000 },
+          "kind": {
+            "type": "shape",
+            "data": {
+              "geometry": "rectangle",
+              "style": { "fill": { "type": "none" }, "stroke": null }
+            }
+          }
+        }
+      ],
+      "timeline": { "entries": [] }
+    }
+  ],
+  "masters": [],
+  "layouts": [],
+  "theme": { "id": "default", "name": "", "colors": {}, "fonts": {} },
+  "assets": []
+}

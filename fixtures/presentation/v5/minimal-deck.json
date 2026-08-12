@@ -1,0 +1,76 @@
+{
+  "pageSpec": { "width": 12192000, "height": 6858000, "unit": "emu" },
+  "slides": [
+    {
+      "id": "slide-1",
+      "orderKey": "00000000",
+      "name": "Introduction",
+      "layoutId": "layout-title",
+      "nodes": [
+        {
+          "id": "title-1",
+          "parentId": null,
+          "orderKey": "00000000",
+          "layoutPlaceholderId": "title",
+          "transform": { "x": 720000, "y": 480000, "width": 7200000, "height": 900000, "rotation": 0 },
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "kind": {
+            "type": "text",
+            "data": {
+              "frame": {
+                "body": { "text": "Hello", "runs": [] },
+                "verticalAlign": "middle",
+                "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
+                "autoFit": "none"
+              }
+            }
+          }
+        },
+        {
+          "id": "shape-1",
+          "parentId": null,
+          "orderKey": "00000001",
+          "transform": { "x": 720000, "y": 1800000, "width": 3600000, "height": 1800000, "rotation": 0 },
+          "visible": true,
+          "locked": false,
+          "opacity": 1,
+          "kind": {
+            "type": "shape",
+            "data": {
+              "geometry": "rectangle",
+              "style": { "fill": { "type": "none" }, "stroke": null }
+            }
+          }
+        }
+      ],
+      "timeline": { "entries": [] }
+    }
+  ],
+  "masters": [{
+    "id": "master-default",
+    "name": "Default",
+    "background": { "type": "none" },
+    "placeholders": [{
+      "id": "master-title",
+      "kind": "title",
+      "transform": { "x": 720000, "y": 480000, "width": 7200000, "height": 900000, "rotation": 0 },
+      "defaultText": null
+    }]
+  }],
+  "layouts": [{
+    "id": "layout-title",
+    "masterId": "master-default",
+    "name": "Title",
+    "placeholders": [{
+      "id": "title",
+      "kind": "title",
+      "masterPlaceholderId": "master-title",
+      "transform": { "x": 720000, "y": 480000, "width": 7200000, "height": 900000, "rotation": 0 },
+      "defaultText": null
+    }]
+  }],
+  "theme": { "id": "theme-default", "name": "Default", "colors": {}, "fonts": {} },
+  "assets": []
+}

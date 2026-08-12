@@ -1,0 +1,99 @@
+/* Shared overlay primitives. Product menus may add a modifier but must keep
+   the positioning and dismissal contract provided by overlay.tsx. */
+.oo-overlay-anchor {
+  display: inline-flex;
+  min-width: 0;
+  vertical-align: middle;
+}
+
+.oo-overlay {
+  z-index: var(--oo-z-overlay, 1000);
+  max-width: min(360px, calc(100vw - 16px));
+  max-height: min(80vh, 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+  border: 1px solid var(--oo-color-border, #e4e7eb);
+  border-radius: var(--oo-radius-overlay, 8px);
+  background: var(--oo-color-surface-raised, #fff);
+  color: var(--oo-color-text, #20242b);
+  box-shadow: var(--oo-shadow-popover, 0 8px 24px rgb(15 23 42 / 14%));
+  transform-origin: top center;
+  animation: oo-overlay-enter 120ms ease-out;
+}
+
+.oo-overlay[data-placement^="top"] { transform-origin: bottom center; }
+.oo-overlay[data-placement^="left"] { transform-origin: right center; }
+.oo-overlay[data-placement^="right"] { transform-origin: left center; }
+
+.oo-overlay--menu {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.oo-overlay--block-menu {
+  max-width: min(320px, calc(100vw - 16px));
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.oo-overlay--table-picker {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.oo-overlay--code-settings {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.oo-overlay--page-setup {
+  width: min(280px, calc(100vw - 16px));
+  max-width: none;
+  padding: 14px;
+}
+
+.oo-overlay:focus-visible {
+  outline: 2px solid rgba(47, 111, 235, 0.54);
+  outline-offset: 2px;
+}
+
+.oo-focus-scope:focus-visible {
+  outline: 2px solid rgba(47, 111, 235, 0.54);
+  outline-offset: 2px;
+}
+
+@supports (outline-color: color-mix(in srgb, black 10%, transparent)) {
+  .oo-overlay:focus-visible,
+  .oo-focus-scope:focus-visible {
+    outline-color: color-mix(in srgb, var(--oo-color-accent, #2f6feb) 54%, transparent);
+  }
+}
+
+@keyframes oo-overlay-enter {
+  from { opacity: 0; transform: translateY(-2px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oo-overlay { animation: none; }
+}
+
+@media (forced-colors: active) {
+  .oo-overlay { border: 1px solid CanvasText; box-shadow: none; }
+}

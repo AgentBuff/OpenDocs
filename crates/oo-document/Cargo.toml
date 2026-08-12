@@ -1,0 +1,16 @@
+[package]
+name = "oo-document"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "open-office Document Block Tree engine：原子事务与结构校验"
+
+[dependencies]
+oo-schema = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false

@@ -1,0 +1,19 @@
+[package]
+name = "oo-pptx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "PPTX ↔ typed Presentation Deck 格式适配器"
+
+[dependencies]
+oo-schema = { workspace = true }
+quick-xml = "0.37"
+serde_json = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }

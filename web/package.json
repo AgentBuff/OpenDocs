@@ -1,0 +1,25 @@
+{
+  "name": "open-office-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm build:document-engine-wasm && pnpm --filter @open-office/editor dev",
+    "build:document-engine-wasm": "wasm-pack build ../crates/oo-document-wasm --target web --out-dir ../../web/packages/document-engine/wasm --no-pack",
+    "build": "pnpm build:document-engine-wasm && pnpm --filter @open-office/editor build",
+    "architecture:check": "node scripts/architecture-gate.mjs",
+    "contract:check": "node ../scripts/check-generated-api-contract.mjs",
+    "test": "pnpm build:document-engine-wasm && vitest run",
+    "typecheck": "pnpm build:document-engine-wasm && tsc --build --force",
+    "browser:smoke": "node scripts/browser-smoke.mjs",
+    "browser:table-smoke": "node scripts/table-browser-smoke.mjs",
+    "browser:visual-smoke": "node scripts/visual-smoke.mjs",
+    "bench:editor": "node scripts/bench-editor.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}

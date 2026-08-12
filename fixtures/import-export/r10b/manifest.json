@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "purpose": "R10-B import/export capability and loss-report rehearsal",
+  "cases": [
+    {
+      "id": "docx-text-roundtrip",
+      "format": "docx",
+      "fixture": "../../minimal.docx",
+      "expect": "supported",
+      "assert": ["plainTextStable", "schemaValid"]
+    },
+    {
+      "id": "docx-unsupported-structure",
+      "format": "docx",
+      "fixture": "../../sample.docx",
+      "expect": "strict-or-report",
+      "assert": ["noSilentFlattening", "sourceRetainedOnFailure"]
+    },
+    {
+      "id": "xlsx-sparse-values-and-formulas",
+      "format": "xlsx",
+      "fixture": null,
+      "expect": "supported",
+      "assert": ["sharedStrings", "formulaAndCachedResult", "sparseCoordinates"]
+    },
+    {
+      "id": "xlsx-unsupported-package-parts",
+      "format": "xlsx",
+      "fixture": null,
+      "expect": "unsupported-report",
+      "assert": ["ignoredPartsNotEmpty", "unsupportedPartsContainReason"]
+    },
+    {
+      "id": "pptx-basic-scene-roundtrip",
+      "format": "pptx",
+      "fixture": null,
+      "expect": "supported",
+      "assert": ["sceneGeometryStable", "textStable"]
+    },
+    {
+      "id": "pptx-theme-media-animation",
+      "format": "pptx",
+      "fixture": null,
+      "expect": "unsupported-report",
+      "assert": ["inspectBeforeImport", "capabilityPartDetail"]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[package]
+name = "oo-document-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DocumentEngine 的浏览器薄绑定；不复制 Document 领域逻辑"
+
+[package.metadata.wasm-pack.profile.release]
+# CI/dev environments may not ship the optional wasm-opt binary. wasm-pack still emits the
+# wasm-bindgen bindings; size optimization can be performed in a dedicated release image.
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+oo-document = { workspace = true }
+oo-protocol = { workspace = true }
+oo-schema = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+wasm-bindgen.workspace = true

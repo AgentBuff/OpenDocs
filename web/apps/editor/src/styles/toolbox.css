@@ -1,0 +1,98 @@
+/* ---------- 工具箱 ---------- */
+
+.toolbox {
+  width: 264px;
+  padding: 0.9rem 1rem;
+  background: var(--oo-color-surface);
+  border-left: 1px solid var(--oo-color-border);
+  overflow: auto;
+}
+
+.toolbox__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  font-weight: 600;
+}
+
+.toolbox__group {
+  margin: 1rem 0 0.5rem;
+  color: var(--oo-color-text-muted);
+  font-size: 0.8rem;
+}
+
+.toolbox__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.tool {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.5rem;
+  border: 1px solid var(--oo-color-border);
+  border-radius: 8px;
+  background: var(--oo-color-surface);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.tool:hover:not(:disabled) {
+  border-color: var(--oo-color-accent);
+}
+
+.tool:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tool__icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: #fff;
+  font-size: 0.8rem;
+}
+
+.tool__icon--blue {
+  background: var(--oo-color-accent);
+}
+
+.tool__icon--green {
+  background: #17a34a;
+}
+
+.toolbox__stats {
+  margin: 0;
+}
+
+.toolbox__stats > div {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+  border-bottom: 1px dashed var(--oo-color-border);
+  font-size: 0.85rem;
+}
+
+.toolbox__stats dt {
+  color: var(--oo-color-text-muted);
+}
+
+.toolbox__stats dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.toolbox__note {
+  margin-top: 1.25rem;
+  color: var(--oo-color-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+/* ---------- 编辑器 ---------- */

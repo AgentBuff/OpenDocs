@@ -1,0 +1,21 @@
+[package]
+name = "oo-spreadsheet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "open-office 稀疏 Spreadsheet Artifact engine"
+
+[dependencies]
+oo-schema = { workspace = true }
+oo-protocol = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[[bench]]
+name = "engine"
+harness = false
+
+[[bench]]
+name = "formula_dependency"
+harness = false

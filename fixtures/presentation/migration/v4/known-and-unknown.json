@@ -1,0 +1,80 @@
+{
+  "format": "open-office-artifact",
+  "schemaVersion": 4,
+  "artifactId": "legacy-presentation-1",
+  "revision": 17,
+  "kind": "presentation",
+  "payload": {
+    "kind": "presentation",
+    "data": {
+      "slides": [
+        {
+          "id": "slide-1",
+          "name": "Legacy title slide",
+          "notes": "Speaker note",
+          "animations": [
+            {
+              "id": "fade-title",
+              "targetElementId": "title",
+              "effect": "fade",
+              "order": 0,
+              "durationMs": 250
+            },
+            {
+              "id": "unsupported-animation",
+              "targetElementId": "custom-1",
+              "effect": "zoom",
+              "order": 1,
+              "durationMs": 400
+            }
+          ],
+          "elements": [
+            {
+              "id": "group-1",
+              "typeId": "group",
+              "transform": { "x": 0, "y": 0, "width": 720, "height": 405, "rotation": 0 },
+              "attrs": { "name": "Header group" },
+              "children": ["title", "box"]
+            },
+            {
+              "id": "title",
+              "typeId": "text",
+              "transform": { "x": 48, "y": 40, "width": 620, "height": 80, "rotation": 0 },
+              "attrs": { "name": "Title", "text": "Legacy presentation" },
+              "children": []
+            },
+            {
+              "id": "box",
+              "typeId": "shape",
+              "transform": { "x": 48, "y": 144, "width": 240, "height": 120, "rotation": 0 },
+              "attrs": { "name": "Subtitle panel", "shapeKind": "ellipse" },
+              "children": []
+            },
+            {
+              "id": "custom-1",
+              "typeId": "vendor.widget",
+              "transform": { "x": 340, "y": 144, "width": 160, "height": 120, "rotation": 0 },
+              "attrs": { "vendorId": "acme", "state": { "mode": "interactive" } },
+              "children": []
+            }
+          ]
+        }
+      ],
+      "theme": {
+        "id": "legacy-theme",
+        "name": "Legacy theme",
+        "colors": {
+          "background": "#ffffff",
+          "text": "#101828",
+          "accent1": "#165dff",
+          "unsupported": "var(--brand)"
+        },
+        "fonts": {
+          "heading": "Inter",
+          "body": "Noto Sans SC",
+          "decorative": "Comic Sans MS"
+        }
+      }
+    }
+  }
+}
