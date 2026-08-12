@@ -1,0 +1,53 @@
+{
+  "fixture": "citation-flow",
+  "description": "外部知识库 projector 使用事件定位 block，并在 revision 变化后刷新 citation。",
+  "artifact": {
+    "artifactId": "doc-agent-fixture",
+    "kind": "document",
+    "revision": 7
+  },
+  "initialProjection": {
+    "artifactId": "doc-agent-fixture",
+    "revision": 7,
+    "blockId": "block-heading-1",
+    "content": "部署说明",
+    "citation": {
+      "artifactId": "doc-agent-fixture",
+      "blockId": "block-heading-1",
+      "revision": 7,
+      "textRange": { "start": 0, "end": 4 },
+      "headingPath": ["部署说明"],
+      "sourceUrl": "/api/artifacts/doc-agent-fixture/blocks/block-heading-1?include=content,headingPath"
+    }
+  },
+  "committedEvents": [
+    {
+      "eventId": "tx-8:8:0",
+      "artifactId": "doc-agent-fixture",
+      "transactionId": "tx-8",
+      "revision": 8,
+      "typeId": "document.replaceBlockText",
+      "payload": { "blockId": "block-heading-1", "text": "部署与回滚说明" }
+    }
+  ],
+  "updatedProjection": {
+    "artifactId": "doc-agent-fixture",
+    "revision": 8,
+    "blockId": "block-heading-1",
+    "content": "部署与回滚说明",
+    "citation": {
+      "artifactId": "doc-agent-fixture",
+      "blockId": "block-heading-1",
+      "revision": 8,
+      "textRange": { "start": 0, "end": 8 },
+      "headingPath": ["部署与回滚说明"],
+      "sourceUrl": "/api/artifacts/doc-agent-fixture/blocks/block-heading-1?include=content,headingPath"
+    }
+  },
+  "projectorAssertions": [
+    "events are consumed at-least-once and deduplicated by eventId",
+    "revision 7 citation is retained as historical provenance only",
+    "revision 8 citation is the current retrievable reference",
+    "a revision gap triggers outline/block projection refresh"
+  ]
+}

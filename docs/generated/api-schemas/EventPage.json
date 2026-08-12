@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "required": [
+    "artifactId",
+    "revision",
+    "events"
+  ],
+  "properties": {
+    "artifactId": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "nextCursor": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

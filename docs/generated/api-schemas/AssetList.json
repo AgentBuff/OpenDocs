@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": [
+    "assets"
+  ],
+  "properties": {
+    "assets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/components/schemas/ArtifactAsset"
+      }
+    }
+  },
+  "additionalProperties": false
+}

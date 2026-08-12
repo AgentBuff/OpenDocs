@@ -1,0 +1,63 @@
+# -----------------------------------------------------------------------------
+# Local dependencies and build outputs
+# -----------------------------------------------------------------------------
+/target/
+**/node_modules/
+/.pnpm-store/
+/.vite/
+**/dist/
+**/coverage/
+*.tsbuildinfo
+
+# Generated browser bindings are rebuilt from crates/oo-document-wasm.
+/web/packages/document-engine/wasm/*
+!/web/packages/document-engine/wasm/.gitignore
+
+# -----------------------------------------------------------------------------
+# Local runtime state and secrets
+# -----------------------------------------------------------------------------
+/data/
+/data/schema-backup/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# -----------------------------------------------------------------------------
+# AI-agent workspace material (local prompts, plans and traces).
+# AGENTS.md and CLAUDE.md are tracked project instructions.
+# -----------------------------------------------------------------------------
+/.agents/
+/.codex/
+/.claude/
+/.cursor/
+/task_plan.md
+/progress.md
+/findings.md
+/prompts/
+/prompt/
+/.prompts/
+/.prompt/
+
+# -----------------------------------------------------------------------------
+# Internal design and decision records; product source/docs remain versioned.
+# -----------------------------------------------------------------------------
+/docs/adr/
+/docs/architecture/
+/docs/generated/mcp-tools.json
+
+# Frozen third-party research and pre-cutover snapshots are not product source.
+/freeze/
+
+# -----------------------------------------------------------------------------
+# OS/editor noise
+# -----------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

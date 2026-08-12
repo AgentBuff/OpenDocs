@@ -1,0 +1,200 @@
+/*
+ * Open Office theme contract
+ *
+ * The file intentionally follows a four-layer token model:
+ *
+ *   primitive  ->  semantic  ->  component  ->  product
+ *
+ * Components consume semantic/component tokens only.  Product packages can
+ * add their own tokens on top of `.oo-theme-root` without changing this
+ * package.  Values are CSS variables so changing a theme does not require a
+ * React render or a second style sheet.
+ */
+
+:root {
+  /* Primitive: typography */
+  --oo-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --oo-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --oo-font-size-12: 12px;
+  --oo-font-size-13: 13px;
+  --oo-font-size-14: 14px;
+  --oo-font-size-16: 16px;
+  --oo-font-size-20: 20px;
+  --oo-font-size-24: 24px;
+  --oo-line-height-body: 1.5;
+  --oo-font-weight-regular: 400;
+  --oo-font-weight-medium: 500;
+  --oo-font-weight-semibold: 600;
+
+  /* Primitive: 4px layout grid */
+  --oo-space-0: 0px;
+  --oo-space-1: 2px;
+  --oo-space-2: 4px;
+  --oo-space-3: 6px;
+  --oo-space-4: 8px;
+  --oo-space-5: 10px;
+  --oo-space-6: 12px;
+  --oo-space-8: 16px;
+  --oo-space-10: 20px;
+  --oo-space-12: 24px;
+  --oo-space-16: 32px;
+  --oo-space-20: 40px;
+
+  /* Primitive: shape, elevation, motion and layering */
+  --oo-radius-none: 0px;
+  --oo-radius-sm: 2px;
+  --oo-radius-md: 4px;
+  --oo-radius-lg: 8px;
+  --oo-radius-xl: 12px;
+  --oo-radius-round: 999px;
+  --oo-shadow-1: 0 1px 2px rgba(31, 35, 41, 0.08);
+  --oo-shadow-2: 0 4px 12px rgba(31, 35, 41, 0.12);
+  --oo-shadow-3: 0 14px 32px rgba(31, 35, 41, 0.16), 0 2px 8px rgba(31, 35, 41, 0.06);
+  --oo-motion-fast: 100ms;
+  --oo-motion-normal: 160ms;
+  --oo-motion-slow: 240ms;
+  --oo-motion-ease: cubic-bezier(0.2, 0, 0, 1);
+  --oo-z-base: 0;
+  --oo-z-sticky: 10;
+  --oo-z-dropdown: 1000;
+  --oo-z-popover: 1100;
+  --oo-z-modal: 1200;
+  --oo-z-overlay: var(--oo-z-popover);
+
+  /* Primitive control sizes. Density maps these to semantic component vars. */
+  --oo-size-control-mini: 24px;
+  --oo-size-control-small: 28px;
+  --oo-size-control-default: 32px;
+  --oo-size-control-large: 36px;
+  --oo-size-toolbar: 44px;
+  --oo-size-toolbar-control: 28px;
+  --oo-size-toolbar-icon: 16px;
+}
+
+/*
+ * Semantic defaults. A root always receives a concrete theme class, but
+ * defaults make nested primitives safe while a theme is being mounted.
+ */
+.oo-theme-root {
+  height: 100%;
+  --oo-color-canvas: #f3f5f7;
+  --oo-color-surface: #ffffff;
+  --oo-color-surface-raised: #ffffff;
+  --oo-color-surface-muted: #f7f8fa;
+  --oo-color-surface-hover: #f2f3f5;
+  --oo-color-surface-active: #e8f3ff;
+  --oo-color-border: #e5e6eb;
+  --oo-color-border-strong: #c9cdd4;
+  --oo-color-border-focus: #165dff;
+  --oo-color-text: #1d2129;
+  --oo-color-text-secondary: #4e5969;
+  --oo-color-text-muted: #86909c;
+  --oo-color-text-disabled: #c9cdd4;
+  --oo-color-text-inverse: #ffffff;
+  --oo-color-accent: #165dff;
+  --oo-color-accent-hover: #0e42d2;
+  --oo-color-accent-active: #0e42d2;
+  --oo-color-accent-strong: var(--oo-color-accent-hover);
+  --oo-color-accent-soft: #eaf1ff;
+  --oo-color-success: #21a366;
+  --oo-color-warning: #d99000;
+  --oo-color-danger: #c94b45;
+  --oo-color-danger-soft: #fff0ef;
+  --oo-shadow-popover: var(--oo-shadow-3);
+  color: var(--oo-color-text);
+  background: var(--oo-color-canvas);
+  font-family: var(--oo-font-sans);
+  color-scheme: light;
+
+  /* Component tokens: public defaults for UI primitives. */
+  --oo-button-height-sm: var(--oo-size-control-small);
+  --oo-button-height-md: var(--oo-size-control-default);
+  --oo-button-height-lg: var(--oo-size-control-large);
+  --oo-button-radius: var(--oo-radius-md);
+  --oo-button-padding-inline: var(--oo-space-4);
+  --oo-toolbar-height: var(--oo-size-toolbar);
+  --oo-toolbar-control-height: var(--oo-size-toolbar-control);
+  --oo-toolbar-group-gap: var(--oo-space-1);
+  --oo-toolbar-group-padding: var(--oo-space-2);
+  --oo-toolbar-background: var(--oo-color-surface);
+  --oo-toolbar-border: var(--oo-color-border);
+  --oo-toolbar-item-radius: var(--oo-radius-md);
+  --oo-toolbar-item-padding-inline: 6px;
+  --oo-toolbar-hover-background: var(--oo-color-surface-hover);
+  --oo-toolbar-active-background: var(--oo-color-accent-soft);
+  --oo-toolbar-select-background: var(--oo-color-surface);
+  --oo-toolbar-select-border: var(--oo-color-border);
+  --oo-menu-radius: var(--oo-radius-lg);
+  --oo-radius-overlay: var(--oo-radius-lg);
+  --oo-menu-item-height: 34px;
+  --oo-menu-item-padding-inline: 14px;
+  --oo-focus-ring: 0 0 0 2px rgba(47, 111, 235, 0.3);
+
+}
+
+/* Canonical theme names. Product skins are explicit and mode is independently
+ * addressable for future Artifact shells. */
+.oo-theme--office-light,
+.oo-theme--light {
+  --oo-theme-mode: light;
+  color-scheme: light;
+}
+
+.oo-theme--office-dark,
+.oo-theme--dark {
+  --oo-theme-mode: dark;
+  --oo-color-canvas: #121416;
+  --oo-color-surface: #1a1c20;
+  --oo-color-surface-raised: #22252a;
+  --oo-color-surface-muted: #202328;
+  --oo-color-surface-hover: #2b2f36;
+  --oo-color-surface-active: #343943;
+  --oo-color-border: #343840;
+  --oo-color-border-strong: #4a505a;
+  --oo-color-border-focus: #82adff;
+  --oo-color-text: #f1f3f5;
+  --oo-color-text-secondary: #c5cad3;
+  --oo-color-text-muted: #9ca3af;
+  --oo-color-text-disabled: #646b76;
+  --oo-color-text-inverse: #15171a;
+  --oo-color-accent: #5b92f7;
+  --oo-color-accent-hover: #82adff;
+  --oo-color-accent-active: #a9c6ff;
+  --oo-color-accent-strong: var(--oo-color-accent-hover);
+  --oo-color-accent-soft: #20365e;
+  --oo-color-success: #35bd7a;
+  --oo-color-warning: #e5ac3d;
+  --oo-color-danger: #f2756d;
+  --oo-color-danger-soft: #4a2526;
+  --oo-shadow-popover: 0 16px 38px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.24);
+  color-scheme: dark;
+}
+
+@supports (box-shadow: 0 0 0 2px color-mix(in srgb, black 10%, transparent)) {
+  .oo-theme-root { --oo-focus-ring: 0 0 0 2px color-mix(in srgb, var(--oo-color-accent) 30%, transparent); }
+}
+
+/* Density is a data attribute so a parent can change it without changing
+ * the theme name. Content remains comfortable by default; chrome can opt
+ * into compact density at its own boundary. */
+.oo-theme-root[data-density="compact"] {
+  --oo-toolbar-height: 40px;
+  --oo-toolbar-control-height: 28px;
+  --oo-size-toolbar-control: 28px;
+  --oo-button-height-sm: 24px;
+  --oo-button-height-md: 28px;
+  --oo-button-height-lg: 32px;
+  --oo-menu-item-height: 30px;
+  --oo-menu-item-padding-inline: 12px;
+}
+
+.oo-theme-root[data-density="comfortable"] {
+  --oo-toolbar-height: 48px;
+  --oo-toolbar-control-height: 36px;
+  --oo-size-toolbar-control: 36px;
+  --oo-button-height-sm: 28px;
+  --oo-button-height-md: 36px;
+  --oo-button-height-lg: 40px;
+  --oo-menu-item-height: 38px;
+  --oo-menu-item-padding-inline: 16px;
+}

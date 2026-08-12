@@ -1,0 +1,71 @@
+{
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "contractVersion",
+    "artifactId",
+    "revision",
+    "projection",
+    "data",
+    "truncated"
+  ],
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contractVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifactId": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "projection": {
+      "enum": [
+        "outline",
+        "block",
+        "presentation",
+        "presentationOutline",
+        "presentationSlide",
+        "presentationNode"
+      ]
+    },
+    "data": {
+      "oneOf": [
+        {
+          "$ref": "#/components/schemas/ProjectionList"
+        },
+        {
+          "$ref": "#/components/schemas/BlockProjectionItem"
+        },
+        {
+          "$ref": "#/components/schemas/PresentationDeckProjection"
+        },
+        {
+          "$ref": "#/components/schemas/PresentationOutline"
+        },
+        {
+          "$ref": "#/components/schemas/PresentationSlideProjection"
+        },
+        {
+          "$ref": "#/components/schemas/PresentationNodeProjection"
+        }
+      ]
+    },
+    "cursor": {
+      "type": "string"
+    },
+    "nextCursor": {
+      "type": "string"
+    },
+    "truncated": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

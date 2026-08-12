@@ -1,0 +1,21 @@
+{
+  "type": "object",
+  "required": [
+    "kind"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "document",
+        "spreadsheet",
+        "presentation",
+        "mindmap",
+        "whiteboard"
+      ]
+    },
+    "title": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

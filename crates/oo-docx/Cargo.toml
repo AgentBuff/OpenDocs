@@ -1,0 +1,19 @@
+[package]
+name = "oo-docx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "将 .docx (ECMA-376) 解析为 open-office 文档模型"
+
+[dependencies]
+oo-schema = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+quick-xml = "0.37"
+sha2 = { workspace = true }
+hex = { workspace = true }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }

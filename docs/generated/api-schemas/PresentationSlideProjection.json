@@ -1,0 +1,53 @@
+{
+  "description": "Read-only slide metadata. nodes, assetIds, notes and timeline are opt-in via include.",
+  "type": "object",
+  "required": [
+    "slideId",
+    "orderKey",
+    "name",
+    "layoutId",
+    "background"
+  ],
+  "properties": {
+    "slideId": {
+      "type": "string"
+    },
+    "orderKey": {
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "layoutId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "background": {
+      "type": "object"
+    },
+    "notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "assetIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "timeline": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

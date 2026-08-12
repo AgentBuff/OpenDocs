@@ -1,0 +1,43 @@
+.oo-button,
+.oo-toolbar-menu-button,
+.oo-menu-item {
+  font: inherit;
+}
+.oo-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--oo-space-2);
+  border: 1px solid var(--oo-color-border-strong);
+  border-radius: var(--oo-button-radius);
+  background: var(--oo-color-surface);
+  color: var(--oo-color-text);
+  cursor: pointer;
+  transition: background var(--oo-motion-normal) var(--oo-motion-ease), border-color var(--oo-motion-normal) var(--oo-motion-ease), color var(--oo-motion-normal) var(--oo-motion-ease), box-shadow var(--oo-motion-normal) var(--oo-motion-ease);
+}
+
+.oo-button--md { min-height: var(--oo-button-height-md); padding: 0 var(--oo-button-padding-inline); font-size: var(--oo-font-size-14); }
+.oo-button--sm { min-height: var(--oo-button-height-sm); padding: 0 var(--oo-space-3); font-size: var(--oo-font-size-13); }
+.oo-button--lg { min-height: var(--oo-button-height-lg); padding: 0 var(--oo-space-6); font-size: var(--oo-font-size-14); }
+.oo-button--primary { border-color: var(--oo-color-accent); background: var(--oo-color-accent); color: var(--oo-color-text-inverse); }
+.oo-button--secondary { background: var(--oo-color-surface); }
+.oo-button--ghost { border-color: transparent; background: transparent; }
+.oo-button--danger { border-color: transparent; background: transparent; color: var(--oo-color-danger); }
+
+.oo-button:hover:not(:disabled) { border-color: var(--oo-color-accent); color: var(--oo-color-accent); }
+.oo-button--primary:hover:not(:disabled) { border-color: var(--oo-color-accent-strong); background: var(--oo-color-accent-strong); color: var(--oo-color-text-inverse); box-shadow: 0 2px 5px rgba(47, 111, 235, 0.22); }
+.oo-button--ghost:hover:not(:disabled) { border-color: transparent; background: var(--oo-color-surface-hover); color: var(--oo-color-text); }
+.oo-button--danger:hover:not(:disabled) { border-color: transparent; background: rgba(201, 75, 69, 0.1); color: var(--oo-color-danger); }
+
+@supports (background: color-mix(in srgb, black 10%, transparent)) {
+  .oo-button--primary:hover:not(:disabled) { box-shadow: 0 2px 5px color-mix(in srgb, var(--oo-color-accent) 22%, transparent); }
+  .oo-button--danger:hover:not(:disabled) { background: color-mix(in srgb, var(--oo-color-danger) 10%, transparent); }
+}
+.oo-button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.oo-button:focus-visible,
+.oo-toolbar-menu-button:focus-visible,
+.oo-menu-item:focus-visible {
+  outline: none;
+  box-shadow: var(--oo-focus-ring);
+}

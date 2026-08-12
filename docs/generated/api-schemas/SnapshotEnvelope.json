@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "artifact"
+  ],
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifact": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

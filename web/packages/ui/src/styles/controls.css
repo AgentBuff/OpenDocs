@@ -1,0 +1,91 @@
+/* ---------- form controls and feedback ---------- */
+
+.oo-input,
+.oo-textarea,
+.oo-select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--oo-color-border-strong);
+  border-radius: var(--oo-radius-md);
+  background: var(--oo-color-surface);
+  color: var(--oo-color-text);
+  font: inherit;
+  transition: border-color var(--oo-motion-fast) var(--oo-motion-ease), box-shadow var(--oo-motion-fast) var(--oo-motion-ease);
+}
+.oo-input,
+.oo-select { height: var(--oo-button-height-md); padding: 0 var(--oo-space-4); }
+.oo-textarea { min-height: calc(var(--oo-button-height-md) * 2.5); padding: var(--oo-space-3) var(--oo-space-4); resize: vertical; }
+.oo-input.oo-control--sm,
+.oo-select.oo-control--sm { height: var(--oo-button-height-sm); font-size: var(--oo-font-size-13); }
+.oo-input.oo-control--lg,
+.oo-select.oo-control--lg { height: var(--oo-button-height-lg); }
+.oo-textarea.oo-control--sm { font-size: var(--oo-font-size-13); }
+.oo-textarea.oo-control--lg { font-size: var(--oo-font-size-16); }
+.oo-input:hover:not(:disabled),
+.oo-textarea:hover:not(:disabled),
+.oo-select:hover:not(:disabled) { border-color: var(--oo-color-border-focus); }
+.oo-input:focus-visible,
+.oo-textarea:focus-visible,
+.oo-select:focus-visible { outline: none; border-color: var(--oo-color-border-focus); box-shadow: var(--oo-focus-ring); }
+.oo-input:disabled,
+.oo-textarea:disabled,
+.oo-select:disabled { background: var(--oo-color-surface-muted); color: var(--oo-color-text-disabled); cursor: not-allowed; }
+.oo-control--success { border-color: var(--oo-color-success) !important; }
+.oo-control--warning { border-color: var(--oo-color-warning) !important; }
+.oo-control--danger { border-color: var(--oo-color-danger) !important; }
+.oo-input-group { display: inline-flex; align-items: center; width: 100%; min-width: 0; border: 1px solid var(--oo-color-border-strong); border-radius: var(--oo-radius-md); background: var(--oo-color-surface); }
+.oo-input-group:focus-within { border-color: var(--oo-color-border-focus); box-shadow: var(--oo-focus-ring); }
+.oo-input-group .oo-input { border: 0; box-shadow: none; }
+.oo-input__affix { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 0 var(--oo-space-3); color: var(--oo-color-text-muted); }
+.oo-input-group.oo-control--sm .oo-input { height: var(--oo-button-height-sm); font-size: var(--oo-font-size-13); }
+.oo-input-group.oo-control--lg .oo-input { height: var(--oo-button-height-lg); }
+
+.oo-checkbox { display: inline-flex; align-items: center; gap: var(--oo-space-2); color: var(--oo-color-text); cursor: pointer; }
+.oo-checkbox input { width: 16px; height: 16px; margin: 0; accent-color: var(--oo-color-accent); }
+.oo-checkbox input:focus-visible { outline: none; box-shadow: var(--oo-focus-ring); }
+.oo-checkbox input:disabled + .oo-checkbox__label,
+.oo-checkbox input:disabled { cursor: not-allowed; opacity: 0.55; }
+
+.oo-switch { display: inline-flex; position: relative; align-items: center; cursor: pointer; }
+.oo-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.oo-switch__track { display: inline-flex; align-items: center; width: 36px; height: 20px; padding: 2px; border-radius: var(--oo-radius-round); background: var(--oo-color-border-strong); transition: background var(--oo-motion-fast) var(--oo-motion-ease); }
+.oo-switch__thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--oo-color-surface); box-shadow: var(--oo-shadow-1); transition: transform var(--oo-motion-fast) var(--oo-motion-ease); }
+.oo-switch input:checked + .oo-switch__track { background: var(--oo-color-accent); }
+.oo-switch input:checked + .oo-switch__track .oo-switch__thumb { transform: translateX(16px); }
+.oo-switch input:focus-visible + .oo-switch__track { box-shadow: var(--oo-focus-ring); }
+.oo-switch.oo-control--sm .oo-switch__track { width: 30px; height: 18px; }
+.oo-switch.oo-control--sm .oo-switch__thumb { width: 14px; height: 14px; }
+.oo-switch.oo-control--sm input:checked + .oo-switch__track .oo-switch__thumb { transform: translateX(12px); }
+.oo-switch.oo-control--lg .oo-switch__track { width: 42px; height: 24px; }
+.oo-switch.oo-control--lg .oo-switch__thumb { width: 20px; height: 20px; }
+.oo-switch.oo-control--lg input:checked + .oo-switch__track .oo-switch__thumb { transform: translateX(18px); }
+.oo-switch.is-disabled { cursor: not-allowed; opacity: 0.55; }
+
+.oo-divider { flex: 0 0 auto; background: var(--oo-color-border); }
+.oo-divider--horizontal { width: 100%; height: 1px; }
+.oo-divider--vertical { width: 1px; align-self: stretch; min-height: var(--oo-button-height-md); }
+.oo-spinner { display: inline-block; border: 2px solid var(--oo-color-border); border-top-color: var(--oo-color-accent); border-radius: 50%; animation: oo-spin 700ms linear infinite; }
+.oo-spinner.oo-control--sm { width: 14px; height: 14px; }
+.oo-spinner.oo-control--md { width: 18px; height: 18px; }
+.oo-spinner.oo-control--lg { width: 22px; height: 22px; }
+.oo-badge { display: inline-flex; align-items: center; min-height: 20px; padding: 0 var(--oo-space-3); border-radius: var(--oo-radius-round); background: var(--oo-color-surface-hover); color: var(--oo-color-text-secondary); font-size: var(--oo-font-size-12); line-height: 1; }
+.oo-badge--accent { background: var(--oo-color-accent-soft); color: var(--oo-color-accent-strong); }
+.oo-badge--success { background: rgba(33, 163, 102, 0.12); color: var(--oo-color-success); }
+.oo-badge--warning { background: rgba(217, 144, 0, 0.14); color: var(--oo-color-warning); }
+.oo-badge--danger { background: var(--oo-color-danger-soft); color: var(--oo-color-danger); }
+.oo-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 120px; padding: var(--oo-space-12); text-align: center; }
+.oo-empty__title { color: var(--oo-color-text); font-weight: var(--oo-font-weight-medium); }
+.oo-empty__description { margin-top: var(--oo-space-2); color: var(--oo-color-text-muted); font-size: var(--oo-font-size-13); }
+.oo-empty__action { margin-top: var(--oo-space-6); }
+
+@supports (background: color-mix(in srgb, black 10%, transparent)) {
+  .oo-badge--success { background: color-mix(in srgb, var(--oo-color-success) 12%, transparent); }
+  .oo-badge--warning { background: color-mix(in srgb, var(--oo-color-warning) 14%, transparent); }
+}
+
+@keyframes oo-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .oo-spinner { animation: none; }
+  .oo-input, .oo-textarea, .oo-select, .oo-switch__track, .oo-switch__thumb { transition: none; }
+}

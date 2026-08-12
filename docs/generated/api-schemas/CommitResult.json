@@ -1,0 +1,49 @@
+{
+  "type": "object",
+  "required": [
+    "protocolVersion",
+    "artifactId",
+    "transactionId",
+    "baseRevision",
+    "revision",
+    "invalidation",
+    "mutations",
+    "events"
+  ],
+  "properties": {
+    "protocolVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifactId": {
+      "type": "string"
+    },
+    "transactionId": {
+      "type": "string"
+    },
+    "baseRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "invalidation": {
+      "type": "object"
+    },
+    "mutations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false
+}

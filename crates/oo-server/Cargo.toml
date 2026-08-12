@@ -1,0 +1,39 @@
+[package]
+name = "oo-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "open-office API 服务"
+default-run = "oo-server"
+
+[dependencies]
+oo-document = { workspace = true }
+oo-presentation = { workspace = true }
+oo-schema = { workspace = true }
+oo-protocol = { workspace = true }
+oo-docx = { workspace = true }
+oo-xlsx = { workspace = true }
+oo-pptx = { workspace = true }
+oo-mindmap = { workspace = true }
+oo-whiteboard = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "sync"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "chrono", "migrate"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }

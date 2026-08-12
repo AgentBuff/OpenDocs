@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/oo-schema",
+    "crates/oo-protocol",
+    "crates/oo-document",
+    "crates/oo-document-wasm",
+    "crates/oo-docx",
+    "crates/oo-spreadsheet",
+    "crates/oo-xlsx",
+    "crates/oo-presentation",
+    "crates/oo-pptx",
+    "crates/oo-mindmap",
+    "crates/oo-whiteboard",
+    "crates/oo-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+oo-schema = { path = "crates/oo-schema" }
+oo-protocol = { path = "crates/oo-protocol" }
+oo-document = { path = "crates/oo-document" }
+oo-docx = { path = "crates/oo-docx" }
+oo-presentation = { path = "crates/oo-presentation" }
+oo-xlsx = { path = "crates/oo-xlsx" }
+oo-pptx = { path = "crates/oo-pptx" }
+oo-mindmap = { path = "crates/oo-mindmap" }
+oo-whiteboard = { path = "crates/oo-whiteboard" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+sha2 = "0.10"
+hex = "0.4"
+wasm-bindgen = "0.2.126"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
