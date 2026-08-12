@@ -8,6 +8,10 @@ OpenDocs 是一个多 Artifact 在线办公平台，统一支持文档、表格�
 核心原则是以严格的领域模型、语义事务与不可变快照作为唯一真相；DOM、Canvas、SVG 和 WebGL
 仅承担渲染与交互职责。
 
+## 开源协议
+
+本项目采用 [Apache License 2.0](LICENSE) 开源。
+
 ## 本地开发
 
 ```bash
