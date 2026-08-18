@@ -11,6 +11,7 @@ import {
   parseProjectionEnvelope,
   parseProjectionItem,
   parseProjectionItems,
+  parsePresentationDeckProjection,
   parsePresentationNodeProjection,
   parsePresentationSlideProjection,
 } from "../src/api.js";
@@ -186,5 +187,18 @@ describe("framework-free Artifact API boundary", () => {
       assetIds: [],
       slideNodeIds: ["title-1"],
     })).toThrow("childNodeIds");
+  });
+
+  it("reads layout picker metadata without exposing a mutable master model", () => {
+    expect(parsePresentationDeckProjection({
+      pageSpec: { width: 12192000, height: 6858000, unit: "emu" },
+      themeId: "theme-1", themeName: "Default", slideCount: 1, masterCount: 1, layoutCount: 1, assetCount: 0,
+      masters: [{ id: "master-1", name: "Default", placeholderCount: 2 }],
+      layouts: [{ id: "layout-title", masterId: "master-1", name: "Title", placeholderCount: 1 }],
+    })).toMatchObject({ layouts: [{ id: "layout-title", masterId: "master-1" }] });
+    expect(() => parsePresentationDeckProjection({
+      pageSpec: { width: 1, height: 1, unit: "emu" }, themeId: "theme-1", themeName: "Default", slideCount: 0,
+      masterCount: 0, layoutCount: 1, assetCount: 0, masters: [], layouts: [{ id: "layout-1", masterId: "missing", name: "Title", placeholderCount: 0 }],
+    })).toThrow("引用不存在 master");
   });
 });

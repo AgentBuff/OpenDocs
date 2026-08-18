@@ -1,5 +1,6 @@
 import type {
   PresentationV5ImageCrop,
+  PresentationV5ChartSpec,
   PresentationV5Node,
   PresentationV5NodeKind,
   PresentationV5RichText,
@@ -48,9 +49,12 @@ export type PresentationNodeAdornment =
 /** Renderer-neutral input for the future Canvas/WebGL stage and DOM text overlay. */
 export type PresentationNodeRenderModel =
   | { kind: "shape"; geometry: "rectangle" | "ellipse" | "line" | "arrow" }
+  | { kind: "connector"; start: Extract<PresentationV5NodeKind, { type: "connector" }>["data"]["start"]; end: Extract<PresentationV5NodeKind, { type: "connector" }>["data"]["end"] }
   | { kind: "text"; body: Readonly<PresentationV5RichText> }
   | { kind: "image"; assetId: string; crop: Readonly<PresentationV5ImageCrop>; flipH: boolean; flipV: boolean }
   | { kind: "media"; mediaType: "video" | "audio"; assetId: string; posterAssetId: string | null }
+  | { kind: "table"; rows: number; columns: number }
+  | { kind: "chart"; spec: Readonly<PresentationV5ChartSpec> }
   | { kind: "group"; childNodeIds: readonly string[] }
   | { kind: "extension"; namespace: string; version: string; typeId: string; unsupported: boolean; label?: string; summary?: string; reason?: string }
   | { kind: "unsupported"; nodeType: PresentationNodeType; reason: string };
@@ -80,10 +84,26 @@ export interface PresentationNodeToolbarDescriptor<ActionId extends string>
  * intent; `PresentationStore` / the server transaction endpoint owns execution and validation.
  */
 export type PresentationSemanticCommand =
+  | { type: "insertNode"; slideId: string; node: PresentationV5Node; index: number }
   | { type: "deleteNode"; slideId: string; nodeId: string }
   | { type: "ungroupNodes"; slideId: string; groupId: string }
+  | { type: "reorderNode"; slideId: string; nodeId: string; index: number }
   | { type: "setNodeTransform"; slideId: string; nodeId: string; transform: PresentationV5Transform }
+  | { type: "setNodeLocked"; slideId: string; nodeId: string; locked: boolean }
+  | { type: "alignNodes"; slideId: string; nodeIds: string[]; alignment: "left" | "center" | "right" | "top" | "middle" | "bottom" }
+  | { type: "distributeNodes"; slideId: string; nodeIds: string[]; axis: "horizontal" | "vertical" }
   | { type: "setShapeStyle"; slideId: string; nodeId: string; style: Extract<PresentationV5NodeKind, { type: "shape" }>["data"]["style"] }
+  | { type: "setShapeGeometry"; slideId: string; nodeId: string; geometry: Extract<PresentationV5NodeKind, { type: "shape" }>["data"]["geometry"] }
+  | { type: "setChartSpec"; slideId: string; nodeId: string; spec: PresentationV5ChartSpec }
+  | { type: "setConnectorEndpoints"; slideId: string; nodeId: string; start: Extract<PresentationV5NodeKind, { type: "connector" }>["data"]["start"]; end: Extract<PresentationV5NodeKind, { type: "connector" }>["data"]["end"] }
+  | { type: "setTableCellContent"; slideId: string; nodeId: string; row: number; column: number; content: PresentationV5RichText }
+  | { type: "setTableCellStyle"; slideId: string; nodeId: string; cells: { row: number; column: number }[]; style: Extract<PresentationV5NodeKind, { type: "table" }>["data"]["cells"][number]["style"] }
+  | { type: "insertTableRows"; slideId: string; nodeId: string; index: number; count: number }
+  | { type: "insertTableColumns"; slideId: string; nodeId: string; index: number; count: number }
+  | { type: "deleteTableRow"; slideId: string; nodeId: string; index: number }
+  | { type: "deleteTableColumn"; slideId: string; nodeId: string; index: number }
+  | { type: "mergeTableCells"; slideId: string; nodeId: string; start: { row: number; column: number }; end: { row: number; column: number } }
+  | { type: "splitTableCell"; slideId: string; nodeId: string; row: number; column: number }
   | { type: "setTextContent"; slideId: string; nodeId: string; body: PresentationV5RichText }
   | { type: "setTextFrame"; slideId: string; nodeId: string; frame: Extract<PresentationV5NodeKind, { type: "text" }>["data"]["frame"] }
   | { type: "setImageConfig"; slideId: string; nodeId: string; image: Extract<PresentationV5NodeKind, { type: "image" }>["data"] }

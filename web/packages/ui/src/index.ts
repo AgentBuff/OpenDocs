@@ -44,11 +44,15 @@ export {
 
 export {
   Checkbox,
+  ColorPalette,
   Input,
   Select,
   Switch,
   Textarea,
   type CheckboxProps,
+  type ColorPaletteProps,
+  type ColorPaletteRole,
+  type ColorValue,
   type ControlSize,
   type ControlStatus,
   type ControlStyleProps,

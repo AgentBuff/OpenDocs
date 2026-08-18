@@ -18,6 +18,9 @@ export interface PresentationV5TextRun { start: number; end: number; style: Pres
 export interface PresentationV5TextStyle { bold: boolean; italic: boolean; underline: boolean; strikethrough: boolean; fontFamily: string | null; fontSize: number | null; color: ColorRef | null }
 export interface PresentationV5Transform { x: number; y: number; width: number; height: number; rotation: number }
 export interface PresentationV5Asset { assetId: string; digest: string; mimeType: string; width: number | null; height: number | null; originalAssetId: string | null }
+export type PresentationV5ChartType = "column" | "bar" | "line" | "pie";
+export interface PresentationV5ChartSeries { name: string; values: number[]; color: ColorRef | null }
+export interface PresentationV5ChartSpec { chartType: PresentationV5ChartType; title: string | null; categories: string[]; series: PresentationV5ChartSeries[] }
 /**
  * Extension payloads are intentionally opaque to the host, but never
  * unstructured. `typeId` and an object-shaped `data` form the stable hand-off
@@ -31,7 +34,7 @@ export type PresentationV5NodeKind =
   | { type: "image"; data: { assetId: string; originalAssetId: string | null; crop: PresentationV5ImageCrop; flipH: boolean; flipV: boolean; caption: string | null } }
   | { type: "video" | "audio"; data: { assetId: string; posterAssetId: string | null } }
   | { type: "table"; data: { rows: number; columns: number; cells: PresentationV5TableCell[] } }
-  | { type: "chart"; data: { chartType: string } }
+  | { type: "chart"; data: { spec: PresentationV5ChartSpec } }
   | { type: "connector"; data: { start: ConnectorEndpoint; end: ConnectorEndpoint } }
   | { type: "group"; data: Record<string, never> }
   | { type: "embed"; data: { source: string; posterAssetId: string | null } }
@@ -41,7 +44,7 @@ export type ConnectorEndpoint = { type: "free"; value: { x: number; y: number } 
 export interface Insets { top: number; right: number; bottom: number; left: number }
 export interface PresentationV5ImageCrop { top: number; right: number; bottom: number; left: number }
 export interface PresentationV5Placeholder { id: string; kind: PlaceholderKind; transform: PresentationV5Transform; defaultText: PresentationV5RichText | null; masterPlaceholderId?: string | null }
-export interface PresentationV5Master { id: string; name: string; placeholders: PresentationV5Placeholder[] }
+export interface PresentationV5Master { id: string; name: string; background: PresentationV5SlideBackground; placeholders: PresentationV5Placeholder[] }
 export interface PresentationV5Layout { id: string; masterId: string; name: string; placeholders: PresentationV5Placeholder[] }
 export interface PresentationV5TimelineEntry { id: string; targetNodeId: string; trigger: "onClick" | "withPrevious" | "afterPrevious"; preset: "appear" | "fade" | "flyIn" | "wipe"; durationMs: number; delayMs: number; orderKey: string }
 export interface PresentationV5Slide { id: string; orderKey: string; name: string; layoutId: string | null; background: PresentationV5SlideBackground; notes: string | null; transition: PresentationV5SlideTransition | null; nodes: PresentationV5Node[]; timeline: { entries: PresentationV5TimelineEntry[] } }
@@ -100,13 +103,26 @@ function parseAsset(raw: unknown, index: number): PresentationV5Asset {
 function parseMaster(raw: unknown, index: number): PresentationV5Master {
   const master = object(raw, `masters[${index}]`); exact(master, ["id", "name", "background", "placeholders"], `masters[${index}]`);
   const placeholders = arrayOrDefault(master.placeholders, `masters[${index}].placeholders`).map((value, i) => parseMasterPlaceholder(value, `${index}:${i}`)); unique(placeholders.map((item) => item.id), "master placeholder.id");
-  return { id: id(master.id, `masters[${index}].id`), name: string(master.name, `masters[${index}].name`), placeholders };
+  return { id: id(master.id, `masters[${index}].id`), name: string(master.name, `masters[${index}].name`), background: master.background === undefined ? { type: "none" } : parseSlideBackground(master.background, `masters[${index}].background`), placeholders };
+}
+
+/** Strict parser for a master returned by the read-only Deck projection. */
+export function parsePresentationV5Master(value: unknown): PresentationV5Master {
+  return parseMaster(value, 0);
 }
 function parseLayout(raw: unknown, index: number, masters: Map<string, PresentationV5Master>): PresentationV5Layout {
   const layout = object(raw, `layouts[${index}]`); exact(layout, ["id", "masterId", "name", "placeholders"], `layouts[${index}]`);
   const masterId = id(layout.masterId, `layouts[${index}].masterId`); const master = masters.get(masterId); if (!master) throw new Error(`layout 引用不存在 master：${masterId}`);
   const placeholders = arrayOrDefault(layout.placeholders, `layouts[${index}].placeholders`).map((value, i) => parseLayoutPlaceholder(value, `${index}:${i}`, master)); unique(placeholders.map((item) => item.id), "layout placeholder.id");
   return { id: id(layout.id, `layouts[${index}].id`), masterId, name: string(layout.name, `layouts[${index}].name`), placeholders };
+}
+
+/** Strict parser for a layout returned by the read-only Deck projection. */
+export function parsePresentationV5Layout(
+  value: unknown,
+  masters: Iterable<PresentationV5Master>,
+): PresentationV5Layout {
+  return parseLayout(value, 0, new Map([...masters].map((master) => [master.id, master])));
 }
 function parseMasterPlaceholder(raw: unknown, name: string): PresentationV5Placeholder {
   const value = object(raw, `masterPlaceholder[${name}]`); exact(value, ["id", "kind", "transform", "defaultText"], `masterPlaceholder[${name}]`);
@@ -150,7 +166,7 @@ function parseKind(raw: unknown, name: string, owner: string, assets: Set<string
     case "image": return { type, data: parseImage(data, owner, assets) };
     case "video": case "audio": return { type, data: parseMedia(data, owner, assets) };
     case "table": return { type, data: parseTable(data, owner) };
-    case "chart": exact(data, ["chartType"], "chart"); return { type, data: { chartType: id(data.chartType, "chart.chartType") } };
+    case "chart": return { type, data: { spec: parseChartSpec(data, owner) } };
     case "connector": return { type, data: parseConnector(data, owner) };
     case "group": exact(data, [], "group"); return { type, data: {} };
     case "embed": exact(data, ["source", "posterAssetId"], "embed"); { const posterAssetId = nullable(data.posterAssetId, "embed.posterAssetId", id); if (posterAssetId) requireAsset(owner, posterAssetId, assets); return { type, data: { source: id(data.source, "embed.source"), posterAssetId } }; }
@@ -162,6 +178,7 @@ function parseText(value: Record<string, unknown>) { exact(value, ["frame"], "te
 function parseImage(value: Record<string, unknown>, owner: string, assets: Set<string>) { exact(value, ["assetId", "originalAssetId", "crop", "flipH", "flipV", "caption"], "image"); const assetId = id(value.assetId, "image.assetId"); requireAsset(owner, assetId, assets); const originalAssetId = nullable(value.originalAssetId, "image.originalAssetId", id); if (originalAssetId) requireAsset(owner, originalAssetId, assets); return { assetId, originalAssetId, crop: parseCrop(value.crop, "image.crop"), flipH: optionalBoolean(value.flipH, "image.flipH", false), flipV: optionalBoolean(value.flipV, "image.flipV", false), caption: nullable(value.caption, "image.caption", string) }; }
 function parseMedia(value: Record<string, unknown>, owner: string, assets: Set<string>) { exact(value, ["assetId", "posterAssetId"], "media"); const assetId = id(value.assetId, "media.assetId"); requireAsset(owner, assetId, assets); const posterAssetId = nullable(value.posterAssetId, "media.posterAssetId", id); if (posterAssetId) requireAsset(owner, posterAssetId, assets); return { assetId, posterAssetId }; }
 function parseTable(value: Record<string, unknown>, owner: string) { exact(value, ["rows", "columns", "cells"], "table"); const rows = integer(value.rows, "table.rows", 1); const columns = integer(value.columns, "table.columns", 1); const occupied = new Set<string>(); const cells = arrayOrDefault(value.cells, "table.cells").map((raw, index) => { const cell = object(raw, `table.cells[${index}]`); exact(cell, ["row", "column", "rowSpan", "columnSpan", "content", "style"], `table.cells[${index}]`); const row = integer(cell.row, "table.cell.row", 0); const column = integer(cell.column, "table.cell.column", 0); const rowSpan = optionalInteger(cell.rowSpan, "table.cell.rowSpan", 1, 1); const columnSpan = optionalInteger(cell.columnSpan, "table.cell.columnSpan", 1, 1); if (row + rowSpan > rows || column + columnSpan > columns) throw new Error("table cell 范围无效"); for (let y = row; y < row + rowSpan; y += 1) for (let x = column; x < column + columnSpan; x += 1) { const key = `${y}:${x}`; if (occupied.has(key)) throw new Error("table cell 范围重叠"); occupied.add(key); } const style = object(cell.style, "table.cell.style"); exact(style, ["fill", "horizontalAlign", "verticalAlign"], "table.cell.style"); return { row, column, rowSpan, columnSpan, content: parseRichText(cell.content, `table.cells[${index}].content`), style: { fill: parsePaint(style.fill, "table.cell.fill"), horizontalAlign: enumValue(optionalString(style.horizontalAlign, "table.cell.horizontalAlign", "left"), ["left", "center", "right"] as const, "table.cell.horizontalAlign"), verticalAlign: enumValue(optionalString(style.verticalAlign, "table.cell.verticalAlign", "middle"), ["top", "middle", "bottom"] as const, "table.cell.verticalAlign") } }; }); if (occupied.size !== rows * columns) throw new Error(`presentation table ${owner} cells 未覆盖完整网格`); return { rows, columns, cells }; }
+function parseChartSpec(value: Record<string, unknown>, owner: string): PresentationV5ChartSpec { exact(value, ["spec"], "chart"); const spec = object(value.spec, "chart.spec"); exact(spec, ["chartType", "title", "categories", "series"], "chart.spec"); const chartType = enumValue(string(spec.chartType, "chart.spec.chartType"), ["column", "bar", "line", "pie"] as const, "chart.spec.chartType"); const title = nullable(spec.title, "chart.spec.title", id); const categories = array(spec.categories, "chart.spec.categories").map((raw, index) => id(raw, `chart.spec.categories[${index}]`)); if (!categories.length) throw new Error(`presentation chart ${owner} categories 不能为空`); const names = new Set<string>(); const series = array(spec.series, "chart.spec.series").map((raw, index) => { const item = object(raw, `chart.spec.series[${index}]`); exact(item, ["name", "values", "color"], `chart.spec.series[${index}]`); const name = id(item.name, `chart.spec.series[${index}].name`); if (names.has(name)) throw new Error("presentation chart series 名称重复"); names.add(name); const values = array(item.values, `chart.spec.series[${index}].values`).map((entry, valueIndex) => finite(entry, `chart.spec.series[${index}].values[${valueIndex}]`)); if (values.length !== categories.length) throw new Error(`presentation chart ${owner} series ${name} values 数量必须与 categories 一致`); if (chartType === "pie" && values.some((entry) => entry < 0)) throw new Error(`presentation chart ${owner} pie values 不能为负数`); return { name, values, color: nullable(item.color, `chart.spec.series[${index}].color`, parseColor) }; }); if (!series.length) throw new Error(`presentation chart ${owner} series 不能为空`); if (chartType === "pie" && series.length !== 1) throw new Error(`presentation chart ${owner} pie 只支持一个 data series`); return { chartType, title, categories, series }; }
 function parseConnector(value: Record<string, unknown>, owner: string) { exact(value, ["start", "end"], "connector"); return { start: parseEndpoint(value.start, "connector.start", owner), end: parseEndpoint(value.end, "connector.end", owner) }; }
 function parseEndpoint(raw: unknown, name: string, owner: string): ConnectorEndpoint { const endpoint = object(raw, name); exact(endpoint, ["type", "value"], name); const type = enumValue(string(endpoint.type, `${name}.type`), ["free", "node"] as const, `${name}.type`); const value = object(endpoint.value, `${name}.value`); if (type === "free") { exact(value, ["x", "y"], `${name}.value`); return { type, value: { x: finite(value.x, `${name}.x`), y: finite(value.y, `${name}.y`) } }; } exact(value, ["nodeId", "anchor"], `${name}.value`); const nodeId = id(value.nodeId, `${name}.nodeId`); if (nodeId === owner) throw new Error("connector 不能连接自身"); return { type, value: { nodeId, anchor: enumValue(string(value.anchor, `${name}.anchor`), ["top", "right", "bottom", "left", "center"] as const, `${name}.anchor`) } }; }
 function parseSlideBackground(raw: unknown, name: string): PresentationV5SlideBackground { return parsePaint(raw, name); }

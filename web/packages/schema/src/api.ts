@@ -8,6 +8,10 @@ import {
 } from "./artifact.js";
 import {
   parsePresentationV5ProjectedNode,
+  parsePresentationV5Layout,
+  parsePresentationV5Master,
+  type PresentationV5Layout,
+  type PresentationV5Master,
   type PresentationV5Node,
   type PresentationV5Slide,
   type PresentationV5SlideTransition,
@@ -105,6 +109,27 @@ export interface PresentationDeckProjection {
   masterCount: number;
   layoutCount: number;
   assetCount: number;
+  /** Read-only master metadata used to group executable slide layouts. */
+  masters: PresentationMasterProjection[];
+  /** Read-only layout metadata. Placeholder bodies remain in the canonical snapshot. */
+  layouts: PresentationLayoutProjection[];
+}
+
+export interface PresentationMasterProjection {
+  id: string;
+  name: string;
+  placeholderCount: number;
+  /** Schema-complete read model, used only to construct typed entity commands. */
+  master: PresentationV5Master;
+}
+
+export interface PresentationLayoutProjection {
+  id: string;
+  masterId: string;
+  name: string;
+  placeholderCount: number;
+  /** Schema-complete read model, used only to construct typed entity commands. */
+  layout: PresentationV5Layout;
 }
 
 export interface PresentationSlideOutlineItem {
@@ -575,14 +600,50 @@ export function parsePresentationDeckProjection(value: unknown): PresentationDec
   const height = asFinitePositiveNumber(pageSpec.height, "presentation.data.pageSpec.height");
   const unit = pageSpec.unit;
   if (unit !== "emu" && unit !== "point") throw new Error("presentation.data.pageSpec.unit 无效");
+  const masters = asArray(record.masters, "presentation.data.masters").map((value, index) => {
+    const master = asRecord(value, `presentation.data.masters[${index}]`);
+    const entity = parsePresentationV5Master(master.master);
+    const id = asNonEmptyString(master.id, `presentation.data.masters[${index}].id`);
+    if (entity.id !== id) throw new Error(`presentation.data.masters[${index}].master.id 不一致`);
+    return {
+      id,
+      name: asString(master.name, `presentation.data.masters[${index}].name`),
+      placeholderCount: asNonNegativeInteger(master.placeholderCount, `presentation.data.masters[${index}].placeholderCount`),
+      master: entity,
+    };
+  });
+  const masterIds = new Set(masters.map((master) => master.id));
+  const layouts = asArray(record.layouts, "presentation.data.layouts").map((value, index) => {
+    const layout = asRecord(value, `presentation.data.layouts[${index}]`);
+    const masterId = asNonEmptyString(layout.masterId, `presentation.data.layouts[${index}].masterId`);
+    if (!masterIds.has(masterId)) throw new Error(`presentation.data.layouts[${index}] 引用不存在 master`);
+    const entity = parsePresentationV5Layout(layout.layout, masters.map((master) => master.master));
+    const id = asNonEmptyString(layout.id, `presentation.data.layouts[${index}].id`);
+    if (entity.id !== id || entity.masterId !== masterId) throw new Error(`presentation.data.layouts[${index}].layout 标识不一致`);
+    return {
+      id,
+      masterId,
+      name: asString(layout.name, `presentation.data.layouts[${index}].name`),
+      placeholderCount: asNonNegativeInteger(layout.placeholderCount, `presentation.data.layouts[${index}].placeholderCount`),
+      layout: entity,
+    };
+  });
+  if (masters.length !== asNonNegativeInteger(record.masterCount, "presentation.data.masterCount")) {
+    throw new Error("presentation.data.masterCount 与 masters 不一致");
+  }
+  if (layouts.length !== asNonNegativeInteger(record.layoutCount, "presentation.data.layoutCount")) {
+    throw new Error("presentation.data.layoutCount 与 layouts 不一致");
+  }
   return {
     pageSpec: { width, height, unit, ...(pageSpec.safeArea === undefined ? {} : { safeArea: pageSpec.safeArea }) },
     themeId: asNonEmptyString(record.themeId, "presentation.data.themeId"),
     themeName: asString(record.themeName, "presentation.data.themeName"),
     slideCount: asNonNegativeInteger(record.slideCount, "presentation.data.slideCount"),
-    masterCount: asNonNegativeInteger(record.masterCount, "presentation.data.masterCount"),
-    layoutCount: asNonNegativeInteger(record.layoutCount, "presentation.data.layoutCount"),
+    masterCount: masters.length,
+    layoutCount: layouts.length,
     assetCount: asNonNegativeInteger(record.assetCount, "presentation.data.assetCount"),
+    masters,
+    layouts,
   };
 }
 

@@ -7,11 +7,14 @@
 
 pub mod v5_projection;
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use oo_protocol::{EntityRef, Invalidation, MutationRecord};
 use oo_schema::presentation_v5::{
-    AnimationEntry, Deck, DeckTheme, ImageNode, MediaNode, NodeTransform, PresentationRichText,
-    SceneNode, SceneNodeKind, ShapeStyle, Slide, SlideBackground, SlidePageSpec, SlideTransition,
-    TextFrame, Timeline,
+    AnimationEntry, AssetRef, ChartSpec, ConnectorEndpoint, Deck, DeckTheme, ImageNode, MediaNode,
+    NodeTransform, PresentationRichText, SceneNode, SceneNodeKind, ShapeGeometry, ShapeStyle,
+    Slide, SlideBackground, SlideLayout, SlideMaster, SlidePageSpec, SlideTransition, TableCell,
+    TableCellStyle, TableNode, TextFrame, Timeline,
 };
 use serde::{Deserialize, Serialize};
 use v5_projection::{DeckProjection, ProjectionChange};
@@ -23,6 +26,16 @@ pub struct PresentationCommandBatch {
     pub commands: Vec<PresentationCommand>,
 }
 
+/// Stable table-cell identity inside one table node. For merged regions the
+/// only valid address is the region's top-left anchor; the engine rejects
+/// interior coordinates so UI hit testing cannot silently mutate a neighbour.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TableCellAddress {
+    pub row: u32,
+    pub column: u32,
+}
+
 /// Typed domain intents. There is intentionally no generic `updateNode(attrs)` or patch-shaped
 /// escape hatch: a node inspector must choose a concrete presentation capability.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,8 +45,38 @@ pub struct PresentationCommandBatch {
     rename_all_fields = "camelCase"
 )]
 pub enum PresentationCommand {
+    /// Registers a verified artifact asset with the canonical Deck before a node may reference it.
+    /// Uploading bytes alone never mutates the Deck or makes an image renderable.
+    RegisterAsset {
+        asset: AssetRef,
+    },
     SetPageSpec {
         page_spec: SlidePageSpec,
+    },
+    /// Adds a complete, schema-validated master. Master editing is entity based:
+    /// no renderer may mutate individual placeholder attributes through a patch.
+    CreateMaster {
+        master: SlideMaster,
+    },
+    /// Replaces exactly one master definition while retaining its stable id.
+    UpdateMaster {
+        master: SlideMaster,
+    },
+    /// Deletes an unused master. Layout references are rejected by the engine.
+    DeleteMaster {
+        master_id: String,
+    },
+    /// Adds a complete layout bound to one existing master.
+    CreateLayout {
+        layout: SlideLayout,
+    },
+    /// Replaces exactly one layout definition while retaining its stable id.
+    UpdateLayout {
+        layout: SlideLayout,
+    },
+    /// Deletes an unused layout. Slide and placeholder references are rejected.
+    DeleteLayout {
+        layout_id: String,
     },
     CreateSlide {
         slide: Slide,
@@ -44,6 +87,18 @@ pub enum PresentationCommand {
     },
     MoveSlide {
         slide_id: String,
+        index: usize,
+    },
+    /// Clones one slide inside the engine. The caller owns all newly allocated
+    /// ids, while the engine rewrites every same-slide reference atomically.
+    /// This keeps the browser from materialising and writing a mutable Deck.
+    DuplicateSlide {
+        source_slide_id: String,
+        slide_id: String,
+        order_key: String,
+        name: String,
+        node_id_map: Vec<PresentationIdMapping>,
+        animation_id_map: Vec<PresentationIdMapping>,
         index: usize,
     },
     InsertNode {
@@ -83,10 +138,110 @@ pub enum PresentationCommand {
         node_id: String,
         transform: NodeTransform,
     },
+    /// Persists a node lock. Pointer handlers read the canonical node value;
+    /// selection state is never used as an implicit lock.
+    SetNodeLocked {
+        slide_id: String,
+        node_id: String,
+        locked: bool,
+    },
+    /// Aligns a set of unlocked nodes against their shared selection bounds.
+    /// The engine, rather than a renderer, computes the resulting coordinates.
+    AlignNodes {
+        slide_id: String,
+        node_ids: Vec<String>,
+        alignment: NodeAlignment,
+    },
+    /// Distributes unlocked nodes while preserving the outer two selection bounds.
+    DistributeNodes {
+        slide_id: String,
+        node_ids: Vec<String>,
+        axis: NodeDistributionAxis,
+    },
     SetShapeStyle {
         slide_id: String,
         node_id: String,
         style: ShapeStyle,
+    },
+    /// Changes the primitive of an existing shape without recreating its node.
+    SetShapeGeometry {
+        slide_id: String,
+        node_id: String,
+        geometry: ShapeGeometry,
+    },
+    /// Replaces the complete, validated data specification of exactly one
+    /// chart.  The chart subset deliberately has no renderer-owned point or
+    /// OOXML patch data.
+    SetChartSpec {
+        slide_id: String,
+        node_id: String,
+        spec: ChartSpec,
+    },
+    /// Reconnects exactly one connector atomically. Rendering never persists
+    /// two half-updated endpoints as independent node patches.
+    SetConnectorEndpoints {
+        slide_id: String,
+        node_id: String,
+        start: ConnectorEndpoint,
+        end: ConnectorEndpoint,
+    },
+    /// Replaces the rich text body of exactly one table cell anchor. A merged
+    /// cell is addressed only by its top-left anchor, never by a renderer-side
+    /// hit-test coordinate.
+    SetTableCellContent {
+        slide_id: String,
+        node_id: String,
+        row: u32,
+        column: u32,
+        content: PresentationRichText,
+    },
+    /// Replaces one complete cell style across explicit table cell anchors.
+    /// The command is batch-safe without allowing an unbounded table patch.
+    SetTableCellStyle {
+        slide_id: String,
+        node_id: String,
+        cells: Vec<TableCellAddress>,
+        style: TableCellStyle,
+    },
+    /// Inserts complete grid rows. `index` is a grid boundary in `0..=rows`.
+    InsertTableRows {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+        count: u32,
+    },
+    /// Inserts complete grid columns. `index` is a grid boundary in `0..=columns`.
+    InsertTableColumns {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+        count: u32,
+    },
+    /// Deletes one grid row. A presentation table must retain at least one row.
+    DeleteTableRow {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+    },
+    /// Deletes one grid column. A presentation table must retain at least one column.
+    DeleteTableColumn {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+    },
+    /// Merges a rectangular, fully-unmerged-or-contained grid range.
+    MergeTableCells {
+        slide_id: String,
+        node_id: String,
+        start: TableCellAddress,
+        end: TableCellAddress,
+    },
+    /// Splits one merged cell by its canonical top-left anchor.
+    SplitTableCell {
+        slide_id: String,
+        node_id: String,
+        row: u32,
+        column: u32,
     },
     SetTextContent {
         slide_id: String,
@@ -148,6 +303,34 @@ pub enum PresentationCommand {
     },
 }
 
+/// An explicit source-to-target identity mapping used by clone commands.
+/// Vectors, rather than an untyped JSON object, keep the wire contract
+/// deterministic and let the engine reject duplicates and omissions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresentationIdMapping {
+    pub source_id: String,
+    pub target_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeAlignment {
+    Left,
+    Center,
+    Right,
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NodeDistributionAxis {
+    Horizontal,
+    Vertical,
+}
+
 /// Public, serializable facts emitted after a successful transaction. They are intentionally
 /// smaller than the private journal: consumers need invalidation facts, not retained snapshots.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -157,7 +340,31 @@ pub enum PresentationCommand {
     rename_all_fields = "camelCase"
 )]
 pub enum PresentationMutation {
+    AssetRegistered {
+        asset_id: String,
+    },
+    AssetUnregistered {
+        asset_id: String,
+    },
     PageSpecSet,
+    MasterCreated {
+        master_id: String,
+    },
+    MasterUpdated {
+        master_id: String,
+    },
+    MasterDeleted {
+        master_id: String,
+    },
+    LayoutCreated {
+        layout_id: String,
+    },
+    LayoutUpdated {
+        layout_id: String,
+    },
+    LayoutDeleted {
+        layout_id: String,
+    },
     SlideInserted {
         slide_id: String,
     },
@@ -165,6 +372,10 @@ pub enum PresentationMutation {
         slide_id: String,
     },
     SlideMoved {
+        slide_id: String,
+    },
+    SlideDuplicated {
+        source_slide_id: String,
         slide_id: String,
     },
     NodeInserted {
@@ -195,9 +406,78 @@ pub enum PresentationMutation {
         slide_id: String,
         node_id: String,
     },
+    NodeLockSet {
+        slide_id: String,
+        node_id: String,
+    },
+    NodesAligned {
+        slide_id: String,
+        node_ids: Vec<String>,
+    },
+    NodesDistributed {
+        slide_id: String,
+        node_ids: Vec<String>,
+    },
     ShapeStyleSet {
         slide_id: String,
         node_id: String,
+    },
+    ShapeGeometrySet {
+        slide_id: String,
+        node_id: String,
+    },
+    ChartSpecSet {
+        slide_id: String,
+        node_id: String,
+    },
+    ConnectorEndpointsSet {
+        slide_id: String,
+        node_id: String,
+    },
+    TableCellContentSet {
+        slide_id: String,
+        node_id: String,
+        row: u32,
+        column: u32,
+    },
+    TableCellStyleSet {
+        slide_id: String,
+        node_id: String,
+        cells: Vec<TableCellAddress>,
+    },
+    TableRowsInserted {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+        count: u32,
+    },
+    TableColumnsInserted {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+        count: u32,
+    },
+    TableRowDeleted {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+    },
+    TableColumnDeleted {
+        slide_id: String,
+        node_id: String,
+        index: u32,
+    },
+    TableCellsMerged {
+        slide_id: String,
+        node_id: String,
+        start: TableCellAddress,
+        end: TableCellAddress,
+    },
+    TableCellSplit {
+        slide_id: String,
+        node_id: String,
+        row: u32,
+        column: u32,
     },
     TextContentSet {
         slide_id: String,
@@ -245,10 +525,19 @@ pub enum PresentationMutation {
 impl PresentationMutation {
     pub fn type_id(&self) -> &'static str {
         match self {
+            Self::AssetRegistered { .. } => "presentation.assetRegistered",
+            Self::AssetUnregistered { .. } => "presentation.assetUnregistered",
             Self::PageSpecSet => "presentation.pageSpecSet",
+            Self::MasterCreated { .. } => "presentation.masterCreated",
+            Self::MasterUpdated { .. } => "presentation.masterUpdated",
+            Self::MasterDeleted { .. } => "presentation.masterDeleted",
+            Self::LayoutCreated { .. } => "presentation.layoutCreated",
+            Self::LayoutUpdated { .. } => "presentation.layoutUpdated",
+            Self::LayoutDeleted { .. } => "presentation.layoutDeleted",
             Self::SlideInserted { .. } => "presentation.slideInserted",
             Self::SlideDeleted { .. } => "presentation.slideDeleted",
             Self::SlideMoved { .. } => "presentation.slideMoved",
+            Self::SlideDuplicated { .. } => "presentation.slideDuplicated",
             Self::NodeInserted { .. } => "presentation.nodeInserted",
             Self::NodeDeleted { .. } => "presentation.nodeDeleted",
             Self::NodeMoved { .. } => "presentation.nodeMoved",
@@ -256,7 +545,21 @@ impl PresentationMutation {
             Self::NodesGrouped { .. } => "presentation.nodesGrouped",
             Self::NodesUngrouped { .. } => "presentation.nodesUngrouped",
             Self::NodeTransformSet { .. } => "presentation.nodeTransformSet",
+            Self::NodeLockSet { .. } => "presentation.nodeLockSet",
+            Self::NodesAligned { .. } => "presentation.nodesAligned",
+            Self::NodesDistributed { .. } => "presentation.nodesDistributed",
             Self::ShapeStyleSet { .. } => "presentation.shapeStyleSet",
+            Self::ShapeGeometrySet { .. } => "presentation.shapeGeometrySet",
+            Self::ChartSpecSet { .. } => "presentation.chartSpecSet",
+            Self::ConnectorEndpointsSet { .. } => "presentation.connectorEndpointsSet",
+            Self::TableCellContentSet { .. } => "presentation.tableCellContentSet",
+            Self::TableCellStyleSet { .. } => "presentation.tableCellStyleSet",
+            Self::TableRowsInserted { .. } => "presentation.tableRowsInserted",
+            Self::TableColumnsInserted { .. } => "presentation.tableColumnsInserted",
+            Self::TableRowDeleted { .. } => "presentation.tableRowDeleted",
+            Self::TableColumnDeleted { .. } => "presentation.tableColumnDeleted",
+            Self::TableCellsMerged { .. } => "presentation.tableCellsMerged",
+            Self::TableCellSplit { .. } => "presentation.tableCellSplit",
             Self::TextContentSet { .. } => "presentation.textContentSet",
             Self::TextFrameSet { .. } => "presentation.textFrameSet",
             Self::ImageConfigSet { .. } => "presentation.imageConfigSet",
@@ -292,17 +595,75 @@ impl PresentationMutation {
             entity_type: "presentation.node".into(),
             entity_id: format!("{slide_id}/{node_id}"),
         };
+        let master = |master_id: &str| EntityRef {
+            entity_type: "presentation.master".into(),
+            entity_id: master_id.into(),
+        };
+        let layout = |layout_id: &str| EntityRef {
+            entity_type: "presentation.layout".into(),
+            entity_id: layout_id.into(),
+        };
         match self {
+            Self::AssetRegistered { asset_id } | Self::AssetUnregistered { asset_id } => (
+                vec![EntityRef {
+                    entity_type: "presentation.asset".into(),
+                    entity_id: asset_id.clone(),
+                }],
+                vec![deck()],
+                true,
+            ),
             Self::PageSpecSet | Self::ThemeSet => (vec![deck()], vec![deck()], true),
+            Self::MasterCreated { master_id }
+            | Self::MasterUpdated { master_id }
+            | Self::MasterDeleted { master_id } => (vec![master(master_id)], vec![deck()], true),
+            Self::LayoutCreated { layout_id }
+            | Self::LayoutUpdated { layout_id }
+            | Self::LayoutDeleted { layout_id } => (vec![layout(layout_id)], vec![deck()], true),
             Self::SlideInserted { slide_id }
             | Self::SlideDeleted { slide_id }
             | Self::SlideMoved { slide_id } => (vec![slide(slide_id)], vec![deck()], true),
+            Self::SlideDuplicated {
+                source_slide_id,
+                slide_id,
+            } => (
+                vec![slide(source_slide_id), slide(slide_id)],
+                vec![deck()],
+                true,
+            ),
             Self::NodeInserted { slide_id, node_id }
             | Self::NodeDeleted { slide_id, node_id }
             | Self::NodeMoved { slide_id, node_id }
             | Self::NodeReordered { slide_id, node_id }
             | Self::NodeTransformSet { slide_id, node_id }
+            | Self::NodeLockSet { slide_id, node_id }
             | Self::ShapeStyleSet { slide_id, node_id }
+            | Self::ShapeGeometrySet { slide_id, node_id }
+            | Self::ChartSpecSet { slide_id, node_id }
+            | Self::ConnectorEndpointsSet { slide_id, node_id }
+            | Self::TableCellContentSet {
+                slide_id, node_id, ..
+            }
+            | Self::TableCellStyleSet {
+                slide_id, node_id, ..
+            }
+            | Self::TableRowsInserted {
+                slide_id, node_id, ..
+            }
+            | Self::TableColumnsInserted {
+                slide_id, node_id, ..
+            }
+            | Self::TableRowDeleted {
+                slide_id, node_id, ..
+            }
+            | Self::TableColumnDeleted {
+                slide_id, node_id, ..
+            }
+            | Self::TableCellsMerged {
+                slide_id, node_id, ..
+            }
+            | Self::TableCellSplit {
+                slide_id, node_id, ..
+            }
             | Self::TextContentSet { slide_id, node_id }
             | Self::TextFrameSet { slide_id, node_id }
             | Self::ImageConfigSet { slide_id, node_id }
@@ -316,6 +677,16 @@ impl PresentationMutation {
                         | Self::NodeMoved { .. }
                         | Self::NodeReordered { .. }
                 ),
+            ),
+            Self::NodesAligned { slide_id, node_ids }
+            | Self::NodesDistributed { slide_id, node_ids } => (
+                node_ids
+                    .iter()
+                    .map(|node_id| node(slide_id, node_id))
+                    .chain(std::iter::once(slide(slide_id)))
+                    .collect(),
+                vec![deck()],
+                false,
             ),
             Self::NodesGrouped { slide_id, group_id }
             | Self::NodesUngrouped { slide_id, group_id } => (
@@ -355,7 +726,26 @@ struct NodePosition {
 
 #[derive(Debug, Clone)]
 enum InverseMutation {
+    RemoveAsset {
+        asset_id: String,
+    },
     SetPageSpec(SlidePageSpec),
+    RemoveMaster {
+        master_id: String,
+    },
+    RestoreMaster {
+        master: SlideMaster,
+        index: usize,
+    },
+    SetMaster(SlideMaster),
+    RemoveLayout {
+        layout_id: String,
+    },
+    RestoreLayout {
+        layout: SlideLayout,
+        index: usize,
+    },
+    SetLayout(SlideLayout),
     RemoveSlide {
         slide_id: String,
     },
@@ -397,10 +787,50 @@ enum InverseMutation {
         node_id: String,
         transform: NodeTransform,
     },
+    SetNodeLocked {
+        slide_id: String,
+        node_id: String,
+        locked: bool,
+    },
+    RestoreNodeTransforms {
+        slide_id: String,
+        transforms: Vec<(String, NodeTransform)>,
+    },
     SetShapeStyle {
         slide_id: String,
         node_id: String,
         style: ShapeStyle,
+    },
+    SetShapeGeometry {
+        slide_id: String,
+        node_id: String,
+        geometry: ShapeGeometry,
+    },
+    SetChartSpec {
+        slide_id: String,
+        node_id: String,
+        spec: ChartSpec,
+    },
+    SetConnectorEndpoints {
+        slide_id: String,
+        node_id: String,
+        start: ConnectorEndpoint,
+        end: ConnectorEndpoint,
+    },
+    RestoreTableCellContents {
+        slide_id: String,
+        node_id: String,
+        cells: Vec<(TableCellAddress, PresentationRichText)>,
+    },
+    RestoreTableCellStyles {
+        slide_id: String,
+        node_id: String,
+        cells: Vec<(TableCellAddress, TableCellStyle)>,
+    },
+    RestoreTableNode {
+        slide_id: String,
+        node_id: String,
+        table: TableNode,
     },
     SetTextFrame {
         slide_id: String,
@@ -637,8 +1067,30 @@ fn thumbnail_projection_changes(mutations: &[PresentationMutation]) -> Vec<Proje
     mutations
         .iter()
         .map(|mutation| match mutation {
+            // An asset by itself has no visual footprint. Its companion InsertNode mutation
+            // invalidates the owning slide; this only targets existing asset consumers.
+            PresentationMutation::AssetRegistered { asset_id }
+            | PresentationMutation::AssetUnregistered { asset_id } => {
+                ProjectionChange::AssetChanged {
+                    asset_id: asset_id.clone(),
+                }
+            }
             PresentationMutation::PageSpecSet | PresentationMutation::ThemeSet => {
                 ProjectionChange::DeckThemeChanged
+            }
+            PresentationMutation::MasterCreated { master_id }
+            | PresentationMutation::MasterUpdated { master_id }
+            | PresentationMutation::MasterDeleted { master_id } => {
+                ProjectionChange::MasterChanged {
+                    master_id: master_id.clone(),
+                }
+            }
+            PresentationMutation::LayoutCreated { layout_id }
+            | PresentationMutation::LayoutUpdated { layout_id }
+            | PresentationMutation::LayoutDeleted { layout_id } => {
+                ProjectionChange::LayoutChanged {
+                    layout_id: layout_id.clone(),
+                }
             }
             PresentationMutation::SlideDeleted { slide_id } => ProjectionChange::SlideRemoved {
                 slide_id: slide_id.clone(),
@@ -649,6 +1101,11 @@ fn thumbnail_projection_changes(mutations: &[PresentationMutation]) -> Vec<Proje
             | PresentationMutation::SlideBackgroundSet { slide_id }
             | PresentationMutation::SlideLayoutSet { slide_id }
             | PresentationMutation::SlideTransitionSet { slide_id } => {
+                ProjectionChange::SlideChanged {
+                    slide_id: slide_id.clone(),
+                }
+            }
+            PresentationMutation::SlideDuplicated { slide_id, .. } => {
                 ProjectionChange::SlideChanged {
                     slide_id: slide_id.clone(),
                 }
@@ -667,7 +1124,21 @@ fn thumbnail_projection_changes(mutations: &[PresentationMutation]) -> Vec<Proje
             | PresentationMutation::NodesGrouped { slide_id, .. }
             | PresentationMutation::NodesUngrouped { slide_id, .. }
             | PresentationMutation::NodeTransformSet { slide_id, .. }
+            | PresentationMutation::NodeLockSet { slide_id, .. }
+            | PresentationMutation::NodesAligned { slide_id, .. }
+            | PresentationMutation::NodesDistributed { slide_id, .. }
             | PresentationMutation::ShapeStyleSet { slide_id, .. }
+            | PresentationMutation::ShapeGeometrySet { slide_id, .. }
+            | PresentationMutation::ChartSpecSet { slide_id, .. }
+            | PresentationMutation::ConnectorEndpointsSet { slide_id, .. }
+            | PresentationMutation::TableCellContentSet { slide_id, .. }
+            | PresentationMutation::TableCellStyleSet { slide_id, .. }
+            | PresentationMutation::TableRowsInserted { slide_id, .. }
+            | PresentationMutation::TableColumnsInserted { slide_id, .. }
+            | PresentationMutation::TableRowDeleted { slide_id, .. }
+            | PresentationMutation::TableColumnDeleted { slide_id, .. }
+            | PresentationMutation::TableCellsMerged { slide_id, .. }
+            | PresentationMutation::TableCellSplit { slide_id, .. }
             | PresentationMutation::TextContentSet { slide_id, .. }
             | PresentationMutation::TextFrameSet { slide_id, .. }
             | PresentationMutation::ImageConfigSet { slide_id, .. }
@@ -685,11 +1156,116 @@ fn apply_command(
     command: PresentationCommand,
 ) -> Result<(InverseMutation, PresentationMutation), PresentationEngineError> {
     match command {
+        PresentationCommand::RegisterAsset { asset } => {
+            if deck
+                .assets
+                .iter()
+                .any(|current| current.asset_id == asset.asset_id)
+            {
+                return Err(PresentationEngineError::DuplicateAsset(asset.asset_id));
+            }
+            let asset_id = asset.asset_id.clone();
+            deck.assets.push(asset);
+            Ok((
+                InverseMutation::RemoveAsset {
+                    asset_id: asset_id.clone(),
+                },
+                PresentationMutation::AssetRegistered { asset_id },
+            ))
+        }
         PresentationCommand::SetPageSpec { page_spec } => {
             let previous = std::mem::replace(&mut deck.page_spec, page_spec);
             Ok((
                 InverseMutation::SetPageSpec(previous),
                 PresentationMutation::PageSpecSet,
+            ))
+        }
+        PresentationCommand::CreateMaster { master } => {
+            if deck.masters.iter().any(|current| current.id == master.id) {
+                return Err(PresentationEngineError::DuplicateMaster(master.id));
+            }
+            let master_id = master.id.clone();
+            deck.masters.push(master);
+            Ok((
+                InverseMutation::RemoveMaster {
+                    master_id: master_id.clone(),
+                },
+                PresentationMutation::MasterCreated { master_id },
+            ))
+        }
+        PresentationCommand::UpdateMaster { master } => {
+            let index = master_index(deck, &master.id)?;
+            let previous = std::mem::replace(&mut deck.masters[index], master);
+            let master_id = previous.id.clone();
+            Ok((
+                InverseMutation::SetMaster(previous),
+                PresentationMutation::MasterUpdated { master_id },
+            ))
+        }
+        PresentationCommand::DeleteMaster { master_id } => {
+            if deck
+                .layouts
+                .iter()
+                .any(|layout| layout.master_id == master_id)
+            {
+                return Err(PresentationEngineError::MasterInUse(master_id));
+            }
+            let index = master_index(deck, &master_id)?;
+            let master = deck.masters.remove(index);
+            Ok((
+                InverseMutation::RestoreMaster { master, index },
+                PresentationMutation::MasterDeleted { master_id },
+            ))
+        }
+        PresentationCommand::CreateLayout { layout } => {
+            if deck.layouts.iter().any(|current| current.id == layout.id) {
+                return Err(PresentationEngineError::DuplicateLayout(layout.id));
+            }
+            if !deck
+                .masters
+                .iter()
+                .any(|master| master.id == layout.master_id)
+            {
+                return Err(PresentationEngineError::MissingMaster(layout.master_id));
+            }
+            let layout_id = layout.id.clone();
+            deck.layouts.push(layout);
+            Ok((
+                InverseMutation::RemoveLayout {
+                    layout_id: layout_id.clone(),
+                },
+                PresentationMutation::LayoutCreated { layout_id },
+            ))
+        }
+        PresentationCommand::UpdateLayout { layout } => {
+            if !deck
+                .masters
+                .iter()
+                .any(|master| master.id == layout.master_id)
+            {
+                return Err(PresentationEngineError::MissingMaster(layout.master_id));
+            }
+            let index = layout_index(deck, &layout.id)?;
+            let previous = std::mem::replace(&mut deck.layouts[index], layout);
+            let layout_id = previous.id.clone();
+            Ok((
+                InverseMutation::SetLayout(previous),
+                PresentationMutation::LayoutUpdated { layout_id },
+            ))
+        }
+        PresentationCommand::DeleteLayout { layout_id } => {
+            if deck
+                .slides
+                .iter()
+                .any(|slide| slide.layout_id.as_deref() == Some(layout_id.as_str()))
+            {
+                return Err(PresentationEngineError::LayoutInUse(layout_id));
+            }
+            let index = layout_index(deck, &layout_id)?;
+            let layout = deck.layouts.remove(index);
+            Ok((
+                InverseMutation::RestoreLayout { layout, index },
+                PresentationMutation::LayoutDeleted { layout_id },
             ))
         }
         PresentationCommand::CreateSlide { slide, index } => {
@@ -725,6 +1301,43 @@ fn apply_command(
                     index: old_index,
                 },
                 PresentationMutation::SlideMoved { slide_id },
+            ))
+        }
+        PresentationCommand::DuplicateSlide {
+            source_slide_id,
+            slide_id,
+            order_key,
+            name,
+            node_id_map,
+            animation_id_map,
+            index,
+        } => {
+            if deck.slides.iter().any(|value| value.id == slide_id) {
+                return Err(PresentationEngineError::DuplicateSlide(slide_id));
+            }
+            let source = deck.slides[slide_index(deck, &source_slide_id)?].clone();
+            let mut cloned = clone_slide(
+                source,
+                slide_id.clone(),
+                order_key,
+                name,
+                node_id_map,
+                animation_id_map,
+            )?;
+            // The clone helper has rewritten all fields that carry same-slide
+            // identities; retain source order keys and all asset references.
+            // The target id exists only after this single insertion succeeds.
+            let position = index.min(deck.slides.len());
+            cloned.id = slide_id.clone();
+            deck.slides.insert(position, cloned);
+            Ok((
+                InverseMutation::RemoveSlide {
+                    slide_id: slide_id.clone(),
+                },
+                PresentationMutation::SlideDuplicated {
+                    source_slide_id,
+                    slide_id,
+                },
             ))
         }
         PresentationCommand::InsertNode {
@@ -910,6 +1523,53 @@ fn apply_command(
                 PresentationMutation::NodeTransformSet { slide_id, node_id },
             ))
         }
+        PresentationCommand::SetNodeLocked {
+            slide_id,
+            node_id,
+            locked,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let previous = std::mem::replace(&mut slide.nodes[index].locked, locked);
+            Ok((
+                InverseMutation::SetNodeLocked {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    locked: previous,
+                },
+                PresentationMutation::NodeLockSet { slide_id, node_id },
+            ))
+        }
+        PresentationCommand::AlignNodes {
+            slide_id,
+            node_ids,
+            alignment,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let previous = align_nodes(slide, &node_ids, alignment)?;
+            Ok((
+                InverseMutation::RestoreNodeTransforms {
+                    slide_id: slide_id.clone(),
+                    transforms: previous,
+                },
+                PresentationMutation::NodesAligned { slide_id, node_ids },
+            ))
+        }
+        PresentationCommand::DistributeNodes {
+            slide_id,
+            node_ids,
+            axis,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let previous = distribute_nodes(slide, &node_ids, axis)?;
+            Ok((
+                InverseMutation::RestoreNodeTransforms {
+                    slide_id: slide_id.clone(),
+                    transforms: previous,
+                },
+                PresentationMutation::NodesDistributed { slide_id, node_ids },
+            ))
+        }
         PresentationCommand::SetShapeStyle {
             slide_id,
             node_id,
@@ -928,6 +1588,272 @@ fn apply_command(
                     style: previous,
                 },
                 PresentationMutation::ShapeStyleSet { slide_id, node_id },
+            ))
+        }
+        PresentationCommand::SetShapeGeometry {
+            slide_id,
+            node_id,
+            geometry,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Shape(shape) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotShapeNode(node_id));
+            };
+            let previous = std::mem::replace(&mut shape.geometry, geometry);
+            Ok((
+                InverseMutation::SetShapeGeometry {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    geometry: previous,
+                },
+                PresentationMutation::ShapeGeometrySet { slide_id, node_id },
+            ))
+        }
+        PresentationCommand::SetChartSpec {
+            slide_id,
+            node_id,
+            spec,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Chart(chart) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotChartNode(node_id));
+            };
+            let previous = std::mem::replace(&mut chart.spec, spec);
+            Ok((
+                InverseMutation::SetChartSpec {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    spec: previous,
+                },
+                PresentationMutation::ChartSpecSet { slide_id, node_id },
+            ))
+        }
+        PresentationCommand::SetConnectorEndpoints {
+            slide_id,
+            node_id,
+            start,
+            end,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            validate_connector_endpoints(slide, &node_id, &start, &end)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Connector(connector) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotConnectorNode(node_id));
+            };
+            let previous_start = std::mem::replace(&mut connector.start, start);
+            let previous_end = std::mem::replace(&mut connector.end, end);
+            Ok((
+                InverseMutation::SetConnectorEndpoints {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    start: previous_start,
+                    end: previous_end,
+                },
+                PresentationMutation::ConnectorEndpointsSet { slide_id, node_id },
+            ))
+        }
+        PresentationCommand::SetTableCellContent {
+            slide_id,
+            node_id,
+            row,
+            column,
+            content,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let table = table_mut(slide, &node_id)?;
+            let index = table_cell_index(table, row, column, &node_id)?;
+            let previous = std::mem::replace(&mut table.cells[index].content, content);
+            Ok((
+                InverseMutation::RestoreTableCellContents {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    cells: vec![(TableCellAddress { row, column }, previous)],
+                },
+                PresentationMutation::TableCellContentSet {
+                    slide_id,
+                    node_id,
+                    row,
+                    column,
+                },
+            ))
+        }
+        PresentationCommand::SetTableCellStyle {
+            slide_id,
+            node_id,
+            cells,
+            style,
+        } => {
+            if cells.is_empty() {
+                return Err(PresentationEngineError::EmptyTableCellSelection);
+            }
+            let slide = slide_mut(deck, &slide_id)?;
+            let table = table_mut(slide, &node_id)?;
+            let mut seen = std::collections::HashSet::new();
+            let mut previous = Vec::with_capacity(cells.len());
+            for address in &cells {
+                if !seen.insert((address.row, address.column)) {
+                    return Err(PresentationEngineError::DuplicateTableCellAddress {
+                        row: address.row,
+                        column: address.column,
+                    });
+                }
+                let index = table_cell_index(table, address.row, address.column, &node_id)?;
+                previous.push((
+                    address.clone(),
+                    std::mem::replace(&mut table.cells[index].style, style.clone()),
+                ));
+            }
+            Ok((
+                InverseMutation::RestoreTableCellStyles {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    cells: previous,
+                },
+                PresentationMutation::TableCellStyleSet {
+                    slide_id,
+                    node_id,
+                    cells,
+                },
+            ))
+        }
+        PresentationCommand::InsertTableRows {
+            slide_id,
+            node_id,
+            index,
+            count,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            validate_table_insert(index, count, table.rows, "row")?;
+            let previous = table.clone();
+            insert_table_rows(table, index, count);
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableRowsInserted {
+                    slide_id,
+                    node_id,
+                    index,
+                    count,
+                },
+            ))
+        }
+        PresentationCommand::InsertTableColumns {
+            slide_id,
+            node_id,
+            index,
+            count,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            validate_table_insert(index, count, table.columns, "column")?;
+            let previous = table.clone();
+            insert_table_columns(table, index, count);
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableColumnsInserted {
+                    slide_id,
+                    node_id,
+                    index,
+                    count,
+                },
+            ))
+        }
+        PresentationCommand::DeleteTableRow {
+            slide_id,
+            node_id,
+            index,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            validate_table_delete(index, table.rows, "row")?;
+            let previous = table.clone();
+            delete_table_row(table, index);
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableRowDeleted {
+                    slide_id,
+                    node_id,
+                    index,
+                },
+            ))
+        }
+        PresentationCommand::DeleteTableColumn {
+            slide_id,
+            node_id,
+            index,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            validate_table_delete(index, table.columns, "column")?;
+            let previous = table.clone();
+            delete_table_column(table, index);
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableColumnDeleted {
+                    slide_id,
+                    node_id,
+                    index,
+                },
+            ))
+        }
+        PresentationCommand::MergeTableCells {
+            slide_id,
+            node_id,
+            start,
+            end,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            let previous = table.clone();
+            merge_table_cells(table, &start, &end, &node_id)?;
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableCellsMerged {
+                    slide_id,
+                    node_id,
+                    start,
+                    end,
+                },
+            ))
+        }
+        PresentationCommand::SplitTableCell {
+            slide_id,
+            node_id,
+            row,
+            column,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            let previous = table.clone();
+            split_table_cell(table, row, column, &node_id)?;
+            Ok((
+                InverseMutation::RestoreTableNode {
+                    slide_id: slide_id.clone(),
+                    node_id: node_id.clone(),
+                    table: previous,
+                },
+                PresentationMutation::TableCellSplit {
+                    slide_id,
+                    node_id,
+                    row,
+                    column,
+                },
             ))
         }
         PresentationCommand::SetTextContent {
@@ -1162,9 +2088,148 @@ fn apply_command(
     }
 }
 
+/// Creates a target slide only from canonical source data.  The mapping is
+/// deliberately exhaustive: a clone cannot accidentally retain references to
+/// a source-slide node or animation id.
+fn clone_slide(
+    mut source: Slide,
+    slide_id: String,
+    order_key: String,
+    name: String,
+    node_id_map: Vec<PresentationIdMapping>,
+    animation_id_map: Vec<PresentationIdMapping>,
+) -> Result<Slide, PresentationEngineError> {
+    let node_ids = validate_duplicate_id_map(
+        "node",
+        source.nodes.iter().map(|node| node.id.as_str()),
+        node_id_map,
+    )?;
+    let animation_ids = validate_duplicate_id_map(
+        "animation",
+        source
+            .timeline
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str()),
+        animation_id_map,
+    )?;
+
+    for node in &mut source.nodes {
+        let previous_id = node.id.clone();
+        node.id = node_ids[&previous_id].clone();
+        node.parent_id = node
+            .parent_id
+            .as_ref()
+            .map(|parent_id| node_ids[parent_id].clone());
+        if let SceneNodeKind::Connector(connector) = &mut node.kind {
+            rewrite_connector_endpoint(&mut connector.start, &node_ids);
+            rewrite_connector_endpoint(&mut connector.end, &node_ids);
+        }
+    }
+    for entry in &mut source.timeline.entries {
+        let previous_id = entry.id.clone();
+        entry.id = animation_ids[&previous_id].clone();
+        entry.target_node_id = node_ids[&entry.target_node_id].clone();
+    }
+
+    source.id = slide_id;
+    source.order_key = order_key;
+    source.name = name;
+    Ok(source)
+}
+
+fn rewrite_connector_endpoint(
+    endpoint: &mut ConnectorEndpoint,
+    node_ids: &BTreeMap<String, String>,
+) {
+    if let ConnectorEndpoint::Node { node_id, .. } = endpoint {
+        *node_id = node_ids[node_id].clone();
+    }
+}
+
+fn validate_duplicate_id_map<'a>(
+    kind: &str,
+    expected_ids: impl IntoIterator<Item = &'a str>,
+    mappings: Vec<PresentationIdMapping>,
+) -> Result<BTreeMap<String, String>, PresentationEngineError> {
+    let expected = expected_ids
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let mut result = BTreeMap::new();
+    let mut target_ids = BTreeSet::new();
+    for mapping in mappings {
+        if mapping.source_id.is_empty() || mapping.target_id.is_empty() {
+            return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+                format!("{kind} 映射 id 不能为空"),
+            ));
+        }
+        if !expected.contains(&mapping.source_id) {
+            return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+                format!("{kind} 映射包含不存在的 sourceId：{}", mapping.source_id),
+            ));
+        }
+        if result
+            .insert(mapping.source_id.clone(), mapping.target_id.clone())
+            .is_some()
+        {
+            return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+                format!("{kind} 映射重复 sourceId：{}", mapping.source_id),
+            ));
+        }
+        if !target_ids.insert(mapping.target_id.clone()) {
+            return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+                format!("{kind} 映射重复 targetId：{}", mapping.target_id),
+            ));
+        }
+    }
+    if result.keys().collect::<BTreeSet<_>>() != expected.iter().collect::<BTreeSet<_>>() {
+        return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+            format!("{kind} 映射必须覆盖 source 中全部 id"),
+        ));
+    }
+    if target_ids
+        .iter()
+        .any(|target_id| expected.contains(target_id))
+    {
+        return Err(PresentationEngineError::InvalidDuplicateSlideMapping(
+            format!("{kind} 映射 targetId 不能复用 source id"),
+        ));
+    }
+    Ok(result)
+}
+
 fn apply_inverse(deck: &mut Deck, inverse: InverseMutation) -> Result<(), PresentationEngineError> {
     match inverse {
+        InverseMutation::RemoveAsset { asset_id } => {
+            let index = deck
+                .assets
+                .iter()
+                .position(|asset| asset.asset_id == asset_id)
+                .ok_or_else(|| PresentationEngineError::MissingAsset(asset_id.clone()))?;
+            deck.assets.remove(index);
+        }
         InverseMutation::SetPageSpec(page_spec) => deck.page_spec = page_spec,
+        InverseMutation::RemoveMaster { master_id } => {
+            deck.masters.remove(master_index(deck, &master_id)?);
+        }
+        InverseMutation::RestoreMaster { master, index } => {
+            deck.masters.insert(index.min(deck.masters.len()), master);
+        }
+        InverseMutation::SetMaster(master) => {
+            let index = master_index(deck, &master.id)?;
+            deck.masters[index] = master;
+        }
+        InverseMutation::RemoveLayout { layout_id } => {
+            deck.layouts.remove(layout_index(deck, &layout_id)?);
+        }
+        InverseMutation::RestoreLayout { layout, index } => {
+            deck.layouts.insert(index.min(deck.layouts.len()), layout);
+        }
+        InverseMutation::SetLayout(layout) => {
+            let index = layout_index(deck, &layout.id)?;
+            deck.layouts[index] = layout;
+        }
         InverseMutation::RemoveSlide { slide_id } => {
             deck.slides.remove(slide_index(deck, &slide_id)?);
         }
@@ -1226,6 +2291,25 @@ fn apply_inverse(deck: &mut Deck, inverse: InverseMutation) -> Result<(), Presen
             let index = node_index(slide, &node_id)?;
             slide.nodes[index].transform = transform;
         }
+        InverseMutation::SetNodeLocked {
+            slide_id,
+            node_id,
+            locked,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            slide.nodes[index].locked = locked;
+        }
+        InverseMutation::RestoreNodeTransforms {
+            slide_id,
+            transforms,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            for (node_id, transform) in transforms {
+                let index = node_index(slide, &node_id)?;
+                slide.nodes[index].transform = transform;
+            }
+        }
         InverseMutation::SetShapeStyle {
             slide_id,
             node_id,
@@ -1237,6 +2321,73 @@ fn apply_inverse(deck: &mut Deck, inverse: InverseMutation) -> Result<(), Presen
                 return Err(PresentationEngineError::NotShapeNode(node_id));
             };
             shape.style = style;
+        }
+        InverseMutation::SetShapeGeometry {
+            slide_id,
+            node_id,
+            geometry,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Shape(shape) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotShapeNode(node_id));
+            };
+            shape.geometry = geometry;
+        }
+        InverseMutation::SetChartSpec {
+            slide_id,
+            node_id,
+            spec,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Chart(chart) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotChartNode(node_id));
+            };
+            chart.spec = spec;
+        }
+        InverseMutation::SetConnectorEndpoints {
+            slide_id,
+            node_id,
+            start,
+            end,
+        } => {
+            let slide = slide_mut(deck, &slide_id)?;
+            let index = node_index(slide, &node_id)?;
+            let SceneNodeKind::Connector(connector) = &mut slide.nodes[index].kind else {
+                return Err(PresentationEngineError::NotConnectorNode(node_id));
+            };
+            connector.start = start;
+            connector.end = end;
+        }
+        InverseMutation::RestoreTableCellContents {
+            slide_id,
+            node_id,
+            cells,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            for (address, content) in cells {
+                let index = table_cell_index(table, address.row, address.column, &node_id)?;
+                table.cells[index].content = content;
+            }
+        }
+        InverseMutation::RestoreTableCellStyles {
+            slide_id,
+            node_id,
+            cells,
+        } => {
+            let table = table_mut(slide_mut(deck, &slide_id)?, &node_id)?;
+            for (address, style) in cells {
+                let index = table_cell_index(table, address.row, address.column, &node_id)?;
+                table.cells[index].style = style;
+            }
+        }
+        InverseMutation::RestoreTableNode {
+            slide_id,
+            node_id,
+            table,
+        } => {
+            *table_mut(slide_mut(deck, &slide_id)?, &node_id)? = table;
         }
         InverseMutation::SetTextFrame {
             slide_id,
@@ -1314,6 +2465,18 @@ fn slide_index(deck: &Deck, id: &str) -> Result<usize, PresentationEngineError> 
         .position(|slide| slide.id == id)
         .ok_or_else(|| PresentationEngineError::MissingSlide(id.into()))
 }
+fn master_index(deck: &Deck, id: &str) -> Result<usize, PresentationEngineError> {
+    deck.masters
+        .iter()
+        .position(|master| master.id == id)
+        .ok_or_else(|| PresentationEngineError::MissingMaster(id.into()))
+}
+fn layout_index(deck: &Deck, id: &str) -> Result<usize, PresentationEngineError> {
+    deck.layouts
+        .iter()
+        .position(|layout| layout.id == id)
+        .ok_or_else(|| PresentationEngineError::MissingLayout(id.into()))
+}
 fn slide_mut<'a>(deck: &'a mut Deck, id: &str) -> Result<&'a mut Slide, PresentationEngineError> {
     let index = slide_index(deck, id)?;
     Ok(&mut deck.slides[index])
@@ -1324,6 +2487,394 @@ fn node_index(slide: &Slide, id: &str) -> Result<usize, PresentationEngineError>
         .iter()
         .position(|node| node.id == id)
         .ok_or_else(|| PresentationEngineError::MissingNode(id.into()))
+}
+
+fn table_mut<'a>(
+    slide: &'a mut Slide,
+    node_id: &str,
+) -> Result<&'a mut TableNode, PresentationEngineError> {
+    let index = node_index(slide, node_id)?;
+    let SceneNodeKind::Table(table) = &mut slide.nodes[index].kind else {
+        return Err(PresentationEngineError::NotTableNode(node_id.into()));
+    };
+    Ok(table)
+}
+
+/// Resolves an anchor only. A coordinate covered by a merged cell but not its
+/// anchor is intentionally rejected, forcing callers to preserve canonical
+/// merged-cell identity instead of guessing from visual grid coordinates.
+fn table_cell_index(
+    table: &TableNode,
+    row: u32,
+    column: u32,
+    node_id: &str,
+) -> Result<usize, PresentationEngineError> {
+    table
+        .cells
+        .iter()
+        .position(|cell| cell.row == row && cell.column == column)
+        .ok_or_else(|| PresentationEngineError::MissingTableCell {
+            node_id: node_id.into(),
+            row,
+            column,
+        })
+}
+
+fn validate_table_insert(
+    index: u32,
+    count: u32,
+    extent: u32,
+    axis: &str,
+) -> Result<(), PresentationEngineError> {
+    if count == 0 || index > extent {
+        return Err(PresentationEngineError::InvalidTableStructure(format!(
+            "{axis} insert index/count 无效"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_table_delete(
+    index: u32,
+    extent: u32,
+    axis: &str,
+) -> Result<(), PresentationEngineError> {
+    if extent <= 1 || index >= extent {
+        return Err(PresentationEngineError::InvalidTableStructure(format!(
+            "{axis} delete index 无效或会删除最后一个 {axis}"
+        )));
+    }
+    Ok(())
+}
+
+fn canonicalize_table_cells(table: &mut TableNode) {
+    let mut occupied = std::collections::HashSet::new();
+    for cell in &table.cells {
+        for row in cell.row..cell.row + cell.row_span {
+            for column in cell.column..cell.column + cell.column_span {
+                occupied.insert((row, column));
+            }
+        }
+    }
+    for row in 0..table.rows {
+        for column in 0..table.columns {
+            if !occupied.contains(&(row, column)) {
+                table.cells.push(TableCell {
+                    row,
+                    column,
+                    row_span: 1,
+                    column_span: 1,
+                    content: PresentationRichText::default(),
+                    style: TableCellStyle::default(),
+                });
+            }
+        }
+    }
+    table.cells.sort_by_key(|cell| (cell.row, cell.column));
+}
+
+fn insert_table_rows(table: &mut TableNode, index: u32, count: u32) {
+    for cell in &mut table.cells {
+        if cell.row >= index {
+            cell.row += count;
+        } else if index < cell.row + cell.row_span {
+            cell.row_span += count;
+        }
+    }
+    table.rows += count;
+    canonicalize_table_cells(table);
+}
+
+fn insert_table_columns(table: &mut TableNode, index: u32, count: u32) {
+    for cell in &mut table.cells {
+        if cell.column >= index {
+            cell.column += count;
+        } else if index < cell.column + cell.column_span {
+            cell.column_span += count;
+        }
+    }
+    table.columns += count;
+    canonicalize_table_cells(table);
+}
+
+fn delete_table_row(table: &mut TableNode, index: u32) {
+    let mut retained = Vec::with_capacity(table.cells.len());
+    for mut cell in std::mem::take(&mut table.cells) {
+        let end = cell.row + cell.row_span;
+        if cell.row > index {
+            cell.row -= 1;
+            retained.push(cell);
+        } else if cell.row == index {
+            if cell.row_span > 1 {
+                cell.row_span -= 1;
+                retained.push(cell);
+            }
+        } else if end > index {
+            cell.row_span -= 1;
+            retained.push(cell);
+        } else {
+            retained.push(cell);
+        }
+    }
+    table.rows -= 1;
+    table.cells = retained;
+    canonicalize_table_cells(table);
+}
+
+fn delete_table_column(table: &mut TableNode, index: u32) {
+    let mut retained = Vec::with_capacity(table.cells.len());
+    for mut cell in std::mem::take(&mut table.cells) {
+        let end = cell.column + cell.column_span;
+        if cell.column > index {
+            cell.column -= 1;
+            retained.push(cell);
+        } else if cell.column == index {
+            if cell.column_span > 1 {
+                cell.column_span -= 1;
+                retained.push(cell);
+            }
+        } else if end > index {
+            cell.column_span -= 1;
+            retained.push(cell);
+        } else {
+            retained.push(cell);
+        }
+    }
+    table.columns -= 1;
+    table.cells = retained;
+    canonicalize_table_cells(table);
+}
+
+fn merge_table_cells(
+    table: &mut TableNode,
+    start: &TableCellAddress,
+    end: &TableCellAddress,
+    node_id: &str,
+) -> Result<(), PresentationEngineError> {
+    if start.row > end.row
+        || start.column > end.column
+        || end.row >= table.rows
+        || end.column >= table.columns
+    {
+        return Err(PresentationEngineError::InvalidTableStructure(
+            "merge range 越界或反向".into(),
+        ));
+    }
+    if start.row == end.row && start.column == end.column {
+        return Err(PresentationEngineError::InvalidTableStructure(
+            "merge range 至少需要两个单元格".into(),
+        ));
+    }
+    let selected = |cell: &TableCell| {
+        cell.row >= start.row
+            && cell.column >= start.column
+            && cell.row + cell.row_span - 1 <= end.row
+            && cell.column + cell.column_span - 1 <= end.column
+    };
+    let overlaps = |cell: &TableCell| {
+        cell.row <= end.row
+            && cell.row + cell.row_span > start.row
+            && cell.column <= end.column
+            && cell.column + cell.column_span > start.column
+    };
+    if table
+        .cells
+        .iter()
+        .any(|cell| overlaps(cell) && !selected(cell))
+    {
+        return Err(PresentationEngineError::InvalidTableStructure(
+            "merge range 不能切穿已有合并单元格".into(),
+        ));
+    }
+    let anchor_index = table_cell_index(table, start.row, start.column, node_id)?;
+    if !selected(&table.cells[anchor_index]) {
+        return Err(PresentationEngineError::InvalidTableStructure(
+            "merge range 必须从锚点开始".into(),
+        ));
+    }
+    let anchor = table.cells[anchor_index].clone();
+    table.cells.retain(|cell| !selected(cell));
+    table.cells.push(TableCell {
+        row: start.row,
+        column: start.column,
+        row_span: end.row - start.row + 1,
+        column_span: end.column - start.column + 1,
+        content: anchor.content,
+        style: anchor.style,
+    });
+    canonicalize_table_cells(table);
+    Ok(())
+}
+
+fn split_table_cell(
+    table: &mut TableNode,
+    row: u32,
+    column: u32,
+    node_id: &str,
+) -> Result<(), PresentationEngineError> {
+    let index = table_cell_index(table, row, column, node_id)?;
+    let cell = table.cells[index].clone();
+    if cell.row_span == 1 && cell.column_span == 1 {
+        return Err(PresentationEngineError::InvalidTableStructure(
+            "只能拆分已合并单元格".into(),
+        ));
+    }
+    table.cells.remove(index);
+    for current_row in cell.row..cell.row + cell.row_span {
+        for current_column in cell.column..cell.column + cell.column_span {
+            table.cells.push(TableCell {
+                row: current_row,
+                column: current_column,
+                row_span: 1,
+                column_span: 1,
+                content: if current_row == cell.row && current_column == cell.column {
+                    cell.content.clone()
+                } else {
+                    PresentationRichText::default()
+                },
+                style: cell.style.clone(),
+            });
+        }
+    }
+    canonicalize_table_cells(table);
+    Ok(())
+}
+
+fn selected_node_indices(
+    slide: &Slide,
+    node_ids: &[String],
+    minimum: usize,
+) -> Result<Vec<usize>, PresentationEngineError> {
+    if node_ids.len() < minimum {
+        return Err(PresentationEngineError::SelectionRequiresAtLeast {
+            required: minimum,
+            actual: node_ids.len(),
+        });
+    }
+    let mut indices: Vec<usize> = Vec::with_capacity(node_ids.len());
+    for node_id in node_ids {
+        if indices
+            .iter()
+            .any(|index| slide.nodes[*index].id == *node_id)
+        {
+            return Err(PresentationEngineError::DuplicateSelectionNode(
+                node_id.clone(),
+            ));
+        }
+        let index = node_index(slide, node_id)?;
+        if slide.nodes[index].locked {
+            return Err(PresentationEngineError::LockedNode(node_id.clone()));
+        }
+        indices.push(index);
+    }
+    Ok(indices)
+}
+
+fn align_nodes(
+    slide: &mut Slide,
+    node_ids: &[String],
+    alignment: NodeAlignment,
+) -> Result<Vec<(String, NodeTransform)>, PresentationEngineError> {
+    let indices = selected_node_indices(slide, node_ids, 2)?;
+    let left = indices
+        .iter()
+        .map(|index| slide.nodes[*index].transform.x)
+        .fold(f64::INFINITY, f64::min);
+    let top = indices
+        .iter()
+        .map(|index| slide.nodes[*index].transform.y)
+        .fold(f64::INFINITY, f64::min);
+    let right = indices
+        .iter()
+        .map(|index| slide.nodes[*index].transform.x + slide.nodes[*index].transform.width)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let bottom = indices
+        .iter()
+        .map(|index| slide.nodes[*index].transform.y + slide.nodes[*index].transform.height)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let previous = indices
+        .iter()
+        .map(|index| {
+            (
+                slide.nodes[*index].id.clone(),
+                slide.nodes[*index].transform.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for index in indices {
+        let transform = &mut slide.nodes[index].transform;
+        match alignment {
+            NodeAlignment::Left => transform.x = left,
+            NodeAlignment::Center => transform.x = (left + right - transform.width) / 2.0,
+            NodeAlignment::Right => transform.x = right - transform.width,
+            NodeAlignment::Top => transform.y = top,
+            NodeAlignment::Middle => transform.y = (top + bottom - transform.height) / 2.0,
+            NodeAlignment::Bottom => transform.y = bottom - transform.height,
+        }
+    }
+    Ok(previous)
+}
+
+fn distribute_nodes(
+    slide: &mut Slide,
+    node_ids: &[String],
+    axis: NodeDistributionAxis,
+) -> Result<Vec<(String, NodeTransform)>, PresentationEngineError> {
+    let mut indices = selected_node_indices(slide, node_ids, 3)?;
+    indices.sort_by(|left, right| {
+        let left_value = match axis {
+            NodeDistributionAxis::Horizontal => slide.nodes[*left].transform.x,
+            NodeDistributionAxis::Vertical => slide.nodes[*left].transform.y,
+        };
+        let right_value = match axis {
+            NodeDistributionAxis::Horizontal => slide.nodes[*right].transform.x,
+            NodeDistributionAxis::Vertical => slide.nodes[*right].transform.y,
+        };
+        left_value.total_cmp(&right_value)
+    });
+    let previous = indices
+        .iter()
+        .map(|index| {
+            (
+                slide.nodes[*index].id.clone(),
+                slide.nodes[*index].transform.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let last = *indices.last().expect("selection is nonempty");
+    let start = match axis {
+        NodeDistributionAxis::Horizontal => slide.nodes[indices[0]].transform.x,
+        NodeDistributionAxis::Vertical => slide.nodes[indices[0]].transform.y,
+    };
+    let end = match axis {
+        NodeDistributionAxis::Horizontal => {
+            slide.nodes[last].transform.x + slide.nodes[last].transform.width
+        }
+        NodeDistributionAxis::Vertical => {
+            slide.nodes[last].transform.y + slide.nodes[last].transform.height
+        }
+    };
+    let occupied = indices
+        .iter()
+        .map(|index| match axis {
+            NodeDistributionAxis::Horizontal => slide.nodes[*index].transform.width,
+            NodeDistributionAxis::Vertical => slide.nodes[*index].transform.height,
+        })
+        .sum::<f64>();
+    let gap = (end - start - occupied) / (indices.len() - 1) as f64;
+    let mut cursor = start;
+    for index in indices {
+        let transform = &mut slide.nodes[index].transform;
+        match axis {
+            NodeDistributionAxis::Horizontal => transform.x = cursor,
+            NodeDistributionAxis::Vertical => transform.y = cursor,
+        }
+        cursor += match axis {
+            NodeDistributionAxis::Horizontal => transform.width,
+            NodeDistributionAxis::Vertical => transform.height,
+        } + gap;
+    }
+    Ok(previous)
 }
 
 fn validate_parent_target(
@@ -1340,6 +2891,39 @@ fn validate_parent_target(
     let parent = &slide.nodes[node_index(slide, parent_id)?];
     if !matches!(&parent.kind, SceneNodeKind::Group(_)) {
         return Err(PresentationEngineError::ParentMustBeGroup(parent_id.into()));
+    }
+    Ok(())
+}
+
+/// Connector anchors are validated before the node is mutated.  The final
+/// schema validation remains the defensive backstop, but command-level checks
+/// keep a malformed endpoint from relying on a renderer or a later command in
+/// the batch to discover a dangling graph edge.
+fn validate_connector_endpoints(
+    slide: &Slide,
+    connector_id: &str,
+    start: &ConnectorEndpoint,
+    end: &ConnectorEndpoint,
+) -> Result<(), PresentationEngineError> {
+    for endpoint in [start, end] {
+        let ConnectorEndpoint::Node { node_id, .. } = endpoint else {
+            continue;
+        };
+        if node_id.trim().is_empty() {
+            return Err(PresentationEngineError::InvalidConnectorEndpoint(
+                "target node id 不能为空".into(),
+            ));
+        }
+        if node_id == connector_id {
+            return Err(PresentationEngineError::InvalidConnectorEndpoint(
+                "connector 不能连接自身".into(),
+            ));
+        }
+        if !slide.nodes.iter().any(|node| node.id == *node_id) {
+            return Err(PresentationEngineError::InvalidConnectorEndpoint(format!(
+                "connector target 不存在：{node_id}"
+            )));
+        }
     }
     Ok(())
 }
@@ -1500,7 +3084,22 @@ fn reverse_mutations(mutations: &[PresentationMutation]) -> Vec<PresentationMuta
         .iter()
         .rev()
         .map(|mutation| match mutation {
+            PresentationMutation::AssetRegistered { asset_id } => {
+                PresentationMutation::AssetUnregistered {
+                    asset_id: asset_id.clone(),
+                }
+            }
+            PresentationMutation::AssetUnregistered { asset_id } => {
+                PresentationMutation::AssetRegistered {
+                    asset_id: asset_id.clone(),
+                }
+            }
             PresentationMutation::SlideInserted { slide_id } => {
+                PresentationMutation::SlideDeleted {
+                    slide_id: slide_id.clone(),
+                }
+            }
+            PresentationMutation::SlideDuplicated { slide_id, .. } => {
                 PresentationMutation::SlideDeleted {
                     slide_id: slide_id.clone(),
                 }
@@ -1568,18 +3167,42 @@ pub enum PresentationEngineError {
     RevisionConflict { expected: u64, actual: u64 },
     #[error("Presentation command batch 不能为空")]
     EmptyBatch,
+    #[error("重复的 Presentation asset：{0}")]
+    DuplicateAsset(String),
+    #[error("不存在的 Presentation asset：{0}")]
+    MissingAsset(String),
     #[error("没有可撤销的 Presentation mutation")]
     NothingToUndo,
     #[error("没有可重做的 Presentation mutation")]
     NothingToRedo,
     #[error("重复的 slide：{0}")]
     DuplicateSlide(String),
+    #[error("重复的 master：{0}")]
+    DuplicateMaster(String),
+    #[error("不存在的 master：{0}")]
+    MissingMaster(String),
+    #[error("master {0} 仍被 layout 引用，不能删除")]
+    MasterInUse(String),
+    #[error("重复的 layout：{0}")]
+    DuplicateLayout(String),
+    #[error("不存在的 layout：{0}")]
+    MissingLayout(String),
+    #[error("layout {0} 仍被 slide 引用，不能删除")]
+    LayoutInUse(String),
+    #[error("复制 slide 的 id 映射无效：{0}")]
+    InvalidDuplicateSlideMapping(String),
     #[error("重复的 node：{0}")]
     DuplicateNode(String),
     #[error("不存在的 slide：{0}")]
     MissingSlide(String),
     #[error("不存在的 node：{0}")]
     MissingNode(String),
+    #[error("对象选区重复包含 node：{0}")]
+    DuplicateSelectionNode(String),
+    #[error("对象 {0} 已锁定，不能参与此操作")]
+    LockedNode(String),
+    #[error("对象操作至少需要 {required} 个对象，当前为 {actual}")]
+    SelectionRequiresAtLeast { required: usize, actual: usize },
     #[error("不存在的 animation：{0}")]
     MissingAnimation(String),
     #[error("node {0} 仍有子节点，必须先显式 ungroup 或移动子节点")]
@@ -1588,6 +3211,26 @@ pub enum PresentationEngineError {
     NotTextNode(String),
     #[error("node {0} 不是 shape node")]
     NotShapeNode(String),
+    #[error("node {0} 不是 chart node")]
+    NotChartNode(String),
+    #[error("node {0} 不是 connector node")]
+    NotConnectorNode(String),
+    #[error("connector endpoint 无效：{0}")]
+    InvalidConnectorEndpoint(String),
+    #[error("node {0} 不是 table node")]
+    NotTableNode(String),
+    #[error("table node {node_id} 不存在以 ({row}, {column}) 为锚点的单元格")]
+    MissingTableCell {
+        node_id: String,
+        row: u32,
+        column: u32,
+    },
+    #[error("table 单元格样式选区不能为空")]
+    EmptyTableCellSelection,
+    #[error("table 单元格锚点重复：({row}, {column})")]
+    DuplicateTableCellAddress { row: u32, column: u32 },
+    #[error("table 结构操作无效：{0}")]
+    InvalidTableStructure(String),
     #[error("node {0} 不是 image node")]
     NotImageNode(String),
     #[error("node {0} 不是 audio 或 video node")]
@@ -1614,8 +3257,11 @@ pub enum PresentationEngineError {
 mod tests {
     use super::*;
     use oo_schema::presentation_v5::{
-        AnimationPreset, AnimationTrigger, AssetRef, DeckTheme, GroupNode, Insets, MediaNode,
-        SceneNodeKind, ShapeGeometry, ShapeNode, TextAutoFit, TextNode, TextVerticalAlign,
+        Anchor, AnimationEntry, AnimationPreset, AnimationTrigger, AssetRef, ChartNode,
+        ChartSeries, ChartSpec, ChartType, ConnectorNode, DeckTheme, GroupNode, Insets,
+        LayoutPlaceholder, MasterPlaceholder, MediaNode, PlaceholderKind, Point, SceneNodeKind,
+        ShapeGeometry, ShapeNode, SlideLayout, SlideMaster, TableCell, TableCellStyle, TableNode,
+        TextAutoFit, TextNode, TextVerticalAlign,
     };
 
     fn slide(id: &str) -> Slide {
@@ -1695,6 +3341,62 @@ mod tests {
             }),
         }
     }
+    fn table_node(id: &str, order: &str) -> SceneNode {
+        SceneNode {
+            id: id.into(),
+            parent_id: None,
+            order_key: order.into(),
+            name: Some("表格".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: transform(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Table(TableNode {
+                rows: 2,
+                columns: 2,
+                cells: (0..2)
+                    .flat_map(|row| {
+                        (0..2).map(move |column| TableCell {
+                            row,
+                            column,
+                            row_span: 1,
+                            column_span: 1,
+                            content: PresentationRichText::default(),
+                            style: TableCellStyle::default(),
+                        })
+                    })
+                    .collect(),
+            }),
+        }
+    }
+    fn chart_node(id: &str, order: &str) -> SceneNode {
+        SceneNode {
+            id: id.into(),
+            parent_id: None,
+            order_key: order.into(),
+            name: Some("图表".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: transform(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Chart(ChartNode {
+                spec: ChartSpec {
+                    chart_type: ChartType::Column,
+                    title: Some("营收".into()),
+                    categories: vec!["Q1".into(), "Q2".into()],
+                    series: vec![ChartSeries {
+                        name: "实际".into(),
+                        values: vec![10.0, 20.0],
+                        color: None,
+                    }],
+                },
+            }),
+        }
+    }
     fn deck() -> Deck {
         Deck {
             theme: DeckTheme {
@@ -1714,6 +3416,381 @@ mod tests {
                 commands,
             })
             .unwrap()
+    }
+
+    #[test]
+    fn registering_an_asset_and_inserting_an_image_is_one_reversible_batch() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![PresentationCommand::CreateSlide {
+                slide: slide("s1"),
+                index: 0,
+            }],
+        );
+        let asset = AssetRef {
+            asset_id: "image-asset".into(),
+            digest: "sha256:image-asset".into(),
+            mime_type: "image/png".into(),
+            width: Some(400),
+            height: Some(200),
+            original_asset_id: None,
+        };
+        let image = SceneNode {
+            id: "image".into(),
+            parent_id: None,
+            order_key: "a".into(),
+            name: Some("图片".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: transform(),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Image(ImageNode {
+                asset_id: asset.asset_id.clone(),
+                original_asset_id: None,
+                crop: Default::default(),
+                flip_h: false,
+                flip_v: false,
+                caption: None,
+            }),
+        };
+        let change = run(
+            &mut engine,
+            vec![
+                PresentationCommand::RegisterAsset { asset },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: image,
+                    index: 0,
+                },
+            ],
+        );
+        assert!(change.mutations.iter().any(|mutation| matches!(mutation, PresentationMutation::AssetRegistered { asset_id } if asset_id == "image-asset")));
+        assert_eq!(engine.deck().assets.len(), 1);
+        assert_eq!(engine.deck().slides[0].nodes.len(), 1);
+
+        let undo = engine.undo(engine.revision()).unwrap();
+        assert!(undo.mutations.iter().any(|mutation| matches!(mutation, PresentationMutation::AssetUnregistered { asset_id } if asset_id == "image-asset")));
+        assert!(engine.deck().assets.is_empty());
+        assert!(engine.deck().slides[0].nodes.is_empty());
+    }
+
+    #[test]
+    fn duplicate_slide_rewrites_node_hierarchy_and_timeline_and_is_reversible() {
+        let mut source = slide("source");
+        source.name = "原始幻灯片".into();
+        let group = group_node("group", "a");
+        let mut child = text_node("child", "a");
+        child.parent_id = Some("group".into());
+        let mut connector = text_node("connector", "b");
+        connector.kind = SceneNodeKind::Connector(ConnectorNode {
+            start: ConnectorEndpoint::Node {
+                node_id: "child".into(),
+                anchor: Anchor::Right,
+            },
+            end: ConnectorEndpoint::Free(Point { x: 120.0, y: 60.0 }),
+        });
+        source.nodes = vec![group, child, connector];
+        source.timeline.entries.push(AnimationEntry {
+            id: "animation".into(),
+            target_node_id: "child".into(),
+            trigger: AnimationTrigger::OnClick,
+            preset: AnimationPreset::Appear,
+            duration_ms: 200,
+            delay_ms: 0,
+            order_key: "a".into(),
+        });
+        let mut initial = deck();
+        initial.slides.push(source);
+        let mut engine = PresentationEngine::new(initial, 0).unwrap();
+
+        let change = run(
+            &mut engine,
+            vec![PresentationCommand::DuplicateSlide {
+                source_slide_id: "source".into(),
+                slide_id: "copy".into(),
+                order_key: "copy".into(),
+                name: "原始幻灯片 副本".into(),
+                node_id_map: vec![
+                    PresentationIdMapping {
+                        source_id: "group".into(),
+                        target_id: "copy-group".into(),
+                    },
+                    PresentationIdMapping {
+                        source_id: "child".into(),
+                        target_id: "copy-child".into(),
+                    },
+                    PresentationIdMapping {
+                        source_id: "connector".into(),
+                        target_id: "copy-connector".into(),
+                    },
+                ],
+                animation_id_map: vec![PresentationIdMapping {
+                    source_id: "animation".into(),
+                    target_id: "copy-animation".into(),
+                }],
+                index: 1,
+            }],
+        );
+        assert!(
+            matches!(change.mutations.as_slice(), [PresentationMutation::SlideDuplicated { source_slide_id, slide_id }] if source_slide_id == "source" && slide_id == "copy")
+        );
+        assert_eq!(change.dirty_thumbnail_ids, vec!["copy"]);
+        let copied = &engine.deck().slides[1];
+        assert_eq!(copied.name, "原始幻灯片 副本");
+        assert_eq!(copied.nodes[1].id, "copy-child");
+        assert_eq!(copied.nodes[1].parent_id.as_deref(), Some("copy-group"));
+        assert!(
+            matches!(&copied.nodes[2].kind, SceneNodeKind::Connector(ConnectorNode { start: ConnectorEndpoint::Node { node_id, .. }, .. }) if node_id == "copy-child")
+        );
+        assert_eq!(copied.timeline.entries[0].id, "copy-animation");
+        assert_eq!(copied.timeline.entries[0].target_node_id, "copy-child");
+
+        engine.undo(engine.revision()).unwrap();
+        assert_eq!(engine.deck().slides.len(), 1);
+        engine.redo(engine.revision()).unwrap();
+        assert_eq!(
+            engine.deck().slides[1].timeline.entries[0].target_node_id,
+            "copy-child"
+        );
+    }
+
+    #[test]
+    fn duplicate_slide_rejects_incomplete_identity_mapping_without_mutating_the_deck() {
+        let mut source = slide("source");
+        source.nodes = vec![text_node("one", "a"), text_node("two", "b")];
+        let mut initial = deck();
+        initial.slides.push(source);
+        let mut engine = PresentationEngine::new(initial, 0).unwrap();
+
+        let error = engine
+            .execute(PresentationCommandBatch {
+                base_revision: 0,
+                commands: vec![PresentationCommand::DuplicateSlide {
+                    source_slide_id: "source".into(),
+                    slide_id: "copy".into(),
+                    order_key: "copy".into(),
+                    name: "副本".into(),
+                    node_id_map: vec![PresentationIdMapping {
+                        source_id: "one".into(),
+                        target_id: "copy-one".into(),
+                    }],
+                    animation_id_map: vec![],
+                    index: 1,
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PresentationEngineError::InvalidDuplicateSlideMapping(_)
+        ));
+        assert_eq!(engine.revision(), 0);
+        assert_eq!(engine.deck().slides.len(), 1);
+    }
+
+    #[test]
+    fn node_lock_is_a_typed_undoable_semantic_mutation() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![PresentationCommand::CreateSlide {
+                slide: slide("s1"),
+                index: 0,
+            }],
+        );
+        run(
+            &mut engine,
+            vec![PresentationCommand::InsertNode {
+                slide_id: "s1".into(),
+                node: text_node("n1", "a"),
+                index: 0,
+            }],
+        );
+        run(
+            &mut engine,
+            vec![PresentationCommand::SetNodeLocked {
+                slide_id: "s1".into(),
+                node_id: "n1".into(),
+                locked: true,
+            }],
+        );
+        assert!(engine.deck().slides[0].nodes[0].locked);
+        assert!(engine
+            .undo(engine.revision())
+            .unwrap()
+            .mutations
+            .iter()
+            .any(|mutation| matches!(mutation, PresentationMutation::NodeLockSet { slide_id, node_id } if slide_id == "s1" && node_id == "n1")));
+        assert!(!engine.deck().slides[0].nodes[0].locked);
+        engine.redo(engine.revision()).unwrap();
+        assert!(engine.deck().slides[0].nodes[0].locked);
+    }
+
+    #[test]
+    fn alignment_and_distribution_are_typed_reversible_selection_operations() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![PresentationCommand::CreateSlide {
+                slide: slide("s1"),
+                index: 0,
+            }],
+        );
+        let mut first = shape_node("a", "a");
+        first.transform = NodeTransform {
+            x: 10.0,
+            y: 20.0,
+            width: 50.0,
+            height: 20.0,
+            rotation: 0.0,
+        };
+        let mut second = shape_node("b", "b");
+        second.transform = NodeTransform {
+            x: 80.0,
+            y: 60.0,
+            width: 20.0,
+            height: 30.0,
+            rotation: 0.0,
+        };
+        let mut third = shape_node("c", "c");
+        third.transform = NodeTransform {
+            x: 180.0,
+            y: 120.0,
+            width: 40.0,
+            height: 10.0,
+            rotation: 0.0,
+        };
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: first,
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: second,
+                    index: 1,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: third,
+                    index: 2,
+                },
+            ],
+        );
+
+        let aligned = run(
+            &mut engine,
+            vec![PresentationCommand::AlignNodes {
+                slide_id: "s1".into(),
+                node_ids: vec!["a".into(), "b".into()],
+                alignment: NodeAlignment::Left,
+            }],
+        );
+        assert!(matches!(
+            aligned.mutations.as_slice(),
+            [PresentationMutation::NodesAligned { .. }]
+        ));
+        assert_eq!(engine.deck().slides[0].nodes[0].transform.x, 10.0);
+        assert_eq!(engine.deck().slides[0].nodes[1].transform.x, 10.0);
+        let distributed = run(
+            &mut engine,
+            vec![PresentationCommand::DistributeNodes {
+                slide_id: "s1".into(),
+                node_ids: vec!["a".into(), "b".into(), "c".into()],
+                axis: NodeDistributionAxis::Vertical,
+            }],
+        );
+        assert!(matches!(
+            distributed.mutations.as_slice(),
+            [PresentationMutation::NodesDistributed { .. }]
+        ));
+        assert_eq!(engine.deck().slides[0].nodes[0].transform.y, 20.0);
+        assert_eq!(engine.deck().slides[0].nodes[2].transform.y, 120.0);
+        engine.undo(engine.revision()).unwrap();
+        assert_eq!(engine.deck().slides[0].nodes[1].transform.y, 60.0);
+    }
+
+    #[test]
+    fn connector_endpoints_are_atomic_reversible_and_schema_validated() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        let mut connector = text_node("connector", "b");
+        connector.kind = SceneNodeKind::Connector(ConnectorNode {
+            start: ConnectorEndpoint::Free(Point { x: 10.0, y: 20.0 }),
+            end: ConnectorEndpoint::Free(Point { x: 30.0, y: 40.0 }),
+        });
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: text_node("target", "a"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: connector,
+                    index: 1,
+                },
+            ],
+        );
+
+        let change = run(
+            &mut engine,
+            vec![PresentationCommand::SetConnectorEndpoints {
+                slide_id: "s1".into(),
+                node_id: "connector".into(),
+                start: ConnectorEndpoint::Node {
+                    node_id: "target".into(),
+                    anchor: Anchor::Right,
+                },
+                end: ConnectorEndpoint::Free(Point { x: 90.0, y: 100.0 }),
+            }],
+        );
+        assert!(
+            matches!(change.mutations.as_slice(), [PresentationMutation::ConnectorEndpointsSet { slide_id, node_id }] if slide_id == "s1" && node_id == "connector")
+        );
+        assert!(
+            matches!(engine.deck().slides[0].nodes[1].kind, SceneNodeKind::Connector(ConnectorNode { start: ConnectorEndpoint::Node { ref node_id, .. }, .. }) if node_id == "target")
+        );
+        engine.undo(engine.revision()).unwrap();
+        assert!(matches!(
+            engine.deck().slides[0].nodes[1].kind,
+            SceneNodeKind::Connector(ConnectorNode {
+                start: ConnectorEndpoint::Free(_),
+                ..
+            })
+        ));
+        engine.redo(engine.revision()).unwrap();
+
+        let before = engine.deck().clone();
+        let error = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::SetConnectorEndpoints {
+                    slide_id: "s1".into(),
+                    node_id: "connector".into(),
+                    start: ConnectorEndpoint::Node {
+                        node_id: "connector".into(),
+                        anchor: Anchor::Center,
+                    },
+                    end: ConnectorEndpoint::Free(Point { x: 1.0, y: 1.0 }),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PresentationEngineError::InvalidConnectorEndpoint(_)
+        ));
+        assert_eq!(engine.deck(), &before);
     }
 
     #[test]
@@ -2010,6 +4087,356 @@ mod tests {
     }
 
     #[test]
+    fn changing_shape_geometry_preserves_the_node_and_is_reversible() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: shape_node("shape", "a"),
+                    index: 0,
+                },
+            ],
+        );
+
+        let result = run(
+            &mut engine,
+            vec![PresentationCommand::SetShapeGeometry {
+                slide_id: "s1".into(),
+                node_id: "shape".into(),
+                geometry: ShapeGeometry::Arrow,
+            }],
+        );
+        let node = &engine.deck().slides[0].nodes[0];
+        assert_eq!(node.id, "shape");
+        assert!(
+            matches!(&node.kind, SceneNodeKind::Shape(shape) if shape.geometry == ShapeGeometry::Arrow)
+        );
+        assert!(result.mutations.iter().any(|mutation| matches!(mutation, PresentationMutation::ShapeGeometrySet { slide_id, node_id } if slide_id == "s1" && node_id == "shape")));
+        assert!(result
+            .invalidation
+            .changed_entities
+            .iter()
+            .any(|entity| entity.entity_id == "s1/shape"));
+
+        engine.undo(engine.revision()).unwrap();
+        assert!(
+            matches!(&engine.deck().slides[0].nodes[0].kind, SceneNodeKind::Shape(shape) if shape.geometry == ShapeGeometry::Rectangle)
+        );
+    }
+
+    #[test]
+    fn changing_chart_spec_is_local_and_reversible() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: chart_node("chart", "a"),
+                    index: 0,
+                },
+            ],
+        );
+        let result = run(
+            &mut engine,
+            vec![PresentationCommand::SetChartSpec {
+                slide_id: "s1".into(),
+                node_id: "chart".into(),
+                spec: ChartSpec {
+                    chart_type: ChartType::Line,
+                    title: Some("预测".into()),
+                    categories: vec!["Q1".into(), "Q2".into()],
+                    series: vec![ChartSeries {
+                        name: "预测".into(),
+                        values: vec![15.0, 25.0],
+                        color: None,
+                    }],
+                },
+            }],
+        );
+        assert!(result.mutations.iter().any(|mutation| matches!(mutation, PresentationMutation::ChartSpecSet { slide_id, node_id } if slide_id == "s1" && node_id == "chart")));
+        assert!(result
+            .invalidation
+            .changed_entities
+            .iter()
+            .any(|entity| entity.entity_id == "s1/chart"));
+        assert!(
+            matches!(&engine.deck().slides[0].nodes[0].kind, SceneNodeKind::Chart(chart) if chart.spec.chart_type == ChartType::Line)
+        );
+
+        engine.undo(engine.revision()).unwrap();
+        assert!(
+            matches!(&engine.deck().slides[0].nodes[0].kind, SceneNodeKind::Chart(chart) if chart.spec.chart_type == ChartType::Column)
+        );
+    }
+
+    #[test]
+    fn table_cell_commands_use_anchor_identity_are_atomic_and_reversible() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: table_node("table", "a"),
+                    index: 0,
+                },
+            ],
+        );
+        let body = PresentationRichText {
+            text: "Revenue".into(),
+            runs: vec![],
+        };
+        let style = TableCellStyle::default();
+        let change = run(
+            &mut engine,
+            vec![
+                PresentationCommand::SetTableCellContent {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    row: 0,
+                    column: 1,
+                    content: body.clone(),
+                },
+                PresentationCommand::SetTableCellStyle {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    cells: vec![
+                        TableCellAddress { row: 0, column: 0 },
+                        TableCellAddress { row: 1, column: 1 },
+                    ],
+                    style: style.clone(),
+                },
+            ],
+        );
+        assert!(change.mutations.iter().any(|mutation| matches!(
+            mutation,
+            PresentationMutation::TableCellContentSet {
+                row: 0,
+                column: 1,
+                ..
+            }
+        )));
+        assert!(change.mutations.iter().any(|mutation| matches!(mutation, PresentationMutation::TableCellStyleSet { cells, .. } if cells.len() == 2)));
+        let SceneNodeKind::Table(table) = &engine.deck().slides[0].nodes[0].kind else {
+            panic!("expected table")
+        };
+        assert_eq!(
+            table
+                .cells
+                .iter()
+                .find(|cell| cell.row == 0 && cell.column == 1)
+                .unwrap()
+                .content,
+            body
+        );
+        engine.undo(engine.revision()).unwrap();
+        let SceneNodeKind::Table(table) = &engine.deck().slides[0].nodes[0].kind else {
+            panic!("expected table")
+        };
+        assert!(table.cells.iter().all(|cell| cell.content.text.is_empty()));
+    }
+
+    #[test]
+    fn table_cell_style_rejects_empty_duplicate_or_non_anchor_selection() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: table_node("table", "a"),
+                    index: 0,
+                },
+            ],
+        );
+        let failure = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::SetTableCellStyle {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    cells: vec![],
+                    style: TableCellStyle::default(),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            PresentationEngineError::EmptyTableCellSelection
+        ));
+        let failure = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::SetTableCellStyle {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    cells: vec![
+                        TableCellAddress { row: 0, column: 0 },
+                        TableCellAddress { row: 0, column: 0 },
+                    ],
+                    style: TableCellStyle::default(),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            PresentationEngineError::DuplicateTableCellAddress { row: 0, column: 0 }
+        ));
+        let failure = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::SetTableCellContent {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    row: 8,
+                    column: 0,
+                    content: PresentationRichText::default(),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            failure,
+            PresentationEngineError::MissingTableCell {
+                row: 8,
+                column: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn table_structure_commands_preserve_anchors_merge_round_trip_and_undo() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: table_node("table", "a"),
+                    index: 0,
+                },
+            ],
+        );
+        let before = engine.deck().clone();
+        let change = run(
+            &mut engine,
+            vec![
+                PresentationCommand::InsertTableRows {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    index: 1,
+                    count: 2,
+                },
+                PresentationCommand::InsertTableColumns {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    index: 1,
+                    count: 1,
+                },
+                PresentationCommand::MergeTableCells {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    start: TableCellAddress { row: 0, column: 0 },
+                    end: TableCellAddress { row: 1, column: 1 },
+                },
+                PresentationCommand::SplitTableCell {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    row: 0,
+                    column: 0,
+                },
+                PresentationCommand::DeleteTableRow {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    index: 1,
+                },
+                PresentationCommand::DeleteTableColumn {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    index: 1,
+                },
+            ],
+        );
+        assert!(change
+            .mutations
+            .iter()
+            .any(|mutation| matches!(mutation, PresentationMutation::TableCellsMerged { .. })));
+        let SceneNodeKind::Table(table) = &engine.deck().slides[0].nodes[0].kind else {
+            panic!("expected table")
+        };
+        assert_eq!((table.rows, table.columns), (3, 2));
+        assert_eq!(table.cells.len(), 6);
+        engine.deck().validate().unwrap();
+        engine.undo(engine.revision()).unwrap();
+        assert_eq!(engine.deck(), &before);
+    }
+
+    #[test]
+    fn table_merge_rejects_partial_existing_merged_region_atomically() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: table_node("table", "a"),
+                    index: 0,
+                },
+                PresentationCommand::MergeTableCells {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    start: TableCellAddress { row: 0, column: 0 },
+                    end: TableCellAddress { row: 1, column: 1 },
+                },
+            ],
+        );
+        let before = engine.deck().clone();
+        let error = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::MergeTableCells {
+                    slide_id: "s1".into(),
+                    node_id: "table".into(),
+                    start: TableCellAddress { row: 0, column: 1 },
+                    end: TableCellAddress { row: 1, column: 1 },
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            PresentationEngineError::InvalidTableStructure(_)
+        ));
+        assert_eq!(engine.deck(), &before);
+    }
+
+    #[test]
     fn transition_and_animation_commands_are_granular_reversible_and_invalidate_timeline() {
         let mut engine = PresentationEngine::new(deck(), 0).unwrap();
         run(
@@ -2171,5 +4598,103 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(error, PresentationEngineError::Schema(_)));
+    }
+
+    #[test]
+    fn master_layout_lifecycle_is_typed_reversible_and_invalidates_consumers() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        let master = SlideMaster {
+            id: "master-default".into(),
+            name: "默认母版".into(),
+            background: SlideBackground::default(),
+            placeholders: vec![MasterPlaceholder {
+                id: "master-title".into(),
+                kind: PlaceholderKind::Title,
+                transform: transform(),
+                default_text: None,
+            }],
+        };
+        let layout = SlideLayout {
+            id: "layout-title".into(),
+            master_id: "master-default".into(),
+            name: "标题页".into(),
+            placeholders: vec![LayoutPlaceholder {
+                id: "layout-title-placeholder".into(),
+                kind: PlaceholderKind::Title,
+                master_placeholder_id: Some("master-title".into()),
+                transform: transform(),
+                default_text: None,
+            }],
+        };
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateMaster {
+                    master: master.clone(),
+                },
+                PresentationCommand::CreateLayout {
+                    layout: layout.clone(),
+                },
+                PresentationCommand::CreateSlide {
+                    slide: Slide {
+                        layout_id: Some(layout.id.clone()),
+                        ..slide("s1")
+                    },
+                    index: 0,
+                },
+            ],
+        );
+        let change = run(
+            &mut engine,
+            vec![PresentationCommand::UpdateMaster {
+                master: SlideMaster {
+                    name: "新版默认母版".into(),
+                    ..master.clone()
+                },
+            }],
+        );
+        assert!(change.mutations.iter().any(|mutation| matches!(
+            mutation,
+            PresentationMutation::MasterUpdated { master_id } if master_id == "master-default"
+        )));
+        assert_eq!(change.dirty_thumbnail_ids, vec!["s1"]);
+        let before = engine.deck().clone();
+        let error = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::DeleteLayout {
+                    layout_id: layout.id.clone(),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(error, PresentationEngineError::LayoutInUse(id) if id == "layout-title"));
+        assert_eq!(engine.deck(), &before);
+        let error = engine
+            .execute(PresentationCommandBatch {
+                base_revision: engine.revision(),
+                commands: vec![PresentationCommand::DeleteMaster {
+                    master_id: master.id.clone(),
+                }],
+            })
+            .unwrap_err();
+        assert!(
+            matches!(error, PresentationEngineError::MasterInUse(id) if id == "master-default")
+        );
+
+        run(
+            &mut engine,
+            vec![PresentationCommand::SetSlideLayout {
+                slide_id: "s1".into(),
+                layout_id: None,
+            }],
+        );
+        run(
+            &mut engine,
+            vec![PresentationCommand::DeleteLayout {
+                layout_id: layout.id.clone(),
+            }],
+        );
+        engine.undo(engine.revision()).unwrap();
+        assert_eq!(engine.deck().layouts, vec![layout]);
     }
 }

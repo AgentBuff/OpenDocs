@@ -12,11 +12,12 @@ use std::{
 };
 
 use oo_schema::presentation_v5::{
-    AssetRef, ColorRef, Deck, DeckTheme, GroupNode, ImageNode, Insets, NodeTransform, Paint,
-    PresentationRichText, PresentationTextRun, PresentationTextStyle, Rgba, SceneNode,
-    SceneNodeKind, ShapeGeometry, ShapeNode, ShapeStyle, Slide, SlideBackground, SlideLayout,
-    SlideMaster, TextAutoFit, TextFrame, TextNode, TextVerticalAlign, ThemeColorToken,
-    ThemeFontToken,
+    AssetRef, ColorRef, ConnectorEndpoint, ConnectorNode, Deck, DeckTheme, GroupNode,
+    HorizontalAlign, ImageNode, Insets, NodeTransform, Paint, Point, PresentationRichText,
+    PresentationTextRun, PresentationTextStyle, Rgba, SceneNode, SceneNodeKind, ShapeGeometry,
+    ShapeNode, ShapeStyle, Slide, SlideBackground, SlideLayout, SlideMaster, TableCell,
+    TableCellStyle, TableNode, TextAutoFit, TextFrame, TextNode, TextVerticalAlign,
+    ThemeColorToken, ThemeFontToken,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -444,6 +445,10 @@ fn semantic_node_value(node: &SceneNode, assets: &HashMap<&str, &AssetRef>) -> s
             "flipV": image.flip_v,
             "caption": image.caption,
         }),
+        SceneNodeKind::Table(table) => serde_json::json!({ "type": "table", "data": table }),
+        SceneNodeKind::Connector(connector) => {
+            serde_json::json!({ "type": "connector", "data": connector })
+        }
         // The writer reports these variants as unsupported. Keeping their typed values in the
         // diff still makes a caller's accidental lossy round-trip immediately visible.
         other => serde_json::json!({ "type": "unsupported", "data": other }),
@@ -1603,6 +1608,14 @@ fn parse_slide(
         }
         buffer.clear();
     }
+    // Tables and connectors live in DrawingML containers (`p:graphicFrame` and `p:cxnSp`),
+    // rather than `p:sp`.  They are intentionally parsed by dedicated, typed readers: letting
+    // the generic shape reader see their text would flatten a grid or a connection into a
+    // misleading text/shape node.
+    nodes.extend(parse_supported_tables(xml, slide_index, report)?);
+    nodes.extend(parse_supported_connectors(xml, slide_index, report)?);
+    nodes.sort_by(|left, right| left.order_key.cmp(&right.order_key));
+
     Ok(Slide {
         id: format!("slide-{}", slide_index + 1),
         order_key: format!("{slide_index:08}"),
@@ -1614,6 +1627,601 @@ fn parse_slide(
         nodes,
         timeline: Default::default(),
     })
+}
+
+#[derive(Debug, Default)]
+struct TableImportCell {
+    row: u32,
+    column: u32,
+    content: String,
+    runs: Vec<PresentationTextRun>,
+    active_run: Option<ActiveTextRun>,
+    fill: Paint,
+    horizontal_align: HorizontalAlign,
+    vertical_align: TextVerticalAlign,
+    unsupported: bool,
+}
+
+#[derive(Debug, Default)]
+struct TableImportDraft {
+    id: String,
+    name: Option<String>,
+    transform: NodeTransform,
+    columns: Vec<f64>,
+    row_heights: Vec<f64>,
+    cells: Vec<TableImportCell>,
+    current_row: u32,
+    current_cell: Option<TableImportCell>,
+    in_tc_pr: bool,
+    in_solid_fill: bool,
+    unsupported: bool,
+}
+
+/// Read the deliberate lossless table subset: a rectangular grid with equal row/column sizes,
+/// no merged cells, basic rich-text runs and a solid/no cell fill.  v5 does not yet model grid
+/// track sizes, borders or cell margins, so accepting those would make a later export lie.
+fn parse_supported_tables(
+    xml: &[u8],
+    slide_index: usize,
+    report: &mut PptxLossReport,
+) -> Result<Vec<SceneNode>, PptxError> {
+    let mut reader = Reader::from_reader(xml);
+    reader.config_mut().trim_text(false);
+    let mut buffer = Vec::new();
+    let mut graphic: Option<(String, Option<String>, NodeTransform)> = None;
+    let mut table: Option<TableImportDraft> = None;
+    let mut in_text = false;
+    let mut sequence = 50_000usize;
+    let mut nodes = Vec::new();
+
+    loop {
+        match reader.read_event_into(&mut buffer)? {
+            Event::Start(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"graphicFrame" => {
+                        graphic = Some((
+                            format!("slide-{}-table-{}", slide_index + 1, sequence),
+                            None,
+                            default_transform(sequence),
+                        ));
+                        sequence += 1;
+                    }
+                    b"cNvPr" if graphic.is_some() && table.is_none() => {
+                        if let Some((id, label, _)) = graphic.as_mut() {
+                            if let Some(raw) = attr(&event, b"id") {
+                                *id = format!("slide-{}-node-{raw}", slide_index + 1);
+                            }
+                            *label = attr(&event, b"name");
+                        }
+                    }
+                    b"off" if table.is_none() => {
+                        if let Some((_, _, transform)) = graphic.as_mut() {
+                            transform.x = parse_coordinate(&event, b"x", transform.x)?;
+                            transform.y = parse_coordinate(&event, b"y", transform.y)?;
+                        }
+                    }
+                    b"ext" if table.is_none() => {
+                        if let Some((_, _, transform)) = graphic.as_mut() {
+                            transform.width = parse_coordinate(&event, b"cx", transform.width)?;
+                            transform.height = parse_coordinate(&event, b"cy", transform.height)?;
+                        }
+                    }
+                    b"tbl" => {
+                        let Some((id, name, transform)) = graphic.take() else {
+                            continue;
+                        };
+                        table = Some(TableImportDraft {
+                            id,
+                            name,
+                            transform,
+                            ..Default::default()
+                        });
+                    }
+                    b"gridCol" => {
+                        if let Some(table) = table.as_mut() {
+                            table.columns.push(parse_coordinate(&event, b"w", 0.0)?);
+                        }
+                    }
+                    b"tr" => {
+                        if let Some(table) = table.as_mut() {
+                            table.row_heights.push(parse_coordinate(&event, b"h", 0.0)?);
+                        }
+                    }
+                    b"tc" => {
+                        if let Some(table) = table.as_mut() {
+                            let column = table
+                                .current_cell
+                                .as_ref()
+                                .map(|cell| cell.column + 1)
+                                .unwrap_or_else(|| {
+                                    table
+                                        .cells
+                                        .iter()
+                                        .filter(|cell| cell.row == table.current_row)
+                                        .count() as u32
+                                });
+                            let mut cell = TableImportCell {
+                                row: table.current_row,
+                                column,
+                                ..Default::default()
+                            };
+                            if attr(&event, b"gridSpan")
+                                .as_deref()
+                                .is_some_and(|value| value != "1")
+                                || attr(&event, b"rowSpan")
+                                    .as_deref()
+                                    .is_some_and(|value| value != "1")
+                                || attr(&event, b"hMerge")
+                                    .as_deref()
+                                    .is_some_and(|value| value != "0")
+                                || attr(&event, b"vMerge")
+                                    .as_deref()
+                                    .is_some_and(|value| value != "0")
+                            {
+                                cell.unsupported = true;
+                                table.unsupported = true;
+                            }
+                            table.current_cell = Some(cell);
+                        }
+                    }
+                    b"tcPr" => {
+                        if let Some(table) = table.as_mut() {
+                            table.in_tc_pr = true;
+                            if let Some(cell) = table.current_cell.as_mut() {
+                                cell.vertical_align = match attr(&event, b"anchor").as_deref() {
+                                    Some("ctr") => TextVerticalAlign::Middle,
+                                    Some("b") => TextVerticalAlign::Bottom,
+                                    Some("t") | None => TextVerticalAlign::Top,
+                                    _ => {
+                                        cell.unsupported = true;
+                                        table.unsupported = true;
+                                        TextVerticalAlign::Top
+                                    }
+                                };
+                            }
+                        }
+                    }
+                    b"pPr" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            cell.horizontal_align = match attr(&event, b"algn").as_deref() {
+                                None | Some("l") => HorizontalAlign::Left,
+                                Some("ctr") => HorizontalAlign::Center,
+                                Some("r") => HorizontalAlign::Right,
+                                _ => {
+                                    cell.unsupported = true;
+                                    HorizontalAlign::Left
+                                }
+                            };
+                        }
+                    }
+                    b"solidFill" => {
+                        if let Some(table) = table.as_mut() {
+                            if table.in_tc_pr {
+                                table.in_solid_fill = true;
+                            }
+                        }
+                    }
+                    b"srgbClr" => {
+                        if let Some(table) = table.as_mut() {
+                            if table.in_solid_fill {
+                                match attr(&event, b"val").and_then(|value| parse_hex_color(&value))
+                                {
+                                    Some(color) => {
+                                        if let Some(cell) = table.current_cell.as_mut() {
+                                            cell.fill = Paint::Solid(ColorRef::Rgba(color));
+                                        }
+                                    }
+                                    None => table.unsupported = true,
+                                }
+                            }
+                        }
+                    }
+                    b"schemeClr" => {
+                        if let Some(table) = table.as_mut() {
+                            if table.in_solid_fill {
+                                match attr(&event, b"val")
+                                    .as_deref()
+                                    .and_then(|value| theme_color_token(value.as_bytes()))
+                                {
+                                    Some(color) => {
+                                        if let Some(cell) = table.current_cell.as_mut() {
+                                            cell.fill = Paint::Solid(ColorRef::Theme(color));
+                                        }
+                                    }
+                                    None => table.unsupported = true,
+                                }
+                            }
+                        }
+                    }
+                    b"r" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            cell.active_run = Some(ActiveTextRun {
+                                start: cell.content.chars().count(),
+                                style: PresentationTextStyle::default(),
+                            });
+                        }
+                    }
+                    b"rPr" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if let Some(run) = cell.active_run.as_mut() {
+                                parse_run_properties(&event, &mut run.style, report, slide_index);
+                            }
+                        }
+                    }
+                    b"latin" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if let Some(run) = cell.active_run.as_mut() {
+                                run.style.font_family = attr(&event, b"typeface");
+                            }
+                        }
+                    }
+                    b"t" if table.is_some() => in_text = true,
+                    b"p" if table.is_some() => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if !cell.content.is_empty() {
+                                cell.unsupported = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Empty(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"cNvPr" if graphic.is_some() && table.is_none() => {
+                        if let Some((id, label, _)) = graphic.as_mut() {
+                            if let Some(raw) = attr(&event, b"id") {
+                                *id = format!("slide-{}-node-{raw}", slide_index + 1);
+                            }
+                            *label = attr(&event, b"name");
+                        }
+                    }
+                    b"off" if table.is_none() => {
+                        if let Some((_, _, transform)) = graphic.as_mut() {
+                            transform.x = parse_coordinate(&event, b"x", transform.x)?;
+                            transform.y = parse_coordinate(&event, b"y", transform.y)?;
+                        }
+                    }
+                    b"ext" if table.is_none() => {
+                        if let Some((_, _, transform)) = graphic.as_mut() {
+                            transform.width = parse_coordinate(&event, b"cx", transform.width)?;
+                            transform.height = parse_coordinate(&event, b"cy", transform.height)?;
+                        }
+                    }
+                    b"gridCol" => {
+                        if let Some(table) = table.as_mut() {
+                            table.columns.push(parse_coordinate(&event, b"w", 0.0)?);
+                        }
+                    }
+                    b"pPr" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            cell.horizontal_align = match attr(&event, b"algn").as_deref() {
+                                None | Some("l") => HorizontalAlign::Left,
+                                Some("ctr") => HorizontalAlign::Center,
+                                Some("r") => HorizontalAlign::Right,
+                                _ => {
+                                    cell.unsupported = true;
+                                    HorizontalAlign::Left
+                                }
+                            };
+                        }
+                    }
+                    b"rPr" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if let Some(run) = cell.active_run.as_mut() {
+                                parse_run_properties(&event, &mut run.style, report, slide_index);
+                            }
+                        }
+                    }
+                    b"latin" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if let Some(run) = cell.active_run.as_mut() {
+                                run.style.font_family = attr(&event, b"typeface");
+                            }
+                        }
+                    }
+                    b"srgbClr" => {
+                        if let Some(table) = table.as_mut() {
+                            if table.in_solid_fill {
+                                match attr(&event, b"val").and_then(|value| parse_hex_color(&value))
+                                {
+                                    Some(color) => {
+                                        if let Some(cell) = table.current_cell.as_mut() {
+                                            cell.fill = Paint::Solid(ColorRef::Rgba(color));
+                                        }
+                                    }
+                                    None => table.unsupported = true,
+                                }
+                            }
+                        }
+                    }
+                    b"schemeClr" => {
+                        if let Some(table) = table.as_mut() {
+                            if table.in_solid_fill {
+                                match attr(&event, b"val")
+                                    .as_deref()
+                                    .and_then(|value| theme_color_token(value.as_bytes()))
+                                {
+                                    Some(color) => {
+                                        if let Some(cell) = table.current_cell.as_mut() {
+                                            cell.fill = Paint::Solid(ColorRef::Theme(color));
+                                        }
+                                    }
+                                    None => table.unsupported = true,
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(value) if in_text => {
+                if let Some(cell) = table.as_mut().and_then(|table| table.current_cell.as_mut()) {
+                    cell.content.push_str(&value.unescape()?);
+                }
+            }
+            Event::End(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"t" => in_text = false,
+                    b"r" => {
+                        if let Some(cell) =
+                            table.as_mut().and_then(|table| table.current_cell.as_mut())
+                        {
+                            if let Some(run) = cell.active_run.take() {
+                                let end = cell.content.chars().count();
+                                if run.start < end {
+                                    cell.runs.push(PresentationTextRun {
+                                        start: run.start,
+                                        end,
+                                        style: run.style,
+                                    });
+                                } else {
+                                    cell.unsupported = true;
+                                }
+                            }
+                        }
+                    }
+                    b"solidFill" => {
+                        if let Some(table) = table.as_mut() {
+                            table.in_solid_fill = false;
+                        }
+                    }
+                    b"tcPr" => {
+                        if let Some(table) = table.as_mut() {
+                            table.in_tc_pr = false;
+                        }
+                    }
+                    b"tc" => {
+                        if let Some(table) = table.as_mut() {
+                            if let Some(cell) = table.current_cell.take() {
+                                table.cells.push(cell);
+                            }
+                        }
+                    }
+                    b"tr" => {
+                        if let Some(table) = table.as_mut() {
+                            table.current_row += 1;
+                        }
+                    }
+                    b"tbl" => {
+                        let Some(table) = table.take() else { continue };
+                        if let Some(node) = finish_table_import(table, slide_index, report) {
+                            nodes.push(node);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(nodes)
+}
+
+fn finish_table_import(
+    table: TableImportDraft,
+    slide_index: usize,
+    report: &mut PptxLossReport,
+) -> Option<SceneNode> {
+    let columns = table.columns.len();
+    let rows = table.row_heights.len();
+    let equal_columns = table
+        .columns
+        .first()
+        .is_some_and(|first| table.columns.iter().all(|value| value == first));
+    let equal_rows = table
+        .row_heights
+        .first()
+        .is_some_and(|first| table.row_heights.iter().all(|value| value == first));
+    let valid = !table.unsupported
+        && columns > 0
+        && rows > 0
+        && equal_columns
+        && equal_rows
+        && table.cells.len() == rows * columns
+        && table.cells.iter().all(|cell| {
+            !cell.unsupported
+                && cell.column
+                    == (table
+                        .cells
+                        .iter()
+                        .filter(|candidate| {
+                            candidate.row == cell.row && candidate.column < cell.column
+                        })
+                        .count() as u32)
+        });
+    if !valid {
+        report.unsupported.push(report_item(
+            PptxReportKind::Unsupported,
+            "presentationTable",
+            format!("slides[{slide_index}].table"),
+            "仅支持等宽等高、无合并、基础文本和填充的严格 TableNode 子集；该表格未导入",
+            Some("简化表格后重新导入，或保留原始 PPTX source asset"),
+        ));
+        return None;
+    }
+    let cells = table
+        .cells
+        .into_iter()
+        .map(|cell| TableCell {
+            row: cell.row,
+            column: cell.column,
+            row_span: 1,
+            column_span: 1,
+            content: PresentationRichText {
+                text: cell.content,
+                runs: normalize_runs(cell.runs),
+            },
+            style: TableCellStyle {
+                fill: cell.fill,
+                horizontal_align: cell.horizontal_align,
+                vertical_align: cell.vertical_align,
+            },
+        })
+        .collect();
+    Some(SceneNode {
+        id: table.id,
+        parent_id: None,
+        order_key: format!("{:08}", 50_000 + slide_index),
+        name: table.name,
+        alt_text: None,
+        layout_placeholder_id: None,
+        transform: table.transform,
+        visible: true,
+        locked: false,
+        opacity: 1.0,
+        kind: SceneNodeKind::Table(TableNode {
+            rows: rows as u32,
+            columns: columns as u32,
+            cells,
+        }),
+    })
+}
+
+fn normalize_runs(runs: Vec<PresentationTextRun>) -> Vec<PresentationTextRun> {
+    if runs
+        .iter()
+        .all(|run| run.style == PresentationTextStyle::default())
+    {
+        Vec::new()
+    } else {
+        runs
+    }
+}
+
+/// A connector can be losslessly represented by OOXML only when both endpoints are free points
+/// derived from its unrotated transform.  Connected-shape `idx` values are vendor-specific and
+/// cannot be truthfully converted to v5's semantic anchors without a mapping contract.
+fn parse_supported_connectors(
+    xml: &[u8],
+    slide_index: usize,
+    report: &mut PptxLossReport,
+) -> Result<Vec<SceneNode>, PptxError> {
+    let mut reader = Reader::from_reader(xml);
+    let mut buffer = Vec::new();
+    let mut current: Option<(String, Option<String>, NodeTransform, bool)> = None;
+    let mut nodes = Vec::new();
+    let mut sequence = 60_000usize;
+    loop {
+        match reader.read_event_into(&mut buffer)? {
+            Event::Start(event) | Event::Empty(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"cxnSp" => {
+                        current = Some((
+                            format!("slide-{}-connector-{}", slide_index + 1, sequence),
+                            None,
+                            default_transform(sequence),
+                            false,
+                        ));
+                        sequence += 1;
+                    }
+                    b"cNvPr" => {
+                        if let Some((id, label, _, _)) = current.as_mut() {
+                            if let Some(raw) = attr(&event, b"id") {
+                                *id = format!("slide-{}-node-{raw}", slide_index + 1);
+                            }
+                            *label = attr(&event, b"name");
+                        }
+                    }
+                    b"off" => {
+                        if let Some((_, _, transform, _)) = current.as_mut() {
+                            transform.x = parse_coordinate(&event, b"x", transform.x)?;
+                            transform.y = parse_coordinate(&event, b"y", transform.y)?;
+                        }
+                    }
+                    b"ext" => {
+                        if let Some((_, _, transform, _)) = current.as_mut() {
+                            transform.width = parse_coordinate(&event, b"cx", transform.width)?;
+                            transform.height = parse_coordinate(&event, b"cy", transform.height)?;
+                        }
+                    }
+                    b"stCxn" | b"endCxn" => {
+                        if let Some((_, _, _, attached)) = current.as_mut() {
+                            *attached = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::End(event) if local_name(event.name().as_ref()) == b"cxnSp" => {
+                let Some((id, name, transform, attached)) = current.take() else {
+                    continue;
+                };
+                if attached || transform.rotation != 0.0 {
+                    report.unsupported.push(report_item(PptxReportKind::Unsupported, "connector", format!("slides[{slide_index}].{id}"), "仅支持未旋转、两端均为 free point 的 connector；连接到节点的 idx 无法无损映射为 semantic anchor", Some("改为自由端点 connector，或保留原始 PPTX source asset")));
+                } else {
+                    nodes.push(SceneNode {
+                        id,
+                        parent_id: None,
+                        order_key: format!("{:08}", sequence),
+                        name,
+                        alt_text: None,
+                        layout_placeholder_id: None,
+                        transform: transform.clone(),
+                        visible: true,
+                        locked: false,
+                        opacity: 1.0,
+                        kind: SceneNodeKind::Connector(ConnectorNode {
+                            start: ConnectorEndpoint::Free(Point {
+                                x: transform.x,
+                                y: transform.y,
+                            }),
+                            end: ConnectorEndpoint::Free(Point {
+                                x: transform.x + transform.width,
+                                y: transform.y + transform.height,
+                            }),
+                        }),
+                    });
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    Ok(nodes)
 }
 
 fn parse_coordinate(
@@ -1882,7 +2490,41 @@ fn report_unsupported_node_export_fields(node: &SceneNode, report: &mut PptxLoss
                 Some("使用原始图片配置，或等待 image config writer"),
             ));
         }
-        SceneNodeKind::Shape(_) | SceneNodeKind::Image(_) | SceneNodeKind::Group(_) => {}
+        // ChartSpec is canonical and editable, but the PPTX adapter does not
+        // yet own a chart-part writer.  Keep that loss explicit rather than
+        // emitting a visually plausible shape or silently dropping series.
+        SceneNodeKind::Chart(_) => report.unsupported.push(report_item(
+            PptxReportKind::Unsupported,
+            "chartSpec",
+            &node.id,
+            "writer 尚未生成可交换的 OOXML chart part；不会静默丢弃 categories 或 series",
+            Some("使用 write_pptx_with_report 获取 loss report，或等待 chart-part writer"),
+        )),
+        SceneNodeKind::Table(table) if !table_is_lossless_pptx_subset(table) => {
+            report.unsupported.push(report_item(
+                PptxReportKind::Unsupported,
+                "presentationTable",
+                &node.id,
+                "writer 仅支持等宽等高、无合并、基础文本与 no/solid fill 的 TableNode 子集",
+                Some("简化表格或使用 write_pptx_with_report 检查不可逆字段"),
+            ))
+        }
+        SceneNodeKind::Connector(connector)
+            if !connector_is_lossless_pptx_subset(node, connector) =>
+        {
+            report.unsupported.push(report_item(
+                PptxReportKind::Unsupported,
+                "connector",
+                &node.id,
+                "writer 仅支持未旋转、两端为 transform 起止点的 free connector",
+                Some("改为自由端点 connector，或保留原始 PPTX source asset"),
+            ))
+        }
+        SceneNodeKind::Shape(_)
+        | SceneNodeKind::Image(_)
+        | SceneNodeKind::Group(_)
+        | SceneNodeKind::Table(_)
+        | SceneNodeKind::Connector(_) => {}
         kind => report.unsupported.push(report_item(
             PptxReportKind::Unsupported,
             "sceneNode",
@@ -1891,6 +2533,37 @@ fn report_unsupported_node_export_fields(node: &SceneNode, report: &mut PptxLoss
             Some("保留在 Deck；不要静默导出"),
         )),
     }
+}
+
+fn table_is_lossless_pptx_subset(table: &TableNode) -> bool {
+    table.rows > 0
+        && table.columns > 0
+        && table.cells.len() == (table.rows as usize) * (table.columns as usize)
+        && table.cells.iter().all(|cell| {
+            cell.row_span == 1
+                && cell.column_span == 1
+                && !cell.content.text.contains('\n')
+                && cell.content.runs.iter().all(|run| {
+                    run.style.color.as_ref().is_none_or(
+                        |color| !matches!(color, ColorRef::Rgba(value) if value.a != u8::MAX),
+                    )
+                })
+        })
+}
+
+fn connector_is_lossless_pptx_subset(node: &SceneNode, connector: &ConnectorNode) -> bool {
+    if node.transform.rotation != 0.0 {
+        return false;
+    }
+    let (ConnectorEndpoint::Free(start), ConnectorEndpoint::Free(end)) =
+        (&connector.start, &connector.end)
+    else {
+        return false;
+    };
+    start.x == node.transform.x
+        && start.y == node.transform.y
+        && end.x == node.transform.x + node.transform.width
+        && end.y == node.transform.y + node.transform.height
 }
 
 fn report_unsupported_text_runs(
@@ -2071,10 +2744,122 @@ fn append_node_xml(node: &SceneNode, output: &mut String, context: &mut SlideExp
             output.push_str(&format!("<p:pic><p:nvPicPr><p:cNvPr id=\"{}\" name=\"{}\"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed=\"rIdImage{}\"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr></p:pic>", numeric_id(&node.id), xml_escaped(&node.name.clone().unwrap_or_default()), context.image_index, xfrm_xml(node)));
             context.image_index += 1;
         }
+        SceneNodeKind::Table(table) if table_is_lossless_pptx_subset(table) => {
+            output.push_str(&table_xml(node, table));
+        }
+        SceneNodeKind::Connector(connector)
+            if connector_is_lossless_pptx_subset(node, connector) =>
+        {
+            output.push_str(&connector_xml(node));
+        }
         // Unsupported variants have already been recorded by
         // `report_unsupported_node_export_fields` before package construction.  Do not add a
         // second, less precise report here and do not emit a placeholder XML node.
         _ => {}
+    }
+}
+
+fn connector_xml(node: &SceneNode) -> String {
+    format!(
+        "<p:cxnSp><p:nvCxnSpPr><p:cNvPr id=\"{}\" name=\"{}\"/><p:cNvCxnSpPr/><p:nvPr/></p:nvCxnSpPr><p:spPr>{}<a:prstGeom prst=\"line\"><a:avLst/></a:prstGeom></p:spPr></p:cxnSp>",
+        numeric_id(&node.id),
+        xml_escaped(&node.name.clone().unwrap_or_default()),
+        xfrm_xml(node),
+    )
+}
+
+fn table_xml(node: &SceneNode, table: &TableNode) -> String {
+    let column_width = node.transform.width / table.columns as f64;
+    let row_height = node.transform.height / table.rows as f64;
+    let grid = (0..table.columns)
+        .map(|_| format!("<a:gridCol w=\"{}\"/>", column_width.round()))
+        .collect::<String>();
+    let rows = (0..table.rows)
+        .map(|row| {
+            let cells = (0..table.columns)
+                .map(|column| {
+                    let cell = table
+                        .cells
+                        .iter()
+                        .find(|cell| cell.row == row && cell.column == column)
+                        .expect("validated strict table contains every cell");
+                    table_cell_xml(cell)
+                })
+                .collect::<String>();
+            format!("<a:tr h=\"{}\">{cells}</a:tr>", row_height.round())
+        })
+        .collect::<String>();
+    format!(
+        "<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id=\"{}\" name=\"{}\"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm>{}</p:xfrm><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/table\"><a:tbl><a:tblPr firstRow=\"0\" firstCol=\"0\" lastRow=\"0\" lastCol=\"0\" bandRow=\"0\" bandCol=\"0\"/><a:tblGrid>{grid}</a:tblGrid>{rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>",
+        numeric_id(&node.id),
+        xml_escaped(&node.name.clone().unwrap_or_default()),
+        graphic_frame_xfrm_xml(node),
+    )
+}
+
+fn table_cell_xml(cell: &TableCell) -> String {
+    let align = match cell.style.horizontal_align {
+        HorizontalAlign::Left => "l",
+        HorizontalAlign::Center => "ctr",
+        HorizontalAlign::Right => "r",
+    };
+    let anchor = match cell.style.vertical_align {
+        TextVerticalAlign::Top => "t",
+        TextVerticalAlign::Middle => "ctr",
+        TextVerticalAlign::Bottom => "b",
+    };
+    let body = rich_text_paragraph_xml(&cell.content);
+    format!(
+        "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn=\"{align}\"/>{body}</a:p></a:txBody><a:tcPr anchor=\"{anchor}\">{}</a:tcPr></a:tc>",
+        paint_xml(&cell.style.fill),
+    )
+}
+
+fn rich_text_paragraph_xml(body: &PresentationRichText) -> String {
+    if body.text.is_empty() {
+        return String::new();
+    }
+    let runs = if body.runs.is_empty() {
+        vec![PresentationTextRun {
+            start: 0,
+            end: body.text.chars().count(),
+            style: PresentationTextStyle::default(),
+        }]
+    } else {
+        body.runs.clone()
+    };
+    let chars = body.text.chars().collect::<Vec<_>>();
+    runs.iter()
+        .map(|run| {
+            text_run_xml(
+                &chars[run.start..run.end].iter().collect::<String>(),
+                &run.style,
+            )
+        })
+        .collect()
+}
+
+fn graphic_frame_xfrm_xml(node: &SceneNode) -> String {
+    format!(
+        "<a:off x=\"{}\" y=\"{}\"/><a:ext cx=\"{}\" cy=\"{}\"/>",
+        node.transform.x.round(),
+        node.transform.y.round(),
+        node.transform.width.round(),
+        node.transform.height.round(),
+    )
+}
+
+fn paint_xml(paint: &Paint) -> String {
+    match paint {
+        Paint::None => "<a:noFill/>".into(),
+        Paint::Solid(ColorRef::Rgba(value)) => format!(
+            "<a:solidFill><a:srgbClr val=\"{:02X}{:02X}{:02X}\"/></a:solidFill>",
+            value.r, value.g, value.b
+        ),
+        Paint::Solid(ColorRef::Theme(token)) => format!(
+            "<a:solidFill><a:schemeClr val=\"{}\"/></a:solidFill>",
+            theme_color_name(token)
+        ),
     }
 }
 
@@ -2227,6 +3012,7 @@ fn content_types(slide_count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oo_schema::presentation_v5::{ChartNode, ChartSeries, ChartSpec, ChartType};
 
     fn text_node(id: &str, text: &str) -> SceneNode {
         SceneNode {
@@ -2282,6 +3068,277 @@ mod tests {
             imported.slides[0].nodes[0].kind,
             SceneNodeKind::Text(_)
         ));
+    }
+
+    #[test]
+    fn strict_table_and_free_connector_roundtrip_without_semantic_loss() {
+        let table = SceneNode {
+            id: "table-1".into(),
+            parent_id: None,
+            order_key: "00000000".into(),
+            name: Some("计划表".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: NodeTransform {
+                x: 1_000.0,
+                y: 2_000.0,
+                width: 4_000.0,
+                height: 2_000.0,
+                rotation: 0.0,
+            },
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Table(TableNode {
+                rows: 2,
+                columns: 2,
+                cells: vec![
+                    TableCell {
+                        row: 0,
+                        column: 0,
+                        row_span: 1,
+                        column_span: 1,
+                        content: PresentationRichText {
+                            text: "任务".into(),
+                            runs: vec![],
+                        },
+                        style: TableCellStyle {
+                            fill: Paint::Solid(ColorRef::Rgba(Rgba {
+                                r: 1,
+                                g: 2,
+                                b: 3,
+                                a: u8::MAX,
+                            })),
+                            horizontal_align: HorizontalAlign::Center,
+                            vertical_align: TextVerticalAlign::Middle,
+                        },
+                    },
+                    TableCell {
+                        row: 0,
+                        column: 1,
+                        row_span: 1,
+                        column_span: 1,
+                        content: PresentationRichText {
+                            text: "负责人".into(),
+                            runs: vec![],
+                        },
+                        style: TableCellStyle {
+                            fill: Paint::None,
+                            horizontal_align: HorizontalAlign::Left,
+                            vertical_align: TextVerticalAlign::Top,
+                        },
+                    },
+                    TableCell {
+                        row: 1,
+                        column: 0,
+                        row_span: 1,
+                        column_span: 1,
+                        content: PresentationRichText {
+                            text: "完成".into(),
+                            runs: vec![],
+                        },
+                        style: TableCellStyle {
+                            fill: Paint::None,
+                            horizontal_align: HorizontalAlign::Right,
+                            vertical_align: TextVerticalAlign::Bottom,
+                        },
+                    },
+                    TableCell {
+                        row: 1,
+                        column: 1,
+                        row_span: 1,
+                        column_span: 1,
+                        content: PresentationRichText {
+                            text: String::new(),
+                            runs: vec![],
+                        },
+                        style: TableCellStyle::default(),
+                    },
+                ],
+            }),
+        };
+        let connector = SceneNode {
+            id: "connector-1".into(),
+            parent_id: None,
+            order_key: "00000001".into(),
+            name: Some("连接".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: NodeTransform {
+                x: 7_000.0,
+                y: 8_000.0,
+                width: 500.0,
+                height: 800.0,
+                rotation: 0.0,
+            },
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Connector(ConnectorNode {
+                start: ConnectorEndpoint::Free(Point {
+                    x: 7_000.0,
+                    y: 8_000.0,
+                }),
+                end: ConnectorEndpoint::Free(Point {
+                    x: 7_500.0,
+                    y: 8_800.0,
+                }),
+            }),
+        };
+        let deck = Deck {
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: SlideBackground::None,
+                notes: None,
+                transition: None,
+                nodes: vec![table, connector],
+                timeline: Default::default(),
+            }],
+            ..Deck::default()
+        };
+        deck.validate().unwrap();
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(imported.loss_report.unsupported.is_empty());
+        assert_eq!(
+            semantic_diff(&deck, &imported.deck),
+            PptxSemanticDiff::default()
+        );
+    }
+
+    #[test]
+    fn strict_table_connector_fixture_has_empty_loss_report_and_semantic_diff() {
+        let deck: Deck = serde_json::from_str(include_str!(
+            "../../../fixtures/presentation/pptx/strict-table-connector-deck.json"
+        ))
+        .unwrap();
+        deck.validate().unwrap();
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(imported.loss_report.unsupported.is_empty());
+        assert!(semantic_diff(&deck, &imported.deck).is_equivalent());
+    }
+
+    #[test]
+    fn strict_writer_reports_merged_table_and_attached_connector() {
+        let mut node = text_node("table", "");
+        node.kind = SceneNodeKind::Table(TableNode {
+            rows: 1,
+            columns: 2,
+            cells: vec![TableCell {
+                row: 0,
+                column: 0,
+                row_span: 1,
+                column_span: 2,
+                content: PresentationRichText {
+                    text: "merged".into(),
+                    runs: vec![],
+                },
+                style: TableCellStyle::default(),
+            }],
+        });
+        let connector = SceneNode {
+            id: "connector".into(),
+            parent_id: None,
+            order_key: "00000001".into(),
+            name: None,
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: default_transform(1),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Connector(ConnectorNode {
+                start: ConnectorEndpoint::Node {
+                    node_id: "table".into(),
+                    anchor: oo_schema::presentation_v5::Anchor::Center,
+                },
+                end: ConnectorEndpoint::Free(Point { x: 3.0, y: 4.0 }),
+            }),
+        };
+        let deck = Deck {
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: SlideBackground::None,
+                notes: None,
+                transition: None,
+                nodes: vec![node, connector],
+                timeline: Default::default(),
+            }],
+            ..Deck::default()
+        };
+        deck.validate().unwrap();
+        let report = write_pptx_with_report(&deck).unwrap().loss_report;
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "presentationTable"));
+        assert!(report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "connector"));
+        assert!(matches!(write_pptx(&deck), Err(PptxError::LossyExport(_))));
+    }
+
+    #[test]
+    fn chart_spec_export_is_reported_and_strict_export_rejects_it() {
+        let chart = SceneNode {
+            id: "chart".into(),
+            parent_id: None,
+            order_key: "00000000".into(),
+            name: Some("季度营收".into()),
+            alt_text: None,
+            layout_placeholder_id: None,
+            transform: default_transform(0),
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            kind: SceneNodeKind::Chart(ChartNode {
+                spec: ChartSpec {
+                    chart_type: ChartType::Column,
+                    title: Some("季度营收".into()),
+                    categories: vec!["Q1".into(), "Q2".into()],
+                    series: vec![ChartSeries {
+                        name: "营收".into(),
+                        values: vec![10.0, 20.0],
+                        color: None,
+                    }],
+                },
+            }),
+        };
+        let deck = Deck {
+            theme: DeckTheme {
+                id: "theme".into(),
+                ..Default::default()
+            },
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: Default::default(),
+                notes: None,
+                transition: None,
+                nodes: vec![chart],
+                timeline: Default::default(),
+            }],
+            ..Default::default()
+        };
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported
+            .loss_report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "chartSpec"));
+        assert!(matches!(write_pptx(&deck), Err(PptxError::LossyExport(_))));
     }
 
     #[test]

@@ -31,7 +31,7 @@ const snapshot: SnapshotEnvelope = {
   protocolVersion: 1,
   artifact: {
     format: "open-office-artifact",
-    schemaVersion: 4,
+    schemaVersion: 5,
     artifactId: "doc-1",
     revision: 4,
     kind: "document",
