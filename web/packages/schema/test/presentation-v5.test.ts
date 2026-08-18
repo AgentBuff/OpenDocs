@@ -45,7 +45,10 @@ describe("presentation v5 target contract", () => {
   });
 
   it("accepts typed text frame and master/layout placeholder references", () => {
-    expect(parsePresentationV5Deck(deck)).toMatchObject({ slides: [{ nodes: [{ layoutPlaceholderId: "title" }] }] });
+    expect(parsePresentationV5Deck(deck)).toMatchObject({
+      slides: [{ nodes: [{ layoutPlaceholderId: "title" }] }],
+      masters: [{ background: { type: "none" } }],
+    });
   });
 
   it("rejects generic v4 node data and invalid typed payloads", () => {
@@ -64,6 +67,18 @@ describe("presentation v5 target contract", () => {
     expect(() => parsePresentationV5Deck(invalidTimeline)).toThrow(/timeline/);
     const invalidTable = copy(deck); invalidTable.slides[0].nodes[0].kind = { type: "table", data: { rows: 1, columns: 2, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } }] } } as never;
     expect(() => parsePresentationV5Deck(invalidTable)).toThrow(/未覆盖/);
+  });
+
+  it("accepts only the strict ChartSpec subset", () => {
+    const chart = copy(deck);
+    chart.slides[0].nodes[0].kind = {
+      type: "chart",
+      data: { spec: { chartType: "column", title: "季度营收", categories: ["Q1", "Q2"], series: [{ name: "营收", values: [10, 20], color: null }] } },
+    } as never;
+    expect(parsePresentationV5Deck(chart)).toMatchObject({ slides: [{ nodes: [{ kind: { type: "chart", data: { spec: { chartType: "column" } } } }] }] });
+    const invalid = copy(chart);
+    (invalid.slides[0].nodes[0] as unknown as { kind: { data: { spec: { series: { values: number[] }[] } } } }).kind.data.spec.series[0]!.values = [10];
+    expect(() => parsePresentationV5Deck(invalid)).toThrow(/values 数量/);
   });
 
   it("requires a strict, object-shaped extension payload", () => {

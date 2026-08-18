@@ -25,11 +25,41 @@ describe("PresentationNodeRegistry", () => {
     const registry = createBuiltinPresentationNodeRegistry();
     expect(PRESENTATION_NODE_TYPES).toEqual(["shape", "text", "image", "video", "audio", "table", "chart", "connector", "group", "embed", "extension"]);
     expect(registry.has("text")).toBe(true);
-    expect(registry.has("table")).toBe(false);
-    const unsupported = registry.resolve(context({ ...base, kind: { type: "table", data: { rows: 1, columns: 1, cells: [] } } }));
-    expect(unsupported.renderModel).toMatchObject({ kind: "unsupported", nodeType: "table" });
-    expect(unsupported.toolbar).toEqual([]);
-    expect(unsupported.inspector.fields[0]?.unavailableReason).toContain("不会提供不可执行");
+    expect(registry.has("table")).toBe(true);
+    expect(registry.has("chart")).toBe(true);
+    const table = { ...base, kind: { type: "table" as const, data: { rows: 1, columns: 1, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "old", runs: [] }, style: { fill: { type: "none" as const }, horizontalAlign: "left" as const, verticalAlign: "middle" as const } }] } } } satisfies PresentationV5Node;
+    const source = context(table, new Set(["presentation.setTableCellContent", "presentation.setTableCellStyle"]));
+    expect(registry.resolve(source).renderModel).toEqual({ kind: "table", rows: 1, columns: 1 });
+    expect(registry.mapAction("table.cellContent", { context: source, value: { row: 0, column: 0, content: { text: "new", runs: [] } } })).toEqual([
+      { type: "setTableCellContent", slideId: "slide-1", nodeId: "node-1", row: 0, column: 0, content: { text: "new", runs: [] } },
+    ]);
+    const tableStyle = { fill: { type: "none" as const }, horizontalAlign: "left" as const, verticalAlign: "middle" as const };
+    expect(registry.mapAction("table.cellStyle", { context: source, value: { cells: [{ row: 0, column: 0 }], style: tableStyle } })).toEqual([
+      { type: "setTableCellStyle", slideId: "slide-1", nodeId: "node-1", cells: [{ row: 0, column: 0 }], style: tableStyle },
+    ]);
+    const structureSource = context(table, new Set(["presentation.insertTableRows", "presentation.mergeTableCells"]));
+    expect(registry.mapAction("table.insertRows", { context: structureSource, value: { index: 1, count: 1 } })).toEqual([
+      { type: "insertTableRows", slideId: "slide-1", nodeId: "node-1", index: 1, count: 1 },
+    ]);
+    expect(registry.mapAction("table.mergeCells", { context: structureSource, value: { start: { row: 0, column: 0 }, end: { row: 0, column: 1 } } })).toEqual([
+      { type: "mergeTableCells", slideId: "slide-1", nodeId: "node-1", start: { row: 0, column: 0 }, end: { row: 0, column: 1 } },
+    ]);
+    expect(() => registry.mapAction("table.deleteRow", { context: structureSource, value: { index: 0 } })).toThrow("capability is unavailable");
+  });
+
+  it("maps a complete chart spec through its dedicated capability", () => {
+    const registry = createBuiltinPresentationNodeRegistry();
+    const chart = { ...base, kind: { type: "chart" as const, data: { spec: {
+      chartType: "column" as const, title: "营收", categories: ["Q1", "Q2"],
+      series: [{ name: "营收", values: [12, 24], color: null }],
+    } } } } satisfies PresentationV5Node;
+    const source = context(chart, new Set(["presentation.setChartSpec"]));
+    expect(registry.resolve(source).renderModel).toEqual({ kind: "chart", spec: chart.kind.data.spec });
+    const spec = { ...chart.kind.data.spec, chartType: "line" as const, title: "预测" };
+    expect(registry.mapAction("chart.spec", { context: source, value: spec })).toEqual([
+      { type: "setChartSpec", slideId: "slide-1", nodeId: "node-1", spec },
+    ]);
+    expect(chart.kind.data.spec.chartType).toBe("column");
   });
 
   it("maps text actions to semantic commands without mutating the node", () => {
@@ -81,6 +111,50 @@ describe("PresentationNodeRegistry", () => {
       { type: "setShapeStyle", slideId: "slide-1", nodeId: "node-1", style },
     ]);
     expect(shape.kind.data.style.stroke).toBeNull();
+  });
+
+  it("changes a shape primitive through its own semantic command without replacing the node", () => {
+    const registry = createBuiltinPresentationNodeRegistry();
+    const shape = { ...base, kind: { type: "shape", data: { geometry: "rectangle", style: { fill: { type: "none" }, stroke: null } } } } satisfies PresentationV5Node;
+    const source = context(shape, new Set(["presentation.setShapeGeometry"]));
+    expect(registry.mapAction("shape.geometry", { context: source, value: "arrow" })).toEqual([
+      { type: "setShapeGeometry", slideId: "slide-1", nodeId: "node-1", geometry: "arrow" },
+    ]);
+    expect(shape.kind.data.geometry).toBe("rectangle");
+  });
+
+  it("maps connector endpoints as one semantic command without mutating the node", () => {
+    const registry = createBuiltinPresentationNodeRegistry();
+    const connector = { ...base, kind: { type: "connector" as const, data: {
+      start: { type: "free" as const, value: { x: 1, y: 2 } },
+      end: { type: "node" as const, value: { nodeId: "target", anchor: "left" as const } },
+    } } } satisfies PresentationV5Node;
+    const source = context(connector, new Set(["presentation.setConnectorEndpoints"]));
+    const endpoints = {
+      start: { type: "node" as const, value: { nodeId: "target", anchor: "right" as const } },
+      end: { type: "free" as const, value: { x: 200, y: 100 } },
+    };
+    expect(registry.resolve(source).renderModel).toEqual({
+      kind: "connector",
+      start: connector.kind.data.start,
+      end: connector.kind.data.end,
+    });
+    expect(registry.mapAction("connector.endpoints", { context: source, value: endpoints })).toEqual([
+      { type: "setConnectorEndpoints", slideId: "slide-1", nodeId: "node-1", ...endpoints },
+    ]);
+    expect(connector.kind.data.start.type).toBe("free");
+  });
+
+
+  it("maps node locking to a typed semantic command without changing the projection", () => {
+    const registry = createBuiltinPresentationNodeRegistry();
+    const shape = { ...base, kind: { type: "shape", data: { geometry: "rectangle", style: { fill: { type: "none" }, stroke: null } } } } satisfies PresentationV5Node;
+    const source = context(shape, new Set(["presentation.setNodeLocked"]));
+    expect(registry.resolve(source).toolbar.map((item) => item.id)).toEqual(["presentation.node.node.lock"]);
+    expect(registry.mapAction("node.lock", { context: source, value: true })).toEqual([
+      { type: "setNodeLocked", slideId: "slide-1", nodeId: "node-1", locked: true },
+    ]);
+    expect(shape.locked).toBe(false);
   });
 
   it("gets group children from the immutable slide projection instead of selection state", () => {

@@ -112,13 +112,33 @@ Artifact 身份、资源、权限、历史、协同和导入导出基础设施�
 
 Presentation 不复用 Document Block，也不把 Canvas 状态写回模型。`oo-presentation` 的唯一写入口是
 `PresentationEngine::execute(PresentationCommandBatch)`：命令只表达 slide/scene element 的语义意图，
-提交结果携带可逆的 `PresentationMutation` 和协议层 `Invalidation`。element 的 `children` 只能由结构命令
-演进，更新命令只允许修改 type、transform 和 attrs；删除子树时同步解除父引用，避免悬挂引用和父子双写。
+提交结果携带可逆的 `PresentationMutation` 和协议层 `Invalidation`。scene node 的父子关系只能由结构命令
+演进；对象更新必须选择具体的强类型命令（例如 `setTextFrame`、`setShapeStyle`、`setShapeGeometry`），不存在
+`attrs`、通用 `patch` 或 renderer-owned property bag。删除子树时同步解除父引用，避免悬挂引用和父子双写。
 
 `PresentationChangeSet.invalidation` 使用 `presentation.slide`、`presentation.element` 两类实体引用，
 渲染器可以仅重绘变更 slide/element；属性更新不会错误地标记 `structureChanged`。事务失败或最终 schema 校验
 失败时由 mutation 逆操作回滚，revision 不前进。Scene Graph 的 typed mutation 可转换为通用
 `oo_protocol::MutationRecord`，但 protocol 不依赖 Presentation 的内部结构。
+
+复制幻灯片使用 `presentation.duplicateSlide`，而不是客户端读取、改写再提交整份 Deck。命令必须携带
+目标 slide id、顺序键，以及 source→target 的完整 node / animation id 映射；engine 在同一事务中改写父子、
+connector、timeline 引用并保留既有 asset 引用，因此 undo/redo、缩略图失效与事件订阅仍然是局部且可验证的。
+
+Presentation Table 是 Scene Node 内的独立严格 Grid。行列增删、合并与拆分必须使用具体
+`presentation.*Table*` 命令；引擎保持 top-left anchor、完整覆盖与非重叠 merged spans，并只记录受影响
+`TableNode` 的逆操作。UI 不得通过序列化整个 table 或向 renderer 写入临时 cell patch 来实现结构编辑。
+
+Connector 同样是独立的 Scene Node 领域边界。端点更新只能通过
+`presentation.setConnectorEndpoints` 同时提交 start/end；engine 在写入前验证 target 非空、非自身且位于
+同一 slide，随后由 schema 复核 anchor 与引用完整性。端点、Canvas path、hover handle 都不能被拆成 renderer
+侧 patch：失败事务会以同一条 inverse 恢复两端，并局部失效 connector 所在 slide。
+
+Master 与 Layout 也是 Deck 的一等领域实体。`create/update/deleteMaster` 与
+`create/update/deleteLayout` 分别接收完整的强类型实体，不存在局部 JSON patch；engine 在同一原子事务内
+校验 master→layout、layout→slide、layout placeholder→master placeholder 的引用。仍被 layout 或 slide
+使用的实体不能删除；更新后若破坏既有引用，最终 schema 校验会回滚整个批次。Master/Layout 变更通过
+`DeckProjection` 的反向索引只失效依赖它们的 slide 与缩略图。
 
 Presentation 的几何查询由同一 crate 提供纯 projection：`project_layout` 返回 slide 内所有 element 的
 world-space oriented rect，`world_rect` 查询单个 element，`project_dirty_layout` 只返回 invalidation 命中的

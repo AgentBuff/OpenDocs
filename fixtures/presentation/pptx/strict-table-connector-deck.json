@@ -1,0 +1,65 @@
+{
+  "pageSpec": { "width": 12192000.0, "height": 6858000.0, "unit": "emu" },
+  "theme": { "id": "default", "name": "", "colors": {}, "fonts": {} },
+  "masters": [],
+  "layouts": [],
+  "assets": [],
+  "slides": [
+    {
+      "id": "slide",
+      "orderKey": "00000000",
+      "name": "",
+      "layoutId": null,
+      "background": { "type": "none" },
+      "notes": null,
+      "transition": null,
+      "timeline": { "entries": [] },
+      "nodes": [
+        {
+          "id": "table-1",
+          "parentId": null,
+          "orderKey": "00000000",
+          "name": "计划表",
+          "altText": null,
+          "layoutPlaceholderId": null,
+          "transform": { "x": 1000.0, "y": 2000.0, "width": 4000.0, "height": 2000.0, "rotation": 0.0 },
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "kind": {
+            "type": "table",
+            "data": {
+              "rows": 2,
+              "columns": 2,
+              "cells": [
+                { "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "任务", "runs": [] }, "style": { "fill": { "type": "solid", "value": { "type": "rgba", "value": { "r": 1, "g": 2, "b": 3, "a": 255 } } }, "horizontalAlign": "center", "verticalAlign": "middle" } },
+                { "row": 0, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "负责人", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "top" } },
+                { "row": 1, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "完成", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "right", "verticalAlign": "bottom" } },
+                { "row": 1, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "middle" } }
+              ]
+            }
+          }
+        },
+        {
+          "id": "connector-1",
+          "parentId": null,
+          "orderKey": "00000001",
+          "name": "连接",
+          "altText": null,
+          "layoutPlaceholderId": null,
+          "transform": { "x": 7000.0, "y": 8000.0, "width": 500.0, "height": 800.0, "rotation": 0.0 },
+          "visible": true,
+          "locked": false,
+          "opacity": 1.0,
+          "kind": {
+            "type": "connector",
+            "data": {
+              "start": { "type": "free", "value": { "x": 7000.0, "y": 8000.0 } },
+              "end": { "type": "free", "value": { "x": 7500.0, "y": 8800.0 } }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

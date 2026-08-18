@@ -23,7 +23,7 @@ use oo_protocol::{
     ArtifactProjectionKind, ProjectionEnvelope, CURRENT_PROTOCOL_VERSION,
     PROJECTION_CONTRACT_VERSION,
 };
-use oo_schema::presentation_v5::{Deck, SceneNode, Slide, SlidePageSpec, Timeline};
+use oo_schema::presentation_v5::{Deck, SceneNode, Slide, SlideLayout, SlideMaster, SlidePageSpec, Timeline};
 use oo_schema::{ArtifactPayload, DocumentBlock, DocumentBlockKind, DocumentModel};
 use oo_whiteboard::export_projection as export_whiteboard_projection;
 
@@ -169,6 +169,34 @@ struct PresentationOverview<'a> {
     master_count: usize,
     layout_count: usize,
     asset_count: usize,
+    masters: Vec<PresentationMasterOverview<'a>>,
+    layouts: Vec<PresentationLayoutOverview<'a>>,
+}
+
+/// Stable metadata only. The canonical master/layout bodies intentionally stay
+/// out of the overview projection so a layout picker never becomes a writable
+/// second Deck model in the browser.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentationMasterOverview<'a> {
+    id: &'a str,
+    name: &'a str,
+    placeholder_count: usize,
+    /// A read-only, schema-complete entity. The browser uses this only as the
+    /// source for an explicit `updateMaster` command; it never persists a
+    /// mutable Deck clone.
+    master: &'a SlideMaster,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresentationLayoutOverview<'a> {
+    id: &'a str,
+    master_id: &'a str,
+    name: &'a str,
+    placeholder_count: usize,
+    /// See `PresentationMasterOverview::master`.
+    layout: &'a SlideLayout,
 }
 
 fn presentation_overview<'a>(
@@ -183,6 +211,27 @@ fn presentation_overview<'a>(
         master_count: deck.masters.len(),
         layout_count: deck.layouts.len(),
         asset_count: deck.assets.len(),
+        masters: deck
+            .masters
+            .iter()
+            .map(|master| PresentationMasterOverview {
+                id: &master.id,
+                name: &master.name,
+                placeholder_count: master.placeholders.len(),
+                master,
+            })
+            .collect(),
+        layouts: deck
+            .layouts
+            .iter()
+            .map(|layout| PresentationLayoutOverview {
+                id: &layout.id,
+                master_id: &layout.master_id,
+                name: &layout.name,
+                placeholder_count: layout.placeholders.len(),
+                layout,
+            })
+            .collect(),
     }
 }
 

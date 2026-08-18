@@ -29,6 +29,25 @@ const image: PresentationV5Node = {
   },
 };
 
+const table: PresentationV5Node = {
+  ...image,
+  id: "table-1",
+  name: "数据表格",
+  kind: {
+    type: "table",
+    data: {
+      rows: 2,
+      columns: 2,
+      cells: [
+        { row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "A1", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 0, column: 1, rowSpan: 1, columnSpan: 1, content: { text: "B1", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 1, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "A2", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 1, column: 1, rowSpan: 1, columnSpan: 1, content: { text: "B2", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+      ],
+    },
+  },
+};
+
 describe("PresentationStudio node rendering smoke", () => {
   it("keeps image rendering on the immutable asset endpoint and exposes selection feedback", () => {
     const html = renderToStaticMarkup(
@@ -78,5 +97,30 @@ describe("PresentationStudio node rendering smoke", () => {
     );
     expect(html).not.toContain('aria-label="调整对象大小"');
     expect(html).not.toContain("is-selected");
+  });
+
+  it("projects a selected table range as accessible cells without storing selection in the node", () => {
+    const html = renderToStaticMarkup(
+      <SlideNode
+        artifactId="presentation-1"
+        node={table}
+        transform={table.transform}
+        scale={1}
+        editing={false}
+        adornments={[]}
+        unsupportedReason={null}
+        tableSelection={{ nodeId: "table-1", anchor: { row: 0, column: 0 }, focus: { row: 0, column: 1 } }}
+        onSelect={() => undefined}
+        onEdit={() => undefined}
+        onPointerDown={() => undefined}
+        onTableCellSelect={() => undefined}
+        onTextSave={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('role="gridcell"');
+    expect(html).toContain('aria-label="第 1 行，第 1 列"');
+    expect(html.match(/is-grid-selected/g)).toHaveLength(2);
+    expect(table.kind.type === "table" && table.kind.data.cells).toHaveLength(4);
   });
 });

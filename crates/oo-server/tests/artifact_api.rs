@@ -93,6 +93,39 @@ impl TestApp {
         )
         .await
     }
+
+    /// Upload one artifact-scoped binary using the same multipart boundary as
+    /// the browser SDK. Presentation transactions may only register assets
+    /// returned by this route; tests should never seed an unverified asset row
+    /// to bypass that contract.
+    async fn upload_artifact_asset(
+        &self,
+        artifact_id: &str,
+        file_name: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> (StatusCode, Value) {
+        const BOUNDARY: &str = "----oo-presentation-asset";
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\nContent-Type: {content_type}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        self.json(
+            Request::post(format!("/api/artifacts/{artifact_id}/assets"))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={BOUNDARY}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+    }
 }
 
 async fn seed_presentation_fixture(app: &TestApp, id: &str) {
@@ -247,6 +280,35 @@ async fn presentation_transactions_and_read_projections_are_revision_safe() {
         .as_array()
         .unwrap()
         .iter()
+        .any(|command| command["typeId"] == "presentation.duplicateSlide"));
+    assert!(presentation["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["typeId"] == "presentation.setConnectorEndpoints"));
+    assert!(presentation["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["typeId"] == "presentation.setChartSpec"));
+    for command_type in [
+        "presentation.createMaster",
+        "presentation.updateMaster",
+        "presentation.deleteMaster",
+        "presentation.createLayout",
+        "presentation.updateLayout",
+        "presentation.deleteLayout",
+    ] {
+        assert!(presentation["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command["typeId"] == command_type));
+    }
+    assert!(presentation["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
         .any(|command| command["typeId"] == "presentation.history"));
 
     let (status, headers, bytes) = app
@@ -262,6 +324,8 @@ async fn presentation_transactions_and_read_projections_are_revision_safe() {
     let deck = serde_json::from_slice::<Value>(&bytes).unwrap();
     assert_eq!(deck["projection"], "presentation");
     assert_eq!(deck["data"]["slideCount"], 1);
+    assert_eq!(deck["data"]["layouts"][0]["id"], "layout-title");
+    assert_eq!(deck["data"]["layouts"][0]["masterId"], "master-default");
 
     let (status, _, _) = app
         .send_with_headers(
@@ -517,6 +581,346 @@ async fn presentation_transactions_and_read_projections_are_revision_safe() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error["code"], "bad_request");
+}
+
+#[tokio::test]
+async fn presentation_master_and_layout_commands_are_capability_gated_and_typed() {
+    let app = TestApp::new().await;
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "presentation", "title": "Master commands"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap().to_owned();
+    seed_presentation_fixture(&app, &id).await;
+    let master = json!({
+        "id": "master-default", "name": "Updated default", "background": {"type": "none"},
+        "placeholders": [{
+            "id": "master-title", "kind": "title",
+            "transform": {"x": 720000, "y": 480000, "width": 7200000, "height": 900000, "rotation": 0},
+            "defaultText": null
+        }]
+    });
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": "presentation-master-update-1",
+        "intentId": "presentation-master-update-intent-1",
+        "artifactId": id.clone(),
+        "actorId": "local-user",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [{
+            "commandId": "presentation-master-update-command-1",
+            "typeId": "presentation.updateMaster",
+            "payload": {"type": "updateMaster", "master": master}
+        }]
+    });
+    let (status, committed) = app
+        .json(
+            Request::post(format!("/api/artifacts/{id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", "presentation-master-update-1")
+                .body(Body::from(transaction.to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {committed}");
+    assert_eq!(committed["revision"], 2);
+    assert_eq!(
+        committed["mutations"][0]["typeId"],
+        "presentation.masterUpdated"
+    );
+}
+
+#[tokio::test]
+async fn presentation_duplicate_slide_rewrites_id_references_server_side() {
+    let app = TestApp::new().await;
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "presentation", "title": "Duplicate"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap().to_owned();
+    seed_presentation_fixture(&app, &id).await;
+
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": "presentation-duplicate-1",
+        "intentId": "presentation-duplicate-intent-1",
+        "artifactId": id.clone(),
+        "actorId": "local-user",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [{
+            "commandId": "presentation-duplicate-command-1",
+            "typeId": "presentation.duplicateSlide",
+            "payload": {
+                "type": "duplicateSlide",
+                "sourceSlideId": "slide-1",
+                "slideId": "slide-2",
+                "orderKey": "00000001",
+                "name": "Introduction 副本",
+                "nodeIdMap": [
+                    {"sourceId": "title-1", "targetId": "title-2"},
+                    {"sourceId": "shape-1", "targetId": "shape-2"}
+                ],
+                "animationIdMap": [],
+                "index": 1
+            }
+        }]
+    });
+    let (status, committed) = app
+        .json(
+            Request::post(format!("/api/artifacts/{id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", "presentation-duplicate-1")
+                .body(Body::from(transaction.to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {committed}");
+    assert_eq!(committed["revision"], 2);
+    assert_eq!(
+        committed["mutations"][0]["typeId"],
+        "presentation.slideDuplicated"
+    );
+    assert!(committed["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(
+            |event| event["typeId"] == "presentation.thumbnailInvalidated"
+                && event["payload"]["slideId"] == "slide-2"
+        ));
+
+    let (status, slide) = app
+        .json(
+            Request::get(format!(
+                "/api/artifacts/{id}/presentation/slides/slide-2?include=nodes,timeline"
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {slide}");
+    assert_eq!(slide["data"]["name"], "Introduction 副本");
+    assert_eq!(slide["data"]["nodes"][0]["id"], "title-2");
+    assert_eq!(slide["data"]["nodes"][1]["id"], "shape-2");
+}
+
+#[tokio::test]
+async fn presentation_image_asset_registration_requires_verified_binary_metadata_and_commits_atomically(
+) {
+    let app = TestApp::new().await;
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "presentation", "title": "Verified image asset"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap().to_owned();
+    seed_presentation_fixture(&app, &id).await;
+
+    let (status, uploaded) = app
+        .upload_artifact_asset(&id, "diagram.png", "image/png", b"verified-image-bytes")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "response: {uploaded}");
+    let asset_id = uploaded["assetId"].as_str().unwrap().to_owned();
+    let digest = uploaded["checksum"].as_str().unwrap().to_owned();
+    assert_eq!(
+        db::get_artifact_asset(&app.pool, &id, &asset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ref_count,
+        0
+    );
+
+    let node = |asset_id: &str| {
+        json!({
+            "id": "verified-image-1",
+            "parentId": null,
+            "orderKey": "00000002",
+            "name": "Verified image",
+            "altText": null,
+            "layoutPlaceholderId": null,
+            "transform": {"x": 1000000.0, "y": 1000000.0, "width": 4000000.0, "height": 3000000.0, "rotation": 0.0},
+            "visible": true,
+            "locked": false,
+            "opacity": 1.0,
+            "kind": {
+                "type": "image",
+                "data": {
+                    "assetId": asset_id,
+                    "originalAssetId": null,
+                    "crop": {"top": 0.0, "right": 0.0, "bottom": 0.0, "left": 0.0},
+                    "flipH": false,
+                    "flipV": false,
+                    "caption": null
+                }
+            }
+        })
+    };
+    let transaction = |transaction_id: &str,
+                       requested_asset_id: &str,
+                       asset_digest: &str,
+                       asset_mime_type: &str| {
+        json!({
+            "protocolVersion": 1,
+            "transactionId": transaction_id,
+            "intentId": format!("{transaction_id}-intent"),
+            "artifactId": id,
+            "actorId": "local-user",
+            "baseRevision": 1,
+            "origin": "local",
+            "commands": [
+                {
+                    "commandId": format!("{transaction_id}-asset"),
+                    "typeId": "presentation.registerAsset",
+                    "payload": {
+                        "type": "registerAsset",
+                        "asset": {
+                            "assetId": requested_asset_id,
+                            "digest": asset_digest,
+                            "mimeType": asset_mime_type,
+                            "width": null,
+                            "height": null,
+                            "originalAssetId": null
+                        }
+                    }
+                },
+                {
+                    "commandId": format!("{transaction_id}-node"),
+                    "typeId": "presentation.insertNode",
+                    "payload": {"type": "insertNode", "slideId": "slide-1", "node": node(requested_asset_id), "index": 2}
+                }
+            ]
+        })
+    };
+
+    // Neither a forged digest nor a forged MIME may advance the revision,
+    // persist a Deck asset declaration, or claim the stored binary.
+    for (transaction_id, requested_asset_id, forged_digest, forged_mime) in [
+        (
+            "presentation-image-missing-asset",
+            "missing-image-asset",
+            "missing-digest",
+            "image/png",
+        ),
+        (
+            "presentation-image-wrong-digest",
+            asset_id.as_str(),
+            "forged-digest",
+            "image/png",
+        ),
+        (
+            "presentation-image-wrong-mime",
+            asset_id.as_str(),
+            digest.as_str(),
+            "image/jpeg",
+        ),
+    ] {
+        let (status, error) = app
+            .json(
+                Request::post(format!("/api/artifacts/{id}/transactions"))
+                    .header("content-type", "application/json")
+                    .header("if-match", "\"1\"")
+                    .header("x-transaction-id", transaction_id)
+                    .body(Body::from(
+                        transaction(
+                            transaction_id,
+                            requested_asset_id,
+                            forged_digest,
+                            forged_mime,
+                        )
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "response: {error}");
+        assert_eq!(error["code"], "bad_request");
+        assert_eq!(
+            db::get_artifact(&app.pool, &id)
+                .await
+                .unwrap()
+                .unwrap()
+                .version,
+            1
+        );
+        assert_eq!(
+            db::get_artifact_asset(&app.pool, &id, &asset_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .ref_count,
+            0
+        );
+    }
+
+    let (status, committed) = app
+        .json(
+            Request::post(format!("/api/artifacts/{id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", "presentation-image-success")
+                .body(Body::from(
+                    transaction(
+                        "presentation-image-success",
+                        &asset_id,
+                        &digest,
+                        "image/png",
+                    )
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {committed}");
+    assert_eq!(committed["revision"], 2);
+    assert_eq!(
+        db::get_artifact_asset(&app.pool, &id, &asset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ref_count,
+        1
+    );
+
+    let (status, snapshot) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/snapshot"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let deck = &snapshot["artifact"]["payload"]["data"];
+    assert_eq!(deck["assets"][0]["assetId"], asset_id);
+    assert_eq!(deck["assets"][0]["digest"], digest);
+    assert_eq!(
+        deck["slides"][0]["nodes"][2]["kind"]["data"]["assetId"],
+        asset_id
+    );
 }
 
 #[tokio::test]

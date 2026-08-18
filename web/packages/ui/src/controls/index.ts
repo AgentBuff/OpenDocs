@@ -1,4 +1,5 @@
 export { Checkbox, type CheckboxProps } from "./Checkbox.js";
+export { ColorPalette, type ColorPaletteProps, type ColorPaletteRole, type ColorValue } from "./ColorPalette.js";
 export { Input, type InputProps } from "./Input.js";
 export { Select, type SelectProps } from "./Select.js";
 export { Switch, type SwitchProps } from "./Switch.js";

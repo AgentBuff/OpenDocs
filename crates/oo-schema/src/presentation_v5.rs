@@ -5,7 +5,7 @@
 //! Keeping the target model isolated makes its invariants testable without introducing an online
 //! dual-read path.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -644,7 +644,7 @@ impl SceneNodeKind {
                 Ok(())
             }
             Self::Table(table) => table.validate(node_id),
-            Self::Chart(chart) => non_empty(&chart.chart_type, "presentation chart type"),
+            Self::Chart(chart) => chart.spec.validate(node_id),
             Self::Group(_) => Ok(()),
         }
     }
@@ -977,10 +977,100 @@ pub enum HorizontalAlign {
     Center,
     Right,
 }
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The deliberately small, editable chart subset.  These are semantic chart
+/// families rather than names copied from an OOXML part, so a renderer cannot
+/// accidentally persist a vendor-specific chart type string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChartType {
+    Column,
+    Bar,
+    Line,
+    Pie,
+}
+
+/// One named data series.  `values` is aligned with `ChartSpec.categories` by
+/// index; no renderer-side sparse-data reconciliation is permitted.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChartSeries {
+    pub name: String,
+    pub values: Vec<f64>,
+    #[serde(default)]
+    pub color: Option<ColorRef>,
+}
+
+/// Canonical editable chart data.  This is intentionally not an arbitrary
+/// chart XML or JSON payload: unsupported chart families and per-point
+/// formatting stay out of the online model until they have typed semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChartSpec {
+    pub chart_type: ChartType,
+    #[serde(default)]
+    pub title: Option<String>,
+    pub categories: Vec<String>,
+    pub series: Vec<ChartSeries>,
+}
+impl ChartSpec {
+    fn validate(&self, node_id: &str) -> Result<(), SchemaValidationError> {
+        if let Some(title) = &self.title {
+            non_empty(title, "presentation chart title")?;
+        }
+        if self.categories.is_empty() {
+            return invalid(format!("presentation chart {node_id} categories 不能为空"));
+        }
+        if self
+            .categories
+            .iter()
+            .any(|category| category.trim().is_empty())
+        {
+            return invalid(format!("presentation chart {node_id} category 不能为空"));
+        }
+        if self.series.is_empty() {
+            return invalid(format!("presentation chart {node_id} series 不能为空"));
+        }
+        if self.chart_type == ChartType::Pie && self.series.len() != 1 {
+            return invalid(format!(
+                "presentation chart {node_id} pie 只支持一个 data series"
+            ));
+        }
+        let mut names = BTreeSet::new();
+        for series in &self.series {
+            non_empty(&series.name, "presentation chart series name")?;
+            if !names.insert(&series.name) {
+                return invalid(format!("presentation chart {node_id} series 名称重复"));
+            }
+            if series.values.len() != self.categories.len() {
+                return invalid(format!(
+                    "presentation chart {node_id} series {} values 数量必须与 categories 一致",
+                    series.name
+                ));
+            }
+            if series.values.iter().any(|value| !value.is_finite()) {
+                return invalid(format!(
+                    "presentation chart {node_id} series {} values 必须是有限数",
+                    series.name
+                ));
+            }
+            if self.chart_type == ChartType::Pie && series.values.iter().any(|value| *value < 0.0) {
+                return invalid(format!(
+                    "presentation chart {node_id} pie series {} values 不能为负数",
+                    series.name
+                ));
+            }
+            if let Some(color) = &series.color {
+                color.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ChartNode {
-    pub chart_type: String,
+    pub spec: ChartSpec,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1734,6 +1824,46 @@ mod tests {
             delay_ms: 0,
             order_key: "a".into(),
         });
+        assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn chart_specs_are_typed_and_validate_data_alignment() {
+        let mut value = deck();
+        value.slides[0].nodes[0].kind = SceneNodeKind::Chart(ChartNode {
+            spec: ChartSpec {
+                chart_type: ChartType::Column,
+                title: Some("季度营收".into()),
+                categories: vec!["Q1".into(), "Q2".into()],
+                series: vec![ChartSeries {
+                    name: "营收".into(),
+                    values: vec![12.0, 18.0],
+                    color: Some(ColorRef::Theme(ThemeColorToken::Accent1)),
+                }],
+            },
+        });
+        value.validate().expect("valid ChartSpec");
+
+        {
+            let SceneNodeKind::Chart(chart) = &mut value.slides[0].nodes[0].kind else {
+                panic!("expected chart");
+            };
+            chart.spec.series[0].values.pop();
+        }
+        assert!(value.validate().is_err());
+
+        {
+            let SceneNodeKind::Chart(chart) = &mut value.slides[0].nodes[0].kind else {
+                panic!("expected chart");
+            };
+            chart.spec.series[0].values.push(18.0);
+            chart.spec.chart_type = ChartType::Pie;
+            chart.spec.series.push(ChartSeries {
+                name: "成本".into(),
+                values: vec![5.0, 8.0],
+                color: None,
+            });
+        }
         assert!(value.validate().is_err());
     }
 

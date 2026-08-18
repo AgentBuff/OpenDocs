@@ -115,6 +115,10 @@ pub async fn submit_transaction(
         .cloned()
         .map(presentation_command_from_record)
         .collect::<Result<Vec<_>, _>>()?;
+    // A Deck asset reference must be anchored to the verified binary metadata
+    // stored for this artifact. The engine owns Deck consistency; the server
+    // owns blob identity and must reject a client-supplied digest/MIME claim.
+    validate_registered_assets(&state, &id, &commands).await?;
     let mut engine = PresentationEngine::new(deck, transaction.base_revision)
         .map_err(presentation_engine_error)?;
     let change_set = engine
@@ -437,16 +441,48 @@ fn presentation_asset_ids(deck: &oo_schema::presentation_v5::Deck) -> Vec<String
     ids
 }
 
+async fn validate_registered_assets(
+    state: &AppState,
+    artifact_id: &str,
+    commands: &[PresentationCommand],
+) -> Result<(), AppError> {
+    for command in commands {
+        let PresentationCommand::RegisterAsset { asset } = command else {
+            continue;
+        };
+        let stored = db::get_artifact_asset(&state.pool, artifact_id, &asset.asset_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::BadRequest(format!("Presentation asset {} 尚未上传", asset.asset_id))
+            })?;
+        if stored.checksum != asset.digest || stored.content_type != asset.mime_type {
+            return Err(AppError::BadRequest(format!(
+                "Presentation asset {} 的 digest 或 MIME 与已验证二进制不一致",
+                asset.asset_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn presentation_command_from_record(
     record: CommandRecord,
 ) -> Result<PresentationCommand, AppError> {
     let command: PresentationCommand = serde_json::from_value(record.payload)
         .map_err(|error| AppError::BadRequest(format!("Presentation command 无效：{error}")))?;
     let expected = match &command {
+        PresentationCommand::RegisterAsset { .. } => "presentation.registerAsset",
         PresentationCommand::SetPageSpec { .. } => "presentation.setPageSpec",
+        PresentationCommand::CreateMaster { .. } => "presentation.createMaster",
+        PresentationCommand::UpdateMaster { .. } => "presentation.updateMaster",
+        PresentationCommand::DeleteMaster { .. } => "presentation.deleteMaster",
+        PresentationCommand::CreateLayout { .. } => "presentation.createLayout",
+        PresentationCommand::UpdateLayout { .. } => "presentation.updateLayout",
+        PresentationCommand::DeleteLayout { .. } => "presentation.deleteLayout",
         PresentationCommand::CreateSlide { .. } => "presentation.createSlide",
         PresentationCommand::DeleteSlide { .. } => "presentation.deleteSlide",
         PresentationCommand::MoveSlide { .. } => "presentation.moveSlide",
+        PresentationCommand::DuplicateSlide { .. } => "presentation.duplicateSlide",
         PresentationCommand::InsertNode { .. } => "presentation.insertNode",
         PresentationCommand::DeleteNode { .. } => "presentation.deleteNode",
         PresentationCommand::MoveNode { .. } => "presentation.moveNode",
@@ -454,7 +490,21 @@ fn presentation_command_from_record(
         PresentationCommand::GroupNodes { .. } => "presentation.groupNodes",
         PresentationCommand::UngroupNodes { .. } => "presentation.ungroupNodes",
         PresentationCommand::SetNodeTransform { .. } => "presentation.setNodeTransform",
+        PresentationCommand::SetNodeLocked { .. } => "presentation.setNodeLocked",
+        PresentationCommand::AlignNodes { .. } => "presentation.alignNodes",
+        PresentationCommand::DistributeNodes { .. } => "presentation.distributeNodes",
         PresentationCommand::SetShapeStyle { .. } => "presentation.setShapeStyle",
+        PresentationCommand::SetShapeGeometry { .. } => "presentation.setShapeGeometry",
+        PresentationCommand::SetChartSpec { .. } => "presentation.setChartSpec",
+        PresentationCommand::SetConnectorEndpoints { .. } => "presentation.setConnectorEndpoints",
+        PresentationCommand::SetTableCellContent { .. } => "presentation.setTableCellContent",
+        PresentationCommand::SetTableCellStyle { .. } => "presentation.setTableCellStyle",
+        PresentationCommand::InsertTableRows { .. } => "presentation.insertTableRows",
+        PresentationCommand::InsertTableColumns { .. } => "presentation.insertTableColumns",
+        PresentationCommand::DeleteTableRow { .. } => "presentation.deleteTableRow",
+        PresentationCommand::DeleteTableColumn { .. } => "presentation.deleteTableColumn",
+        PresentationCommand::MergeTableCells { .. } => "presentation.mergeTableCells",
+        PresentationCommand::SplitTableCell { .. } => "presentation.splitTableCell",
         PresentationCommand::SetTextContent { .. } => "presentation.setTextContent",
         PresentationCommand::SetTextFrame { .. } => "presentation.setTextFrame",
         PresentationCommand::SetImageConfig { .. } => "presentation.setImageConfig",
