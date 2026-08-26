@@ -10,6 +10,7 @@ pub mod db;
 pub mod document_support;
 pub mod error;
 pub mod events;
+pub mod mindmap_support;
 pub mod presence;
 pub mod presentation_migration;
 pub mod presentation_support;

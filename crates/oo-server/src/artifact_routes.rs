@@ -82,10 +82,37 @@ pub async fn capabilities() -> Json<CapabilityCatalog> {
                 status: ArtifactCapabilityStatus::Stable,
                 commands: presentation_command_capabilities(),
             },
-            planned_capability(ArtifactKind::Mindmap, "mindmap"),
+            ArtifactCapability {
+                kind: ArtifactKind::Mindmap,
+                namespace: "mindmap".into(),
+                status: ArtifactCapabilityStatus::Stable,
+                commands: mindmap_command_capabilities(),
+            },
             planned_capability(ArtifactKind::Whiteboard, "whiteboard"),
         ],
     })
+}
+
+fn mindmap_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    const COMMANDS: &[(&str, &str)] = &[
+        ("mindmap.addNode", "mindmap.node"),
+        ("mindmap.updateNode", "mindmap.node"),
+        ("mindmap.setNodeCollapsed", "mindmap.node"),
+        ("mindmap.moveNode", "mindmap.node"),
+        ("mindmap.deleteNode", "mindmap.node"),
+        ("mindmap.addEdge", "mindmap.edge"),
+        ("mindmap.updateEdge", "mindmap.edge"),
+        ("mindmap.deleteEdge", "mindmap.edge"),
+    ];
+    COMMANDS
+        .iter()
+        .map(|(type_id, scope)| ArtifactCommandCapability {
+            type_id: (*type_id).into(),
+            scope: (*scope).into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect()
 }
 
 fn planned_capability(kind: ArtifactKind, namespace: &str) -> ArtifactCapability {
@@ -263,7 +290,7 @@ pub async fn create(
     let snapshot_key = document_support::artifact_snapshot_key(&id, 1);
     state.store.put(&source_key, &[]).await?;
     state.store.put(&snapshot_key, &snapshot).await?;
-    let events = [created_event(&id, request.kind)];
+    let events = [created_event(&id, request.kind, &user.id)];
     let meta = db::insert_artifact(
         &state.pool,
         NewArtifact {
@@ -375,7 +402,7 @@ pub async fn import(
     state.store.put(&source_key, &bytes).await?;
     state.store.put(&snapshot_key, &snapshot).await?;
     let title = title_from_file_name(&file_name, kind);
-    let events = [created_event(&id, kind)];
+    let events = [created_event(&id, kind, &user.id)];
     let meta = db::insert_artifact(
         &state.pool,
         NewArtifact {
@@ -956,6 +983,10 @@ pub async fn transactions(
             )
             .await
         }
+        ArtifactKind::Mindmap => {
+            crate::mindmap_support::submit_transaction(State(state), user, Path(id), headers, body)
+                .await
+        }
         kind => Err(AppError::UnsupportedArtifact(kind)),
     }
 }
@@ -1209,7 +1240,7 @@ async fn register_blob_integrity(
     .map_err(AppError::from)
 }
 
-fn created_event(id: &str, kind: ArtifactKind) -> DomainEventRecord {
+fn created_event(id: &str, kind: ArtifactKind, actor_id: &str) -> DomainEventRecord {
     DomainEventRecord {
         event_id: format!("artifact:create:{id}:1:0"),
         type_id: "artifact.created".into(),
@@ -1217,6 +1248,7 @@ fn created_event(id: &str, kind: ArtifactKind) -> DomainEventRecord {
             "artifactId": id,
             "artifactKind": serde_json::to_value(kind).unwrap_or_default(),
             "revision": 1,
+            "actorId": actor_id,
         }),
     }
 }
