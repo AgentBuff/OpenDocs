@@ -30,11 +30,12 @@
 
 ## 未关闭项（记录在案，属后续工作）
 
-1. **OpenAPI/JSON Schema 生成的单源方向**：当前 transport 描述由根目录
-   `scripts/api-contract-source.mjs` 手工维护并生成文档，DTO 形状靠人肉对齐 Rust 结构体;
-   TS 侧 `@open-office/schema` 也是镜像。计划原文要求"保持在 Rust typed contract 单源之下"。
-   建议：以 serde 为真源生成 JSON Schema(schemars)→ OpenAPI components → SDK 类型，
-   需要一个独立 ADR 决策后实施，不宜顺手改。
+1. **OpenAPI/JSON Schema 生成的单源方向**：第一阶段已于 2026-08-26 落地——
+   [ADR-0010](../adr/0010-contract-single-source-generation.md) 采纳 schemars 派生路线，
+   `oo_protocol::generate_contract_schemas()` 输出 13 个协议类型的 JSON Schema,
+   golden 快照(`tests/snapshots/contract_schemas.json`)锁定形状。剩余为第二/三阶段接线：
+   `generate-api-contract.mjs` 的 components 改为消费生成物、`@open-office/schema` 的
+   协议 DTO 改为代码生成。
 2. **权限模型**：现仅 owner 级(`owned_meta`);workspace/member/role 属 C4 范围，但
    Principal seam 与 actor 贯穿已就绪，C4 只需替换授权判定与扩展角色表。
 3. **事件 outbox worker**:投递接口已有(attempts/lease),外部消息系统接入留待部署层。
