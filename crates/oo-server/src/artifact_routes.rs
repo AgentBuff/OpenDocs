@@ -7,7 +7,7 @@
 //! silently downgrades a spreadsheet/presentation to a document.
 
 use axum::extract::{Multipart, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -1096,11 +1096,19 @@ pub async fn export(
             meta.kind, expected
         )));
     }
+    let mut loss_header: Option<(&'static str, String)> = None;
     let bytes = match artifact.payload {
         ArtifactPayload::Document(model) => {
             let assets = docx_assets_for_export(&state, &id, &model).await?;
-            oo_docx::write_docx_with_assets(&model, &assets)
-                .map_err(|error| AppError::Internal(format!("生成 DOCX 失败：{error}")))?
+            // DOCX keeps all text content; the report enumerates semantic
+            // approximations (todo state, link targets, containers) so clients
+            // can surface them instead of discovering silent data loss.
+            let exported = oo_docx::write_docx_with_report(&model, &assets)
+                .map_err(|error| AppError::Internal(format!("生成 DOCX 失败：{error}")))?;
+            if let Some(summary) = exported.loss_report.header_summary() {
+                loss_header = Some(("x-docx-losses", summary));
+            }
+            exported.bytes
         }
         ArtifactPayload::Spreadsheet(model) => oo_xlsx::write_xlsx(&model)
             .map_err(|error| AppError::UnsupportedCapability(format!("XLSX 导出失败：{error}")))?,
@@ -1122,20 +1130,34 @@ pub async fn export(
             ))
         }
     };
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                export_content_type(meta.kind).to_string(),
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                document_support::download_content_disposition(&meta.title, expected),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
+    let mut headers = vec![
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(export_content_type(meta.kind))
+                .expect("export content type is valid header value"),
+        ),
+        (
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&document_support::download_content_disposition(
+                &meta.title,
+                expected,
+            ))
+            .expect("content disposition is valid header value"),
+        ),
+    ];
+    if let Some((_, value)) = loss_header {
+        headers.push((
+            axum::http::HeaderName::from_static("x-docx-losses"),
+            HeaderValue::from_str(&value).expect("loss summary is ASCII"),
+        ));
+    }
+    let mut builder = Response::builder().status(StatusCode::OK);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    builder
+        .body(axum::body::Body::from(bytes))
+        .map_err(|error| AppError::Internal(format!("导出响应构建失败：{error}")))
 }
 
 async fn ensure_document(state: &AppState, user: &CurrentUser, id: &str) -> Result<(), AppError> {

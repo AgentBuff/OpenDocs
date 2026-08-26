@@ -280,3 +280,96 @@ fn zip_without_document_part_is_reported() {
         "实际错误：{err}"
     );
 }
+
+#[test]
+fn export_reports_semantic_losses_instead_of_dropping_them_silently() {
+    let mut document = parse("minimal.docx");
+    let text = |text: &str| {
+        Some(oo_schema::RichText {
+            text: text.to_string(),
+            runs: Vec::new(),
+        })
+    };
+    let make_block = |id: &str,
+                      kind: &oo_schema::DocumentBlockKind,
+                      content: &str|
+     -> oo_schema::DocumentBlock {
+        let kind = kind.clone();
+        oo_schema::DocumentBlock {
+            id: id.to_string(),
+            kind: kind.clone(),
+            presentation: Default::default(),
+            content: text(content),
+            children: Vec::new(),
+            data: match kind {
+                oo_schema::DocumentBlockKind::Todo => {
+                    oo_schema::BlockData::Todo(oo_schema::TodoBlock { checked: true })
+                }
+                oo_schema::DocumentBlockKind::Link => {
+                    oo_schema::BlockData::Link(oo_schema::LinkBlock {
+                        url: "https://example.com".into(),
+                    })
+                }
+                _ => oo_schema::BlockData::None,
+            },
+        }
+    };
+    let kinds: Vec<(&str, oo_schema::DocumentBlockKind, &str)> = vec![
+        ("todo-1", oo_schema::DocumentBlockKind::Todo, "买牛奶"),
+        ("link-1", oo_schema::DocumentBlockKind::Link, "示例链接"),
+        ("callout-1", oo_schema::DocumentBlockKind::Callout, "注意"),
+        ("page-1", oo_schema::DocumentBlockKind::Page, ""),
+        ("cols-1", oo_schema::DocumentBlockKind::Columns, ""),
+    ];
+    for (id, kind, content) in &kinds {
+        document.blocks.push(make_block(id, kind, content));
+        document.root.push(id.to_string());
+    }
+    document.validate().expect("测试模型应通过 schema 校验");
+
+    let exported = oo_docx::write_docx_with_report(&document, &[]).expect("导出失败");
+    assert!(!exported.loss_report.is_empty());
+    assert_eq!(
+        exported.loss_report.header_summary().as_deref(),
+        Some("todoState:1,linkTarget:1,calloutStyle:1,structuralContainer:2")
+    );
+    // Text content survives every approximation.
+    let roundtrip = oo_docx::parse_docx(&exported.bytes, "loss-roundtrip").unwrap();
+    assert!(roundtrip.plain_text().contains("买牛奶"));
+    assert!(roundtrip.plain_text().contains("示例链接"));
+
+    // Tables keep the hard-error discipline and never enter the report.
+    let mut with_table = parse("minimal.docx");
+    with_table
+        .blocks
+        .push(make_block("tbl", &oo_schema::DocumentBlockKind::Table, ""));
+    with_table.root.push("tbl".into());
+    // A table block requires table data; reuse the parser's own model instead of
+    // hand-building it: flip an existing paragraph's data would fail validate(),
+    // so assert via the dedicated error path using a synthetic table payload.
+    with_table.blocks.last_mut().unwrap().data = {
+        use oo_schema::TableRange;
+        use oo_schema::{TableBlock, TableCell, TableColumn, TableRow};
+        oo_schema::BlockData::Table(TableBlock {
+            columns: vec![TableColumn {
+                id: "c1".into(),
+                width: None,
+            }],
+            rows: vec![TableRow {
+                id: "r1".into(),
+                height: None,
+                cells: vec![TableCell {
+                    id: "cell-1".into(),
+                    content: text("cell").unwrap(),
+                    style: Default::default(),
+                }],
+            }],
+            merged_ranges: Vec::<TableRange>::new(),
+        })
+    };
+    let error = oo_docx::write_docx_with_assets(&with_table, &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        oo_docx::DocxError::UnsupportedBlock("table")
+    ));
+}
