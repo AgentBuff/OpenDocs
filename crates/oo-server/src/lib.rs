@@ -16,7 +16,9 @@ pub mod presentation_migration;
 pub mod presentation_support;
 pub mod projection;
 pub mod request_context;
+pub mod spreadsheet_support;
 pub mod store;
+pub mod whiteboard_support;
 
 use std::sync::Arc;
 

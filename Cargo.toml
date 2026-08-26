@@ -22,6 +22,7 @@ license = "MIT"
 
 [workspace.dependencies]
 oo-schema = { path = "crates/oo-schema" }
+oo-spreadsheet = { path = "crates/oo-spreadsheet" }
 oo-protocol = { path = "crates/oo-protocol" }
 oo-document = { path = "crates/oo-document" }
 oo-docx = { path = "crates/oo-docx" }

@@ -1131,6 +1131,7 @@ dependencies = [
  "oo-presentation",
  "oo-protocol",
  "oo-schema",
+ "oo-spreadsheet",
  "oo-whiteboard",
  "oo-xlsx",
  "serde",

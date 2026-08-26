@@ -172,10 +172,10 @@ async fn capabilities_expose_only_implemented_document_commands() {
         .any(|command| command["typeId"] == "document.updateBlock"));
 
     for (namespace, expected_status) in [
-        ("spreadsheet", "planned"),
+        ("spreadsheet", "stable"),
         ("presentation", "stable"),
         ("mindmap", "stable"),
-        ("whiteboard", "planned"),
+        ("whiteboard", "stable"),
     ] {
         let planned = artifacts
             .iter()
@@ -840,6 +840,23 @@ async fn capability_catalog_locks_the_engine_command_surface() {
         "document.splitTableCells",
         "document.history",
     ];
+    const SPREADSHEET_COMMANDS: &[&str] = &[
+        "spreadsheet.createSheet",
+        "spreadsheet.renameSheet",
+        "spreadsheet.deleteSheet",
+        "spreadsheet.setSheetMetadata",
+        "spreadsheet.setCell",
+        "spreadsheet.setCellStyle",
+        "spreadsheet.clearCell",
+    ];
+    const WHITEBOARD_COMMANDS: &[&str] = &[
+        "whiteboard.addElement",
+        "whiteboard.updateElement",
+        "whiteboard.deleteElement",
+        "whiteboard.setCamera",
+        "whiteboard.panCamera",
+        "whiteboard.zoomCamera",
+    ];
     const MINDMAP_COMMANDS: &[&str] = &[
         "mindmap.addNode",
         "mindmap.updateNode",
@@ -952,10 +969,15 @@ async fn capability_catalog_locks_the_engine_command_surface() {
         "mindmap catalog 与引擎命令面漂移"
     );
 
-    // The remaining kinds are honest about being planned: no invented commands.
-    for kind in ["spreadsheet", "whiteboard"] {
-        let commands = commands_of(kind);
-        assert!(commands.is_empty(), "{kind} 不应虚报命令：{commands:?}");
+    for (kind, expected) in [
+        ("spreadsheet", SPREADSHEET_COMMANDS),
+        ("whiteboard", WHITEBOARD_COMMANDS),
+    ] {
+        let mut actual = commands_of(kind);
+        actual.sort();
+        let mut expected: Vec<String> = expected.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(actual, expected, "{kind} catalog 与引擎命令面漂移");
     }
 }
 
@@ -1081,4 +1103,145 @@ async fn domain_events_carry_the_authenticated_actor() {
     for event in events {
         assert_eq!(event["payload"]["actorId"], "dev-user", "事件 {event}");
     }
+}
+
+/// C3 minimal complete path for Whiteboard: scene element edit under the
+/// canonical transaction contract.
+#[tokio::test]
+async fn whiteboard_transactions_follow_the_canonical_contract() {
+    let app = TestApp::new().await;
+    let (status, meta) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"kind": "whiteboard"}).to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = meta["id"].as_str().unwrap().to_string();
+
+    let envelope = |tx: &str, base: u64| {
+        transaction_request(
+            &id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": tx,
+                "intentId": format!("intent-{tx}"),
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": base,
+                "origin": "local",
+                "commands": [{
+                    "commandId": format!("op-{tx}"),
+                    "typeId": "whiteboard.addElement",
+                    "payload": {
+                        "type": "addElement",
+                        "element": {"id": "el-1", "typeId": "rect"},
+                        "index": 0
+                    }
+                }]
+            }),
+        )
+    };
+
+    let (status, commit) = app.json(envelope("wb-1", 1)).await;
+    assert_eq!(status, StatusCode::OK, "响应：{commit}");
+    assert_eq!(commit["revision"], 2);
+    assert_eq!(
+        commit["invalidation"]["changedEntities"][0]["entityType"],
+        "whiteboard.element"
+    );
+    let events = commit["events"].as_array().unwrap();
+    assert_eq!(events[0]["typeId"], "whiteboard.elementInserted");
+    assert_eq!(events[0]["payload"]["actorId"], "dev-user");
+
+    let (retry_status, retry) = app.json(envelope("wb-1", 1)).await;
+    assert_eq!(retry_status, StatusCode::OK);
+    assert_eq!(retry["revision"], commit["revision"]);
+    assert!(retry["events"].as_array().unwrap().is_empty());
+
+    let (stale_status, stale) = app.json(envelope("wb-2", 1)).await;
+    assert_eq!(stale_status, StatusCode::CONFLICT);
+    assert_eq!(stale["code"], "version_conflict");
+
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    assert_eq!(
+        snapshot["artifact"]["payload"]["data"]["elements"][0]["id"],
+        "el-1"
+    );
+}
+
+/// C3 minimal complete path for Spreadsheet: sheet creation plus a cell edit
+/// in one atomic batch, then replay/conflict semantics.
+#[tokio::test]
+async fn spreadsheet_transactions_follow_the_canonical_contract() {
+    let app = TestApp::new().await;
+    let (status, meta) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "spreadsheet", "title": "表"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = meta["id"].as_str().unwrap().to_string();
+
+    let envelope = |tx: &str, base: u64| {
+        transaction_request(
+            &id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": tx,
+                "intentId": format!("intent-{tx}"),
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": base,
+                "origin": "local",
+                "commands": [
+                    {
+                        "commandId": format!("op-{tx}-sheet"),
+                        "typeId": "spreadsheet.createSheet",
+                        "payload": {"type": "createSheet", "id": "s1", "name": "Sheet1"}
+                    },
+                    {
+                        "commandId": format!("op-{tx}-cell"),
+                        "typeId": "spreadsheet.setCell",
+                        "payload": {"type": "setCell", "sheetId": "s1", "row": 1, "column": 1, "value": 42}
+                    }
+                ]
+            }),
+        )
+    };
+
+    let (status, commit) = app.json(envelope("ss-1", 1)).await;
+    assert_eq!(status, StatusCode::OK, "响应：{commit}");
+    assert_eq!(commit["revision"], 2);
+    let events = commit["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["typeId"], "spreadsheet.sheetChanged");
+    assert_eq!(events[1]["typeId"], "spreadsheet.cellChanged");
+    assert_eq!(events[1]["payload"]["after"]["value"], 42);
+    assert_eq!(events[1]["payload"]["actorId"], "dev-user");
+
+    let (retry_status, retry) = app.json(envelope("ss-1", 1)).await;
+    assert_eq!(retry_status, StatusCode::OK);
+    assert_eq!(retry["revision"], commit["revision"]);
+    assert!(retry["events"].as_array().unwrap().is_empty());
+
+    let (stale_status, _) = app.json(envelope("ss-2", 1)).await;
+    assert_eq!(stale_status, StatusCode::CONFLICT);
+
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    let sheets = snapshot["artifact"]["payload"]["data"]["sheets"]
+        .as_array()
+        .unwrap();
+    assert_eq!(sheets[0]["cells"][0]["value"], 42);
 }
