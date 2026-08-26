@@ -47,7 +47,7 @@ Exposed interaction surfaces and their capability rows:
 | Context/block menus | no persistent model | `BlockMenu`, `BlockContextMenu`, table menu | `e2e/overlays/menu.spec.ts`, `e2e/visual/chrome.spec.ts` | partial — Escape/outside dismissal and dark block-menu baseline are covered; nested/table overlays remain |
 | Undo/redo/history | mutation journal, history transaction | toolbar/history API | server/engine tests | partial — browser conflict/reload/recovery proof incomplete |
 | Autosave/outbox | session outbox + artifact transaction | status UI | unit implementation exists | partial — debounce/max-wait/visibility behavior needs E2E and metrics |
-| Import/export DOCX | `oo-docx`, artifact import/export routes | import/export controls | adapter tests | partial — fidelity matrix and round-trip visual tests absent |
+| Import/export DOCX | `oo-docx` writer/importer, artifact export route | import/export controls; `x-docx-losses` header | round-trip text/format/image tests; loss-report unit test; `api.rs::docx_export_reports_semantic_losses` | partial — todo state/link target/containers are reported as losses instead of silently dropped; fidelity matrix and visual tests remain |
 | Outline/projections/events | artifact projection/event APIs | API client boundaries | server/API tests | partial — editor and external consumer acceptance incomplete |
 | Presence | ephemeral presence API | no mature Document UI | route/module exists | planned — not real-time collaboration |
 | Comments/@mentions/suggestions | no canonical Document domain model | no complete UI | none | planned |

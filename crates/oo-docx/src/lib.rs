@@ -25,6 +25,7 @@ use oo_schema::{
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
@@ -214,6 +215,121 @@ fn content_type_for_path(path: &str) -> &'static str {
 }
 
 /// 将不含媒体的 canonical DocumentModel 导出为可被 Word/WPS 打开的最小 DOCX 包。
+/// 一类被导出器近似或丢弃的文档能力。文本内容总是保留；这里列出的是
+/// 无法在 DOCX 中保真的语义（如 todo 勾选态、链接目标）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxLoss {
+    /// 稳定能力码，供 UI/SDK 直接消费：todoState | linkTarget | calloutStyle |
+    /// structuralContainer | unknownKind。
+    pub capability: &'static str,
+    /// 受影响的 block 数量。
+    pub count: usize,
+    /// 面向用户的中文说明。
+    pub detail: String,
+}
+
+/// DOCX 导出的能力损失报告。与 PPTX 的 `PptxLossReport` 同构：调用方可以
+/// 把它展示给用户，而不是让导出器静默近似。表格、extension block 与缺失
+/// 图片资产仍然是硬错误，不会进入报告。
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxLossReport {
+    pub unsupported: Vec<DocxLoss>,
+}
+
+impl DocxLossReport {
+    pub fn is_empty(&self) -> bool {
+        self.unsupported.is_empty()
+    }
+
+    /// 适合放进 HTTP 响应头的紧凑 ASCII 摘要：`capability:count` 对。
+    pub fn header_summary(&self) -> Option<String> {
+        if self.unsupported.is_empty() {
+            return None;
+        }
+        let summary = self
+            .unsupported
+            .iter()
+            .map(|loss| format!("{}:{}", loss.capability, loss.count))
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(summary)
+    }
+}
+
+fn collect_docx_losses(document: &DocumentModel) -> DocxLossReport {
+    fn push(entries: &mut Vec<DocxLoss>, capability: &'static str, detail: &str) {
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.capability == capability)
+        {
+            existing.count += 1;
+        } else {
+            entries.push(DocxLoss {
+                capability,
+                count: 1,
+                detail: detail.to_string(),
+            });
+        }
+    }
+    let mut unsupported = Vec::new();
+    for block in &document.blocks {
+        match (&block.kind, &block.data) {
+            (_, BlockData::Todo { .. }) => {
+                push(
+                    &mut unsupported,
+                    "todoState",
+                    "todo 的勾选状态无法写入 DOCX，仅保留文本",
+                );
+            }
+            (DocumentBlockKind::Link, _) => push(
+                &mut unsupported,
+                "linkTarget",
+                "link block 的目标 URL 无法写回 DOCX，仅保留可见文本",
+            ),
+            (DocumentBlockKind::Callout, _) => push(
+                &mut unsupported,
+                "calloutStyle",
+                "callout 的容器样式被导出为普通段落",
+            ),
+            (
+                DocumentBlockKind::Page | DocumentBlockKind::Columns | DocumentBlockKind::Column,
+                _,
+            ) => push(
+                &mut unsupported,
+                "structuralContainer",
+                "分页/多栏容器结构在 DOCX 中被展平为顺序段落",
+            ),
+            (DocumentBlockKind::Unknown { type_id, .. }, _) => push(
+                &mut unsupported,
+                "unknownKind",
+                &format!("未知块 {type_id} 仅保留原始文本"),
+            ),
+            _ => {}
+        }
+    }
+    DocxLossReport { unsupported }
+}
+
+/// 导出 DOCX 并返回能力损失报告。字节与 [`write_docx`] 完全一致；表格、
+/// extension 与资产错误仍按原样硬失败，不会出现在报告中。
+pub fn write_docx_with_report(
+    document: &DocumentModel,
+    assets: &[DocxAsset],
+) -> Result<DocxExport, DocxError> {
+    let loss_report = collect_docx_losses(document);
+    let bytes = write_docx_with_assets(document, assets)?;
+    Ok(DocxExport { bytes, loss_report })
+}
+
+/// [`write_docx_with_report`] 的返回值。
+#[derive(Debug)]
+pub struct DocxExport {
+    pub bytes: Vec<u8>,
+    pub loss_report: DocxLossReport,
+}
+
 pub fn write_docx(document: &DocumentModel) -> Result<Vec<u8>, DocxError> {
     write_docx_internal(document, &[])
 }

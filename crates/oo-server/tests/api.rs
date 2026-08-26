@@ -1245,3 +1245,76 @@ async fn spreadsheet_transactions_follow_the_canonical_contract() {
         .unwrap();
     assert_eq!(sheets[0]["cells"][0]["value"], 42);
 }
+
+/// C2 loss visibility: DOCX export surfaces semantic approximations via the
+/// x-docx-losses response header instead of silently dropping them.
+#[tokio::test]
+async fn docx_export_reports_semantic_losses() {
+    let app = TestApp::new().await;
+    // minimal.docx has no todo/link/containers: no loss header.
+    let (_, meta) = app.upload_fixture("minimal.docx").await;
+    let id = meta["id"].as_str().unwrap();
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/artifacts/{id}/export/docx"))
+                .header("authorization", "Bearer dev-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("x-docx-losses").is_none());
+
+    // Insert a todo block, then export again: the header must enumerate it.
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    let root_id = snapshot["artifact"]["payload"]["data"]["root"][0]
+        .as_str()
+        .unwrap();
+    let (status, commit) = app
+        .json(transaction_request(
+            id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": "tx-todo",
+                "intentId": "intent-todo",
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": 1,
+                "origin": "local",
+                "commands": [{
+                    "commandId": "op-todo",
+                    "typeId": "document.insertTodo",
+                    "payload": {
+                        "type": "insertTodo",
+                        "blockId": "todo-e2e-1",
+                        "content": {"text": "买牛奶", "runs": []},
+                        "parentId": root_id,
+                        "index": 0,
+                        "checked": false
+                    }
+                }]
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK, "响应：{commit}");
+
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/artifacts/{id}/export/docx"))
+                .header("authorization", "Bearer dev-token")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let losses = response.headers().get("x-docx-losses").unwrap();
+    assert_eq!(losses, "todoState:1");
+}
