@@ -18,6 +18,10 @@ Workspace
 [`docs/architecture/generic-client-api-architecture-plan.md`](architecture/generic-client-api-architecture-plan.md)。
 该方案只完善 REST、projection、capability、幂等和事件契约，不引入 Agent Runtime 或 LLM 能力。
 
+当前工程主线与未来 AI 能力已分开管理：基础平台、领域引擎和专业编辑器按
+[`docs/roadmap/core-platform-plan.md`](roadmap/core-platform-plan.md) 实施；AI 原生协作层仅保留为满足
+基础前置条件后的未来计划，见 [`docs/roadmap/ai-native-future-plan.md`](roadmap/ai-native-future-plan.md)。
+
 ```text
 Platform Kernel
 ├── oo-schema       持久化模型、结构校验、版本字段
