@@ -100,6 +100,7 @@ pub async fn upload(
             "artifactId": doc_id,
             "artifactKind": "document",
             "revision": 1,
+            "actorId": user.id,
         }),
     }];
     let meta = db::insert_artifact(
@@ -177,6 +178,7 @@ pub async fn create(
             "artifactId": doc_id,
             "artifactKind": "document",
             "revision": 1,
+            "actorId": user.id,
         }),
     }];
     let meta = db::insert_artifact(
@@ -845,7 +847,12 @@ pub async fn submit_transaction(
     let revision = base_revision
         .checked_add(1)
         .ok_or_else(|| AppError::Internal("事务 revision 超出服务端范围".into()))?;
-    let events = document_events(&transaction_id, revision as u64, &result.mutations)?;
+    let events = document_events(
+        &transaction_id,
+        revision as u64,
+        &result.mutations,
+        &user.id,
+    )?;
     let committed = match db::commit_artifact_transaction_with_assets(
         &state.pool,
         db::ArtifactTransactionCommit {
@@ -1001,6 +1008,7 @@ async fn submit_history_transaction(
                 HistoryAction::Redo => "redo",
             },
             "historyId": entry.history_id,
+            "actorId": user.id,
         }),
     }];
     let committed = match db::commit_artifact_history_with_assets(
@@ -1105,8 +1113,9 @@ fn document_events(
     transaction_id: &str,
     revision: u64,
     mutations: &[DocumentMutation],
+    actor_id: &str,
 ) -> Result<Vec<DomainEventRecord>, AppError> {
-    mutations
+    let mut events = mutations
         .iter()
         .enumerate()
         .map(|(index, mutation)| {
@@ -1174,7 +1183,9 @@ fn document_events(
                 payload,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, AppError>>()?;
+    crate::events::stamp_actor(&mut events, actor_id);
+    Ok(events)
 }
 
 fn document_command_from_record(record: CommandRecord) -> Result<DocumentCommand, AppError> {

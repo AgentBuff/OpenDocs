@@ -140,6 +140,7 @@ pub async fn submit_transaction(
         revision,
         &change_set.mutations,
         &change_set.dirty_thumbnail_ids,
+        &user.id,
     )?;
     let committed = match db::commit_artifact_transaction_with_assets(
         &state.pool,
@@ -335,6 +336,7 @@ async fn submit_history_transaction(
         revision,
         &change_set.mutations,
         &change_set.dirty_thumbnail_ids,
+        &user.id,
     )?;
     events.push(DomainEventRecord {
         event_id: format!("{transaction_id}:{revision}:history"),
@@ -346,6 +348,7 @@ async fn submit_history_transaction(
             },
             "historyId": entry.history_id,
             "sourceTransactionId": entry.transaction_id,
+            "actorId": user.id,
         }),
     });
     let commands_json = serde_json::to_string(&transaction.commands)
@@ -554,6 +557,7 @@ fn presentation_events(
     revision: u64,
     mutations: &[PresentationMutation],
     dirty_thumbnail_ids: &[String],
+    actor_id: &str,
 ) -> Result<Vec<DomainEventRecord>, AppError> {
     let mut events = mutations
         .iter()
@@ -583,6 +587,7 @@ fn presentation_events(
                 payload: serde_json::json!({ "slideId": slide_id }),
             }),
     );
+    crate::events::stamp_actor(&mut events, actor_id);
     Ok(events)
 }
 

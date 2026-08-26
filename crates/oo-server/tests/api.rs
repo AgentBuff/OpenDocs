@@ -800,3 +800,193 @@ async fn broken_upload_is_rejected_without_creating_metadata() {
     let (_, list) = app.json(get("/api/artifacts")).await;
     assert!(list["artifacts"].as_array().unwrap().is_empty());
 }
+
+/// C1 drift lock: the served capability catalog must stay in lockstep with the
+/// engine command surface. Any addition, removal or rename has to update this
+/// test consciously instead of silently changing the public contract.
+#[tokio::test]
+async fn capability_catalog_locks_the_engine_command_surface() {
+    const DOCUMENT_COMMANDS: &[&str] = &[
+        "document.insertBlock",
+        "document.insertQuote",
+        "document.insertTodo",
+        "document.insertLink",
+        "document.insertDivider",
+        "document.setBlockPresentation",
+        "document.patchInlineRange",
+        "document.deleteBlock",
+        "document.resetBlock",
+        "document.moveBlock",
+        "document.setPageSetup",
+        "document.formatTableCells",
+        "document.setTableBorders",
+        "document.applyTableBorderPreset",
+        "document.setTodoChecked",
+        "document.convertToLink",
+        "document.setLinkTarget",
+        "document.setCodeConfig",
+        "document.setImageConfig",
+        "document.replaceBlockText",
+        "document.convertBlock",
+        "document.replaceTableCellText",
+        "document.patchTableCellInlineRange",
+        "document.insertTableRow",
+        "document.insertTableColumn",
+        "document.deleteTableRow",
+        "document.deleteTableColumn",
+        "document.setTableColumnWidth",
+        "document.setTableRowHeight",
+        "document.mergeTableCells",
+        "document.splitTableCells",
+        "document.history",
+    ];
+    const PRESENTATION_COMMANDS: &[&str] = &[
+        "presentation.registerAsset",
+        "presentation.setPageSpec",
+        "presentation.createMaster",
+        "presentation.updateMaster",
+        "presentation.deleteMaster",
+        "presentation.createLayout",
+        "presentation.updateLayout",
+        "presentation.deleteLayout",
+        "presentation.createSlide",
+        "presentation.deleteSlide",
+        "presentation.moveSlide",
+        "presentation.duplicateSlide",
+        "presentation.insertNode",
+        "presentation.deleteNode",
+        "presentation.moveNode",
+        "presentation.reorderNode",
+        "presentation.groupNodes",
+        "presentation.ungroupNodes",
+        "presentation.setNodeTransform",
+        "presentation.setNodeLocked",
+        "presentation.alignNodes",
+        "presentation.distributeNodes",
+        "presentation.setShapeStyle",
+        "presentation.setShapeGeometry",
+        "presentation.setChartSpec",
+        "presentation.setConnectorEndpoints",
+        "presentation.setTableCellContent",
+        "presentation.setTableCellStyle",
+        "presentation.insertTableRows",
+        "presentation.insertTableColumns",
+        "presentation.deleteTableRow",
+        "presentation.deleteTableColumn",
+        "presentation.mergeTableCells",
+        "presentation.splitTableCell",
+        "presentation.setTextContent",
+        "presentation.setTextFrame",
+        "presentation.setImageConfig",
+        "presentation.setMediaConfig",
+        "presentation.setSlideNotes",
+        "presentation.setSlideBackground",
+        "presentation.setSlideLayout",
+        "presentation.setTheme",
+        "presentation.setSlideTransition",
+        "presentation.upsertAnimation",
+        "presentation.deleteAnimation",
+        "presentation.moveAnimation",
+        "presentation.history",
+    ];
+
+    let app = TestApp::new().await;
+    let (status, catalog) = app.json(get("/api/capabilities")).await;
+    assert_eq!(status, StatusCode::OK);
+    let commands_of = |kind: &str| -> Vec<String> {
+        catalog["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["kind"] == kind)
+            .map(|artifact| {
+                artifact["commands"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|command| command["typeId"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| panic!("catalog 缺少 {kind} capability"))
+    };
+
+    let mut document = commands_of("document");
+    document.sort();
+    let mut expected_document: Vec<String> =
+        DOCUMENT_COMMANDS.iter().map(|s| s.to_string()).collect();
+    expected_document.sort();
+    assert_eq!(
+        document, expected_document,
+        "document catalog 与引擎命令面漂移"
+    );
+
+    let mut presentation = commands_of("presentation");
+    presentation.sort();
+    let mut expected_presentation: Vec<String> = PRESENTATION_COMMANDS
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    expected_presentation.sort();
+    assert_eq!(
+        presentation, expected_presentation,
+        "presentation catalog 与引擎命令面漂移"
+    );
+
+    // The other kinds are honest about being planned: no invented commands.
+    for kind in ["spreadsheet", "mindmap", "whiteboard"] {
+        let commands = commands_of(kind);
+        assert!(commands.is_empty(), "{kind} 不应虚报命令：{commands:?}");
+    }
+}
+
+/// C1 Principal seam: every delivered domain event must attribute the
+/// authenticated actor without requiring a transaction-table join.
+#[tokio::test]
+async fn domain_events_carry_the_authenticated_actor() {
+    let app = TestApp::new().await;
+    let (_, meta) = app.upload_fixture("minimal.docx").await;
+    let id = meta["id"].as_str().unwrap();
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    let block_id = snapshot["artifact"]["payload"]["data"]["blocks"][0]["id"]
+        .as_str()
+        .unwrap();
+    let (status, commit) = app
+        .json(transaction_request(
+            id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": "tx-actor",
+                "intentId": "intent-actor",
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": 1,
+                "origin": "local",
+                "commands": [{
+                    "commandId": "op-actor",
+                    "typeId": "document.replaceBlockText",
+                    "payload": {"type": "replaceBlockText", "blockId": block_id, "content": {"text": "attributed", "runs": []}}
+                }]
+            }),
+        ))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    for event in commit["events"].as_array().unwrap() {
+        assert_eq!(
+            event["payload"]["actorId"], "dev-user",
+            "提交响应事件缺少 actor 归属：{event}"
+        );
+    }
+
+    // The durable feed exposes the same attribution to external clients.
+    let (status, page) = app
+        .json(get(&format!("/api/artifacts/{id}/events?sinceRevision=1")))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = page["events"].as_array().unwrap();
+    assert!(!events.is_empty());
+    for event in events {
+        assert_eq!(event["payload"]["actorId"], "dev-user", "事件 {event}");
+    }
+}
