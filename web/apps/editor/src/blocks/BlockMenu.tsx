@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import type { DocumentBlock, DocumentBlockKind } from "@open-office/schema/artifact";
 import { Icon } from "@open-office/ui";
 import { TableInsertPicker } from "../toolbar/TableInsertPicker.js";
@@ -22,7 +22,10 @@ export function BlockMenu({
   onList,
   onLink,
   onInsertTable,
+  onInsertImage,
   onInsertQuote,
+  onInsertCallout,
+  onInsertTodo,
   onInsertCode,
   onDivider,
 }: {
@@ -37,10 +40,14 @@ export function BlockMenu({
   onList: (type: "bullet" | "ordered") => void;
   onLink: () => void;
   onInsertTable: (rows: number, columns: number) => void;
+  onInsertImage: (file: File) => Promise<void> | void;
   onInsertQuote: () => void;
+  onInsertCallout: () => void;
+  onInsertTodo: () => void;
   onInsertCode: () => void;
   onDivider: () => void;
 }) {
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const kind = block.kind.type === "heading" ? `heading-${block.kind.level}` : block.kind.type;
   const styleButton = (value: string, label: string, content: ReactNode) => (
     <button
@@ -95,12 +102,29 @@ export function BlockMenu({
       <section className="block-row__menu-section" aria-label="插入">
         <div className="block-row__menu-title">插入</div>
         <div className="block-row__menu-list">
+          <button className="block-row__menu-item" type="button" role="menuitem" onClick={() => imageInputRef.current?.click()}><Icon name="image" /><span>图片</span></button>
           <button className="block-row__menu-item" type="button" role="menuitem" onClick={onLink}><Icon name="link" /><span>链接块</span></button>
           <TableInsertPicker variant="menu" onSelect={onInsertTable} />
           <button className="block-row__menu-item" type="button" role="menuitem" onClick={onInsertQuote}><Icon name="quote" /><span>引用块</span></button>
+          <button className="block-row__menu-item" type="button" role="menuitem" onClick={onInsertCallout}><Icon name="highlight" /><span>高亮内容块</span></button>
+          <button className="block-row__menu-item" type="button" role="menuitem" onClick={onInsertTodo}><Icon name="todo" /><span>待办事项</span></button>
           <button className="block-row__menu-item" type="button" role="menuitem" onClick={onInsertCode}><Icon name="code" /><span>代码块</span></button>
         </div>
       </section>
+      <input
+        ref={imageInputRef}
+        className="sr-only"
+        type="file"
+        accept="image/*"
+        tabIndex={-1}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (!file) return;
+          onClose();
+          void onInsertImage(file);
+        }}
+      />
       <div className="block-row__menu-sep" />
       <section className="block-row__menu-section" aria-label="结构操作">
         <div className="block-row__menu-title">结构</div>

@@ -1482,6 +1482,12 @@ function DeckInspector({
   onClose,
   onPageSpecChange,
   onThemeChange,
+  onCreateMaster,
+  onUpdateMaster,
+  onDeleteMaster,
+  onCreateLayout,
+  onUpdateLayout,
+  onDeleteLayout,
 }: {
   deck: PresentationDeckProjection;
   disabled: boolean;
@@ -1489,6 +1495,12 @@ function DeckInspector({
   onClose: () => void;
   onPageSpecChange: (pageSpec: PresentationV5Deck["pageSpec"]) => void;
   onThemeChange: (theme: PresentationV5Deck["theme"]) => void;
+  onCreateMaster: () => void;
+  onUpdateMaster: (master: PresentationV5Master) => void;
+  onDeleteMaster: (masterId: string) => void;
+  onCreateLayout: (masterId: string) => void;
+  onUpdateLayout: (layout: PresentationV5Layout) => void;
+  onDeleteLayout: (layoutId: string) => void;
 }) {
   const initialFormat = deck.pageSpec.width / deck.pageSpec.height > 1.55 ? "wide" : "standard";
   const [format, setFormat] = useState(initialFormat);
@@ -1499,6 +1511,12 @@ function DeckInspector({
   }, [deck.pageSpec.height, deck.pageSpec.width, deck.themeName]);
   const canSetPageSpec = availableCapabilities.has("presentation.setPageSpec");
   const canSetTheme = availableCapabilities.has("presentation.setTheme");
+  const canCreateMaster = availableCapabilities.has("presentation.createMaster");
+  const canUpdateMaster = availableCapabilities.has("presentation.updateMaster");
+  const canDeleteMaster = availableCapabilities.has("presentation.deleteMaster");
+  const canCreateLayout = availableCapabilities.has("presentation.createLayout");
+  const canUpdateLayout = availableCapabilities.has("presentation.updateLayout");
+  const canDeleteLayout = availableCapabilities.has("presentation.deleteLayout");
   const formatSpec = format === "wide"
     ? { width: 12_192_000, height: 6_858_000 }
     : { width: 9_144_000, height: 6_858_000 };
@@ -1519,6 +1537,38 @@ function DeckInspector({
       <label>主题名称<Input value={themeName} disabled={disabled} onChange={(event) => setThemeName(event.target.value)} /></label>
       <Button type="button" size="sm" disabled={disabled || !themeName.trim()} onClick={() => onThemeChange({ id: themeIdForName(themeName), name: themeName.trim() })}>应用主题</Button>
       <p>主题的字体和配色由 Deck 的严格主题引用解析；此入口不会重写幻灯片或对象样式。</p>
+    </section>}
+    {(canCreateMaster || deck.masters.length > 0) && <section className="presentation-studio__inspector-section">
+      <h3>母版</h3>
+      {canCreateMaster && <Button type="button" size="sm" disabled={disabled} onClick={onCreateMaster}>新建母版</Button>}
+      {deck.masters.map(({ master }) => <div className="presentation-studio__inspector-control-group" key={master.id}>
+        <Input
+          aria-label={`母版名称：${master.name}`}
+          defaultValue={master.name}
+          disabled={disabled || !canUpdateMaster}
+          onBlur={(event) => {
+            const name = event.currentTarget.value.trim();
+            if (name && name !== master.name) onUpdateMaster({ ...master, name });
+          }}
+        />
+        {canCreateLayout && <Button type="button" size="sm" disabled={disabled} onClick={() => onCreateLayout(master.id)}>新建版式</Button>}
+        {canDeleteMaster && <Button type="button" size="sm" variant="danger" disabled={disabled} onClick={() => onDeleteMaster(master.id)}>删除</Button>}
+      </div>)}
+    </section>}
+    {(canCreateLayout || deck.layouts.length > 0) && <section className="presentation-studio__inspector-section">
+      <h3>版式</h3>
+      {deck.layouts.map(({ layout }) => <div className="presentation-studio__inspector-control-group" key={layout.id}>
+        <Input
+          aria-label={`版式名称：${layout.name}`}
+          defaultValue={layout.name}
+          disabled={disabled || !canUpdateLayout}
+          onBlur={(event) => {
+            const name = event.currentTarget.value.trim();
+            if (name && name !== layout.name) onUpdateLayout({ ...layout, name });
+          }}
+        />
+        {canDeleteLayout && <Button type="button" size="sm" variant="danger" disabled={disabled} onClick={() => onDeleteLayout(layout.id)}>删除</Button>}
+      </div>)}
     </section>}
   </div>;
 }

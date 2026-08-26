@@ -10,6 +10,7 @@ const blockToolbar = readSource("../src/chrome/BlockToolbar.tsx");
 const paragraphSettingsDialog = readSource("../src/chrome/ParagraphSettingsDialog.tsx");
 const pageSetupPanel = readSource("../src/chrome/PageSetupPanel.tsx");
 const blockMenu = readSource("../src/blocks/BlockMenu.tsx");
+const blockGutter = readSource("../src/blocks/BlockGutter.tsx");
 const blockContextMenu = readSource("../src/blocks/BlockContextMenu.tsx");
 const blockNode = readSource("../src/blocks/BlockNode.tsx");
 const blockEditor = readSource("../src/blockEditor.tsx");
@@ -25,8 +26,13 @@ const toolbarPrimitive = readSource("../../../packages/ui/src/navigation/toolbar
 const editorShellCss = readSource("../src/styles/editor-shell.css");
 const codeBlockView = readSource("../src/blocks/code/CodeBlockView.tsx");
 const renderers = readSource("../src/blocks/renderers.tsx");
+const contentRenderer = readSource("../src/blocks/content/ContentBlockRenderer.tsx");
+const tableCellView = readSource("../src/blocks/table/TableCellView.tsx");
+const tableSelectionController = readSource("../src/blocks/table/useTableSelectionController.ts");
+const tableGeometryController = readSource("../src/blocks/table/useTableGeometryController.ts");
 const tableSelectionLayer = readSource("../src/blocks/table/TableSelectionLayer.tsx");
 const tableSelectionToolbar = readSource("../src/blocks/table/TableSelectionToolbar.tsx");
+const tableBehavior = readSource("../src/blocks/behaviors/tableBehavior.ts");
 const tableToolbarContract = readSource("../src/blocks/table/toolbarContract.ts");
 const tableContextMenu = readSource("../src/blocks/table/TableContextMenu.tsx");
 const tableModel = readSource("../src/blocks/table/model.ts");
@@ -80,9 +86,9 @@ describe("editor UI contracts", () => {
     expect(blockMenu).toContain('<Icon name="bullet-list" />');
     expect(blockMenu).toContain('<Icon name="delete" />');
     expect(blockMenu).not.toMatch(/from "\.\.\/icons\/index\.js"/);
-    expect(blockNode).toContain('<Icon name="block-handle" />');
-    expect(blockNode).toContain('<Icon name="insert" />');
-    expect(blockNode).not.toContain("BlockHandleIcon");
+    expect(blockGutter).toContain('<Icon name="block-handle" />');
+    expect(blockGutter).toContain('<Icon name="insert" />');
+    expect(blockGutter).not.toContain("BlockHandleIcon");
   });
 
   it("keeps the color surface structured like the product palette", () => {
@@ -215,11 +221,11 @@ describe("editor UI contracts", () => {
     expect(tableProjection).toContain("class TableGridProjection");
     expect(renderers).toContain("createTableGridProjection");
     expect(tableSelectionLayer).toContain('data-table-selector="all"');
-    expect(renderers).toContain("block-table__cell--selected");
+    expect(tableCellView).toContain("block-table__cell--selected");
     expect(renderers).toContain("mergedCellProjection(tablePayload.data, row.id, column.id)");
     expect(renderers).toContain("if (projection === null) return null;");
-    expect(renderers).toContain("rowSpan={rowSpan}");
-    expect(renderers).toContain("colSpan={colSpan}");
+    expect(renderers).toContain("rowSpan={projection?.rowSpan}");
+    expect(renderers).toContain("colSpan={projection?.colSpan}");
     expect(tableModel).toContain("return { rowSpan: endRow - startRow + 1, colSpan: endColumn - startColumn + 1 }");
     expect(tableSelectionToolbar).toContain('role="toolbar"');
     expect(tableSelectionToolbar).toContain("block-table__selection-toolbar");
@@ -238,8 +244,7 @@ describe("editor UI contracts", () => {
     expect(tableToolbarContract).toContain('actions: ["mergeOrSplit", "insertRowColumn"]');
     expect(tableToolbarContract).not.toContain('"copy"');
     expect(tableToolbarContract).not.toContain('"delete"');
-    expect(renderers).toContain('type: "patchTableCellInlineRange"');
-    expect(renderers).toContain("restoreTableCellTextSelection");
+    expect(tableSelectionController).toContain("readTableCellTextSelection");
     expect(renderers).toContain("onContextMenu");
     expect(tableContextMenu).toContain("插入行列");
     expect(tableContextMenu).toContain("<Portal>");
@@ -249,9 +254,9 @@ describe("editor UI contracts", () => {
     // row/column +/- controls cannot cover the corner or its focus ring.
     expect(renderers).toContain("boundaryIndex === 0 ? null");
     expect(blocksCss).toContain(".block-table__selection-layer");
-    expect(blocksCss).toContain("z-index: 30;");
+    expect(blocksCss).toContain("z-index: var(--oo-z-editor-selection-layer);");
     expect(blocksCss).toContain(".block-table__controls");
-    expect(blocksCss).toContain("z-index: 20;");
+    expect(blocksCss).toContain("z-index: var(--oo-z-editor-selection);");
     expect(blocksCss).toContain(".block-table__row-selector");
     expect(blocksCss).toContain(".block-table__column-selector");
     expect(blocksCss).toContain(".block-table__corner-selector");
@@ -266,23 +271,18 @@ describe("editor UI contracts", () => {
     expect(blocksCss).toContain("position: fixed;");
     expect(blocksCss).toContain("z-index: calc(var(--oo-z-overlay, 1000) + 10);");
     expect(tableContextMenu).toContain("<Portal>");
-    expect(renderers).toContain("x: event.clientX, y: event.clientY");
-    expect(renderers).toContain("handleCellKeyDown");
-    expect(renderers).toContain("event.shiftKey");
-    expect(renderers).toContain('kind: "range"');
-    expect(renderers).toContain("focus({ preventScroll: true })");
-    expect(renderers).toContain("beginColumnResize");
-    expect(renderers).toContain("setTableColumnWidth");
+    expect(tableSelectionController).toContain("onCellKeyDown");
+    expect(tableSelectionController).toContain("event.shiftKey");
+    expect(tableSelectionController).toContain('kind: "range"');
+    expect(tableSelectionController).toContain("focus({ preventScroll: true })");
+    expect(tableGeometryController).toContain("beginColumnResize");
     expect(renderers).toContain('data-table-resize="column"');
     expect(renderers).toContain('data-table-column-next-id');
-    expect(renderers).toContain('setTableColumnWidths');
     expect(blocksCss).toContain(".block-table__resize-handle");
     expect(blocksCss).toContain("cursor: col-resize;");
-    expect(renderers).toContain("beginRowResize");
-    expect(renderers).toContain("setTableRowHeight");
+    expect(tableGeometryController).toContain("beginRowResize");
     expect(renderers).toContain('data-table-resize="row"');
     expect(renderers).toContain('data-table-row-next-id');
-    expect(renderers).toContain('session.setTableRowHeight(block.id, current.rowId, preview.height)');
     expect(renderers).not.toContain('setTableRowHeights');
     expect(blockSession).not.toContain('setTableRowHeights');
     expect(blocksCss).toContain(".block-table__row-resize-handle");
@@ -301,20 +301,19 @@ describe("editor UI contracts", () => {
   });
 
   it("keeps table merge selection semantic and pointer-driven", () => {
-    expect(renderers).toContain("mergeableTableRange");
-    expect(renderers).toContain("normalizeTableSelection");
-    expect(renderers).toContain("session.mergeTableCells(block.id, range)");
-    expect(renderers).toContain("onPointerDown={(event) => selectCellFromPointer");
-    expect(renderers).toContain('window.addEventListener("pointermove", extendCellDrag)');
-    expect(renderers).toContain("shouldPromotePointerToTableRange");
+    expect(tableSelectionController).toContain("normalizeTableSelection");
+    expect(tableSelectionController).toContain('window.addEventListener("pointermove", extendCellDrag)');
+    expect(tableSelectionController).toContain("shouldPromotePointerToTableRange");
     expect(renderers).toContain('selection?.kind !== "cell" && selectionIncludesCell');
     expect(renderers).toContain("tableContextSelectionForCell(");
-    expect(renderers).toContain("data-table-row-id={rowId}");
+    expect(tableCellView).toContain("data-table-row-id={rowId}");
     expect(tableModel).toContain("export function tableRangeForSelection");
     expect(tableModel).toContain("export function tableContextSelectionForCell");
     expect(tableModel).toContain("export function tableBoundaryCrossesMerge");
     expect(renderers).toContain('tableBoundaryCrossesMerge(tablePayload.data, "row", boundaryIndex)');
     expect(renderers).toContain('tableBoundaryCrossesMerge(tablePayload.data, "column", boundaryIndex)');
+    expect(tableBehavior).toContain("tableSelection(selection, { blockId, interaction })");
+    expect(blockNode).toContain("behavior?.tableSelection?.(tableSelection");
   });
 
   it("keeps list markers inside the block content box", () => {
@@ -327,15 +326,15 @@ describe("editor UI contracts", () => {
     expect(blocksCss).toContain('.block-row__content-shell--list > :not(.block-row__list-marker)');
     expect(blocksCss).toContain('.block-image__content');
     expect(blocksCss).toContain('max-width: 100%;');
-    expect(renderers).toContain('onPaste={(event) =>');
-    expect(renderers).toContain('session.insertPastedImage(block.id, file)');
+    expect(contentRenderer).toContain('onPaste={(event) =>');
+    expect(contentRenderer).toContain('session.insertPastedImage(block.id, file)');
     expect(blockSession).toContain('buildPastedImageInsertCommands');
   });
 
   it("gives selected image blocks an object outline and an object-local toolbar", () => {
-    expect(blockNode).toContain('selected={focused}');
+    expect(blockNode).toContain('interactionSelection.kind === "object"');
     expect(renderers).toContain('<ImageBlockToolbar');
-    expect(renderers).toContain('session.setActiveBlock(null)');
+    expect(renderers).toContain('onSelectObject?.() ?? session.setActiveBlock(block.id)');
     expect(blocksCss).toContain('.block-image.is-selected');
     expect(blocksCss).toContain('.block-image__toolbar');
     expect(blocksCss).toContain('z-index: var(--oo-z-popover)');
@@ -355,14 +354,13 @@ describe("editor UI contracts", () => {
   });
 
   it("continues list semantics when creating the next block with Enter", () => {
-    expect(blockNode).toContain('const nextAttrs = activeListType && block?.content?.text.trim()');
-    expect(blockNode).toContain('session.insertAfter(blockId, { type: "paragraph" }, nextAttrs)');
-    expect(blockNode).toContain('session.setBlockPresentation(blockId, { listType: null, listLevel: null, indentLevel: null })');
+    const contentBehavior = readSource("../src/blocks/behaviors/contentBehavior.ts");
+    expect(contentRenderer).toContain("onKeyDown={onKeyDown}");
+    expect(contentBehavior).toContain('const nextAttrs = listKind && block.content?.text.trim()');
+    expect(contentBehavior).toContain('session.insertAfter(blockId, { type: "paragraph" }, nextAttrs)');
+    expect(contentBehavior).toContain('session.setBlockPresentation(blockId, { listType: null, listLevel: null, indentLevel: null })');
     expect(blockNode).toContain('listOrdinalFor(block.children, childIndex, store)');
     expect(blockSession).toContain('type: "setBlockPresentation"');
-    expect(blockSession).toContain('patch.listType');
-    expect(blockSession).toContain('case "indentLevel":');
-    expect(blockSession).toContain('patch[key] = value as never;');
   });
 
   it("routes inline formatting through the typed range command", () => {
@@ -387,9 +385,9 @@ describe("editor UI contracts", () => {
   });
 
   it("keeps IME composition provisional input out of the semantic queue", () => {
-    expect(renderers).toContain("onCompositionStart");
-    expect(renderers).toContain("onCompositionEnd");
-    expect(renderers).toContain("composingRef.current");
+    expect(contentRenderer).toContain("onCompositionStart");
+    expect(contentRenderer).toContain("onCompositionEnd");
+    expect(contentRenderer).toContain("composingRef.current");
   });
 
   it("preserves a text selection while toolbar controls are clicked", () => {

@@ -102,7 +102,22 @@ export interface ImageBlock {
   alt: string;
   originalAssetId: string | null;
   transform: ImageTransform;
+  size: ImageSize;
+  placement: ImagePlacement;
   caption: string;
+}
+
+/** Persisted display size. Null preserves the intrinsic image dimension. */
+export interface ImageSize {
+  width: number | null;
+  height: number | null;
+  lockAspectRatio: boolean;
+}
+
+/** Flow-relative image placement. It is persistent domain state, never a renderer-only offset. */
+export interface ImagePlacement {
+  offsetX: number;
+  offsetY: number;
 }
 
 export interface ImageTransform {
@@ -645,10 +660,9 @@ export type DocumentCommand =
       blockId: string;
       patch: {
         align?: "left" | "center" | "right" | "justify" | null;
-        listType?: "bullet" | "ordered" | null;
-        listLevel?: number | null;
-        indentLevel?: number | null;
-        indentRight?: number | null;
+        list?: ListPresentation | null;
+        indentStart?: number | null;
+        indentEnd?: number | null;
         spacingBefore?: number | null;
         spacingAfter?: number | null;
         lineHeight?: number | null;
@@ -711,6 +725,8 @@ export type DocumentCommand =
         assetId?: string;
         originalAssetId?: string | null;
         transform?: ImageTransform;
+        size?: ImageSize;
+        placement?: ImagePlacement;
         caption?: string;
       };
     }
@@ -1000,6 +1016,8 @@ function parseBlockData(value: unknown, index: number): BlockData {
         alt: data.alt === undefined ? "" : asString(data.alt, `${name}.data.alt`),
         originalAssetId,
         transform,
+        size: parseImageSize(data.size, `${name}.data.size`),
+        placement: parseImagePlacement(data.placement, `${name}.data.placement`),
         caption,
       },
     };
@@ -1069,6 +1087,36 @@ function parseBlockData(value: unknown, index: number): BlockData {
     };
   }
   throw new Error(`${name}.type 不支持：${type}`);
+}
+
+function parseImageSize(value: unknown, name: string): ImageSize {
+  if (value === undefined || value === null) return { width: null, height: null, lockAspectRatio: true };
+  const size = asRecord(value, name);
+  assertKnownKeys(size, ["width", "height", "lockAspectRatio"], name);
+  const parseAxis = (axis: "width" | "height") => {
+    const raw = size[axis];
+    if (raw === undefined || raw === null) return null;
+    const dimension = asFinitePositiveNumber(raw, `${name}.${axis}`);
+    if (dimension < 24 || dimension > 8192) throw new Error(`${name}.${axis} 必须在 24 到 8192 之间`);
+    return dimension;
+  };
+  return {
+    width: parseAxis("width"),
+    height: parseAxis("height"),
+    lockAspectRatio: size.lockAspectRatio === undefined ? true : asBoolean(size.lockAspectRatio, `${name}.lockAspectRatio`),
+  };
+}
+
+function parseImagePlacement(value: unknown, name: string): ImagePlacement {
+  if (value === undefined || value === null) return { offsetX: 0, offsetY: 0 };
+  const placement = asRecord(value, name);
+  assertKnownKeys(placement, ["offsetX", "offsetY"], name);
+  const parseOffset = (axis: "offsetX" | "offsetY") => {
+    const offset = placement[axis] === undefined ? 0 : asFiniteNumber(placement[axis], `${name}.${axis}`);
+    if (offset < -8192 || offset > 8192) throw new Error(`${name}.${axis} 必须在 -8192 到 8192 之间`);
+    return offset;
+  };
+  return { offsetX: parseOffset("offsetX"), offsetY: parseOffset("offsetY") };
 }
 
 function validateTableMergedRanges(

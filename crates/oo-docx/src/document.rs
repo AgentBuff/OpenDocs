@@ -128,6 +128,8 @@ fn append_image_blocks(
                 alt: String::new(),
                 original_asset_id: None,
                 transform: Default::default(),
+                size: Default::default(),
+                placement: Default::default(),
                 caption: String::new(),
             }),
         };

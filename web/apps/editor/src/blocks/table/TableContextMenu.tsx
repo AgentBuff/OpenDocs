@@ -1,11 +1,13 @@
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { MenuItem, MenuPanel, MenuSeparator, Portal } from "@open-office/ui";
 import type { TableBorder, TableBorderPreset } from "@open-office/schema/artifact";
 import type { TableSelection } from "./model.js";
 import { TableBorderMenu } from "./TableBorderMenu.js";
+import { useManagedOverlay } from "../../interaction/OverlayCoordinator.js";
 
 interface TableContextMenuProps {
   target: { x: number; y: number; selection: TableSelection };
+  onDismiss: () => void;
   onCut: () => void;
   onCopy: () => void;
   onInsert: (direction: "before" | "after") => void;
@@ -17,9 +19,19 @@ interface TableContextMenuProps {
   canSplit: boolean;
 }
 
-export function TableContextMenu({ target, onCut, onCopy, onInsert, onDelete, onMerge, onSplit, onApplyBorderPreset, canMerge, canSplit }: TableContextMenuProps) {
+export function TableContextMenu({ target, onDismiss, onCut, onCopy, onInsert, onDelete, onMerge, onSplit, onApplyBorderPreset, canMerge, canSplit }: TableContextMenuProps) {
   const [submenu, setSubmenu] = useState<"insert" | "delete" | "border" | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<{ left: number; top: number } | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const submenuRef = useRef<HTMLDivElement>(null);
+  useManagedOverlay({
+    id: `table-context-menu:${target.x}:${target.y}`,
+    kind: "contextMenu",
+    priority: 80,
+    rootRef,
+    excludedRefs: [submenuRef],
+    onDismiss: () => onDismiss(),
+  });
   const { selection } = target;
   const isRow = selection.kind === "row";
   const isColumn = selection.kind === "column";
@@ -40,7 +52,7 @@ export function TableContextMenu({ target, onCut, onCopy, onInsert, onDelete, on
   return (
     <>
       <Portal>
-      <MenuPanel
+      <div ref={rootRef}><MenuPanel
         className="block-table__context-menu"
         role="menu"
         aria-label={label}
@@ -79,11 +91,11 @@ export function TableContextMenu({ target, onCut, onCopy, onInsert, onDelete, on
       <MenuItem disabled>题注</MenuItem>
       <MenuItem disabled>书签</MenuItem>
       <MenuItem disabled>清除格式</MenuItem>
-      </MenuPanel>
+      </MenuPanel></div>
       </Portal>
       {submenu && submenuPosition && (
         <Portal>
-          <MenuPanel
+          <div ref={submenuRef}><MenuPanel
             className="block-table__context-submenu"
             role="menu"
             aria-label={submenu === "insert" ? "插入行列" : submenu === "delete" ? "删除行列" : "边框"}
@@ -99,7 +111,7 @@ export function TableContextMenu({ target, onCut, onCopy, onInsert, onDelete, on
             ) : <>
               <TableBorderMenu onApply={onApplyBorderPreset} />
             </>}
-          </MenuPanel>
+          </MenuPanel></div>
         </Portal>
       )}
     </>

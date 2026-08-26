@@ -1250,6 +1250,8 @@ mod tests {
                     original_asset_id: Some("asset-original".into()),
                     alt: String::new(),
                     transform: ImageTransform::default(),
+                    size: Default::default(),
+                    placement: Default::default(),
                     caption: String::new(),
                 }),
             }],

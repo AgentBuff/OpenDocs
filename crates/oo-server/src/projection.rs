@@ -23,7 +23,9 @@ use oo_protocol::{
     ArtifactProjectionKind, ProjectionEnvelope, CURRENT_PROTOCOL_VERSION,
     PROJECTION_CONTRACT_VERSION,
 };
-use oo_schema::presentation_v5::{Deck, SceneNode, Slide, SlideLayout, SlideMaster, SlidePageSpec, Timeline};
+use oo_schema::presentation_v5::{
+    Deck, SceneNode, Slide, SlideLayout, SlideMaster, SlidePageSpec, Timeline,
+};
 use oo_schema::{ArtifactPayload, DocumentBlock, DocumentBlockKind, DocumentModel};
 use oo_whiteboard::export_projection as export_whiteboard_projection;
 

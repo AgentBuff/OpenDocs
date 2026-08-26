@@ -86,11 +86,11 @@ describe("framework-free Artifact API boundary", () => {
   });
 
   it("routes projections through one typed client and preserves structured errors", async () => {
-    const calls: string[] = [];
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new ArtifactApiClient({
       baseUrl: "http://api.test",
-      fetcher: async (input) => {
-        calls.push(String(input));
+      fetcher: async (input, init) => {
+        calls.push({ url: String(input), init });
         return new Response(JSON.stringify({
           protocolVersion: 1,
           contractVersion: 1,
@@ -103,8 +103,9 @@ describe("framework-free Artifact API boundary", () => {
       },
     });
     await client.blocks("a-1", { parentId: "root", limit: 20, include: ["headingPath"] });
-    expect(calls[0]).toContain("/api/artifacts/a-1/blocks?");
-    expect(calls[0]).toContain("parentId=root");
+    expect(calls[0]?.url).toContain("/api/artifacts/a-1/blocks?");
+    expect(calls[0]?.url).toContain("parentId=root");
+    expect(calls[0]?.init?.cache).toBe("no-store");
 
     const failing = new ArtifactApiClient({
       fetcher: async () => new Response(JSON.stringify({ error: "冲突", code: "version_conflict", requestId: "err-1" }), { status: 409 }),
@@ -193,12 +194,21 @@ describe("framework-free Artifact API boundary", () => {
     expect(parsePresentationDeckProjection({
       pageSpec: { width: 12192000, height: 6858000, unit: "emu" },
       themeId: "theme-1", themeName: "Default", slideCount: 1, masterCount: 1, layoutCount: 1, assetCount: 0,
-      masters: [{ id: "master-1", name: "Default", placeholderCount: 2 }],
-      layouts: [{ id: "layout-title", masterId: "master-1", name: "Title", placeholderCount: 1 }],
+      masters: [{
+        id: "master-1", name: "Default", placeholderCount: 2,
+        master: { id: "master-1", name: "Default", background: { type: "none" }, placeholders: [] },
+      }],
+      layouts: [{
+        id: "layout-title", masterId: "master-1", name: "Title", placeholderCount: 1,
+        layout: { id: "layout-title", masterId: "master-1", name: "Title", placeholders: [] },
+      }],
     })).toMatchObject({ layouts: [{ id: "layout-title", masterId: "master-1" }] });
     expect(() => parsePresentationDeckProjection({
       pageSpec: { width: 1, height: 1, unit: "emu" }, themeId: "theme-1", themeName: "Default", slideCount: 0,
-      masterCount: 0, layoutCount: 1, assetCount: 0, masters: [], layouts: [{ id: "layout-1", masterId: "missing", name: "Title", placeholderCount: 0 }],
+      masterCount: 0, layoutCount: 1, assetCount: 0, masters: [], layouts: [{
+        id: "layout-1", masterId: "missing", name: "Title", placeholderCount: 0,
+        layout: { id: "layout-1", masterId: "missing", name: "Title", placeholders: [] },
+      }],
     })).toThrow("引用不存在 master");
   });
 });

@@ -386,6 +386,8 @@ describe("Artifact snapshot boundary", () => {
         alt: "",
         originalAssetId: null,
         transform: { crop: { top: 0, right: 0, bottom: 0, left: 0 }, flipHorizontal: false, flipVertical: false },
+        size: { width: null, height: null, lockAspectRatio: true },
+        placement: { offsetX: 0, offsetY: 0 },
         caption: "",
       },
     };

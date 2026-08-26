@@ -36,6 +36,7 @@ function definitions(): BlockDefinition[] {
       key: "code",
       matches: (value) => value.kind.type === "code",
       renderer,
+      behavior: { selection: "object" },
       commands: [{ id: "copy", title: "复制", execute: () => undefined }],
     },
     { key: "content", fallback: true, matches: () => true, renderer },
@@ -56,18 +57,25 @@ describe("block runtime registry", () => {
       { key: "content", matches: () => true, renderer },
     ])).toThrow("duplicate block definition");
     expect(() => createBlockRegistry([
-      { key: "code", matches: () => true, renderer },
+      { key: "code", matches: () => true, renderer, behavior: { selection: "object" } },
     ])).toThrow("fallback");
   });
 
   it("creates isolated runtime instances instead of sharing module state", () => {
     const first = createBlockRegistry(definitions());
     const second = createBlockRegistry([
-      { key: "image", matches: () => true, renderer },
+      { key: "image", matches: () => true, renderer, behavior: { selection: "object" } },
       { key: "content", fallback: true, matches: () => false, renderer },
     ]);
     expect(first).not.toBe(second);
     expect(first.resolve(block({ type: "code" })).key).toBe("code");
     expect(second.resolve(block({ type: "paragraph" })).key).toBe("image");
+  });
+
+  it("rejects atomic blocks without an explicit interaction behavior", () => {
+    expect(() => createBlockRegistry([
+      { key: "image", matches: () => true, renderer },
+      { key: "content", fallback: true, matches: () => false, renderer },
+    ])).toThrow("交互行为");
   });
 });

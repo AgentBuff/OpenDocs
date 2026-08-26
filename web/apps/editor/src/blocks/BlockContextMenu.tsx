@@ -1,5 +1,7 @@
 import { MenuItem, MenuPanel, MenuSeparator, Portal } from "@open-office/ui";
 import type { MouseEvent as ReactMouseEvent } from "react";
+import { useRef } from "react";
+import { useManagedOverlay } from "../interaction/OverlayCoordinator.js";
 
 export interface BlockContextMenuTarget {
   x: number;
@@ -10,6 +12,7 @@ export interface BlockContextMenuTarget {
 
 interface BlockContextMenuProps {
   target: BlockContextMenuTarget;
+  onDismiss: () => void;
   onCut: () => void;
   onCopy: () => void;
 }
@@ -19,7 +22,15 @@ interface BlockContextMenuProps {
  * menu.  Commands without a semantic document implementation stay disabled;
  * this keeps the office vocabulary visible without manufacturing writes.
  */
-export function BlockContextMenu({ target, onCut, onCopy }: BlockContextMenuProps) {
+export function BlockContextMenu({ target, onDismiss, onCut, onCopy }: BlockContextMenuProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  useManagedOverlay({
+    id: `block-context-menu:${target.x}:${target.y}`,
+    kind: "contextMenu",
+    priority: 80,
+    rootRef,
+    onDismiss: () => onDismiss(),
+  });
   const width = 184;
   const left = Math.max(8, Math.min(target.x, window.innerWidth - width - 8));
   const top = Math.max(8, Math.min(target.y, window.innerHeight - 360));
@@ -27,6 +38,7 @@ export function BlockContextMenu({ target, onCut, onCopy }: BlockContextMenuProp
 
   return (
     <Portal>
+      <div ref={rootRef}>
       <MenuPanel
         className="block-row__context-menu"
         role="menu"
@@ -49,6 +61,7 @@ export function BlockContextMenu({ target, onCut, onCopy }: BlockContextMenuProp
         <MenuItem disabled>书签</MenuItem>
         <MenuItem disabled>清除格式</MenuItem>
       </MenuPanel>
+      </div>
     </Portal>
   );
 }

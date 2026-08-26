@@ -119,6 +119,7 @@ export const builtinIcons: Record<IconName, IconRenderer> = {
     children: <path d="M19 18V9.28078C19 8.82191 19.3123 8.42193 19.7575 8.31063L27.7575 6.31063C28.3886 6.15285 29 6.63021 29 7.28078V18M19 18H15C14.4477 18 14 18.4477 14 19V27H10C9.44772 27 9 27.4477 9 28V43M19 18H29M29 18H33C33.5523 18 34 18.4477 34 19V27H38C38.5523 27 39 27.4477 39 28V43" />,
   }),
   history: (props) => svg({ ...props, children: <><circle cx="8" cy="8" r="5.5" /><path d="M8 4.5v3.8l2.4 1.4M2.5 5.5V3.2M2.5 3.2h2.3" /></> }),
+  image: (props) => svg({ ...props, children: <><rect x="2.5" y="3" width="11" height="10" rx="1" /><circle cx="5.3" cy="6" r="1" /><path d="m3 11 3.1-3 2.2 2 1.6-1.5 3.3 2.5" /></> }),
   ellipsis: (props) => svg({ ...props, children: <><circle cx="3.5" cy="8" r=".8" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r=".8" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r=".8" fill="currentColor" stroke="none" /></> }),
   insert: (props) => svg({ ...props, children: <><circle cx="8" cy="8" r="5.5" /><path d="M8 5v6M5 8h6" /></> }),
   "insert-row-column": (props) => svg({ ...props, children: <><rect x="2.5" y="3" width="8" height="10" rx=".8" /><path d="M2.5 6.3h8M6.5 3v10M13 7.8v5M10.5 10.3h5" /></> }),

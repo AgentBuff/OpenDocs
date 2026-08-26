@@ -78,6 +78,11 @@ export interface BlockSessionApi {
     kind?: DocumentBlockKind,
     presentation?: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'],
   ) => string | null;
+  insertBefore: (
+    id: string,
+    kind?: DocumentBlockKind,
+    presentation?: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'],
+  ) => string | null;
   insertPastedImage: (id: string, file: File) => Promise<string | null>;
   /** Persist an image-domain patch through the canonical document transaction. */
   setImageConfig: (
@@ -530,16 +535,39 @@ export function useBlockSession(documentId: string): BlockSessionApi {
           }
           patch.align = value as PresentationPatch["align"];
           break;
-        case "listType":
+        case "listType": {
           if (value !== null && value !== "bullet" && value !== "ordered") {
             reportError("无效的列表类型");
             return;
           }
-          patch.listType = value as PresentationPatch["listType"];
+          const level = presentation.listLevel;
+          if (level !== undefined && level !== null && (typeof level !== "number" || !Number.isInteger(level) || level < 0 || level > 9)) {
+            reportError("列表级别必须在 0 到 9 之间");
+            return;
+          }
+          patch.list = value === null
+            ? null
+            : { kind: value, level: typeof level === "number" ? level : block.presentation.list?.level ?? 0 };
           break;
+        }
         case "listLevel":
+          // listType owns the canonical wire representation. A level without
+          // a list kind is ignored rather than producing an incomplete patch.
+          break;
         case "indentLevel":
+          if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) {
+            reportError(`${key} 必须是有限数字`);
+            return;
+          }
+          patch.indentStart = value as PresentationPatch["indentStart"];
+          break;
         case "indentRight":
+          if (value !== null && (typeof value !== "number" || !Number.isFinite(value))) {
+            reportError(`${key} 必须是有限数字`);
+            return;
+          }
+          patch.indentEnd = value as PresentationPatch["indentEnd"];
+          break;
         case "spacingBefore":
         case "spacingAfter":
         case "lineHeight":
@@ -557,7 +585,7 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     if (Object.keys(patch).length > 0) dispatchCommand({ type: "setBlockPresentation", blockId: id, patch });
   }, [dispatchCommand, reportError]);
 
-  const insertAfter = useCallback((id: string, kind: DocumentBlockKind = { type: "paragraph" }, presentation: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'] = {}) => {
+  const insertRelative = useCallback((id: string, offset: 0 | 1, kind: DocumentBlockKind = { type: "paragraph" }, presentation: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'] = {}) => {
     const current = snapshotRef.current;
     if (!current || current.artifact.payload.kind !== "document") return null;
     const location = projection.findLocation(id);
@@ -574,8 +602,16 @@ export function useBlockSession(documentId: string): BlockSessionApi {
           ? { type: "todo", data: { checked: false } }
           : { type: "none" },
     };
-    return dispatchCommand({ type: "insertBlock", block, parentId: location.parentId, index: location.index + 1 }) ? block.id : null;
+    return dispatchCommand({ type: "insertBlock", block, parentId: location.parentId, index: location.index + offset }) ? block.id : null;
   }, [dispatchCommand]);
+
+  const insertAfter = useCallback((id: string, kind: DocumentBlockKind = { type: "paragraph" }, presentation: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'] = {}) => (
+    insertRelative(id, 1, kind, presentation)
+  ), [insertRelative]);
+
+  const insertBefore = useCallback((id: string, kind: DocumentBlockKind = { type: "paragraph" }, presentation: Extract<DocumentCommand, { type: "setBlockPresentation" }>['patch'] = {}) => (
+    insertRelative(id, 0, kind, presentation)
+  ), [insertRelative]);
 
   const insertPastedImage = useCallback(async (id: string, file: File): Promise<string | null> => {
     const initial = snapshotRef.current;
@@ -1004,6 +1040,7 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     convertBlock,
     setBlockPresentation,
     insertAfter,
+    insertBefore,
     insertPastedImage,
     setImageConfig,
     replaceImageAsset,
@@ -1081,6 +1118,8 @@ export function buildPastedImageInsertCommands({
         alt,
         originalAssetId: null,
         transform: defaultImageTransform(),
+        size: { width: null, height: null, lockAspectRatio: true },
+        placement: { offsetX: 0, offsetY: 0 },
         caption: "",
       },
     },
@@ -1117,11 +1156,11 @@ function presentationFromCommandPatch(
 ): BlockPresentation {
   const next = defaultBlockPresentation();
   if (patch.align !== undefined && patch.align !== null) next.align = patch.align;
-  if (patch.listType !== undefined && patch.listType !== null) {
-    next.list = { kind: patch.listType, level: patch.listLevel ?? 0 };
+  if (patch.list !== undefined && patch.list !== null) {
+    next.list = patch.list;
   }
-  if (patch.indentLevel !== undefined && patch.indentLevel !== null) next.indentStart = patch.indentLevel;
-  if (patch.indentRight !== undefined && patch.indentRight !== null) next.indentEnd = patch.indentRight;
+  if (patch.indentStart !== undefined && patch.indentStart !== null) next.indentStart = patch.indentStart;
+  if (patch.indentEnd !== undefined && patch.indentEnd !== null) next.indentEnd = patch.indentEnd;
   if (patch.spacingBefore !== undefined && patch.spacingBefore !== null) next.spacingBefore = patch.spacingBefore;
   if (patch.spacingAfter !== undefined && patch.spacingAfter !== null) next.spacingAfter = patch.spacingAfter;
   if (patch.lineHeight !== undefined && patch.lineHeight !== null) next.lineHeight = patch.lineHeight;
