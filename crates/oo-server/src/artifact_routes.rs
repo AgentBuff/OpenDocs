@@ -75,7 +75,12 @@ pub async fn capabilities() -> Json<CapabilityCatalog> {
                 status: ArtifactCapabilityStatus::Stable,
                 commands: document_command_capabilities(),
             },
-            planned_capability(ArtifactKind::Spreadsheet, "spreadsheet"),
+            ArtifactCapability {
+                kind: ArtifactKind::Spreadsheet,
+                namespace: "spreadsheet".into(),
+                status: ArtifactCapabilityStatus::Stable,
+                commands: spreadsheet_command_capabilities(),
+            },
             ArtifactCapability {
                 kind: ArtifactKind::Presentation,
                 namespace: "presentation".into(),
@@ -88,9 +93,55 @@ pub async fn capabilities() -> Json<CapabilityCatalog> {
                 status: ArtifactCapabilityStatus::Stable,
                 commands: mindmap_command_capabilities(),
             },
-            planned_capability(ArtifactKind::Whiteboard, "whiteboard"),
+            ArtifactCapability {
+                kind: ArtifactKind::Whiteboard,
+                namespace: "whiteboard".into(),
+                status: ArtifactCapabilityStatus::Stable,
+                commands: whiteboard_command_capabilities(),
+            },
         ],
     })
+}
+
+fn spreadsheet_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    const COMMANDS: &[(&str, &str)] = &[
+        ("spreadsheet.createSheet", "spreadsheet.sheet"),
+        ("spreadsheet.renameSheet", "spreadsheet.sheet"),
+        ("spreadsheet.deleteSheet", "spreadsheet.sheet"),
+        ("spreadsheet.setSheetMetadata", "spreadsheet.sheet"),
+        ("spreadsheet.setCell", "spreadsheet.cell"),
+        ("spreadsheet.setCellStyle", "spreadsheet.cell"),
+        ("spreadsheet.clearCell", "spreadsheet.cell"),
+    ];
+    COMMANDS
+        .iter()
+        .map(|(type_id, scope)| ArtifactCommandCapability {
+            type_id: (*type_id).into(),
+            scope: (*scope).into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect()
+}
+
+fn whiteboard_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    const COMMANDS: &[(&str, &str)] = &[
+        ("whiteboard.addElement", "whiteboard.element"),
+        ("whiteboard.updateElement", "whiteboard.element"),
+        ("whiteboard.deleteElement", "whiteboard.element"),
+        ("whiteboard.setCamera", "whiteboard.camera"),
+        ("whiteboard.panCamera", "whiteboard.camera"),
+        ("whiteboard.zoomCamera", "whiteboard.camera"),
+    ];
+    COMMANDS
+        .iter()
+        .map(|(type_id, scope)| ArtifactCommandCapability {
+            type_id: (*type_id).into(),
+            scope: (*scope).into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect()
 }
 
 fn mindmap_command_capabilities() -> Vec<ArtifactCommandCapability> {
@@ -113,15 +164,6 @@ fn mindmap_command_capabilities() -> Vec<ArtifactCommandCapability> {
             supports_idempotency: true,
         })
         .collect()
-}
-
-fn planned_capability(kind: ArtifactKind, namespace: &str) -> ArtifactCapability {
-    ArtifactCapability {
-        kind,
-        namespace: namespace.into(),
-        status: ArtifactCapabilityStatus::Planned,
-        commands: Vec::new(),
-    }
 }
 
 fn document_command_capabilities() -> Vec<ArtifactCommandCapability> {
@@ -987,7 +1029,26 @@ pub async fn transactions(
             crate::mindmap_support::submit_transaction(State(state), user, Path(id), headers, body)
                 .await
         }
-        kind => Err(AppError::UnsupportedArtifact(kind)),
+        ArtifactKind::Spreadsheet => {
+            crate::spreadsheet_support::submit_transaction(
+                State(state),
+                user,
+                Path(id),
+                headers,
+                body,
+            )
+            .await
+        }
+        ArtifactKind::Whiteboard => {
+            crate::whiteboard_support::submit_transaction(
+                State(state),
+                user,
+                Path(id),
+                headers,
+                body,
+            )
+            .await
+        }
     }
 }
 
