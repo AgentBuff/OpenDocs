@@ -36,7 +36,7 @@ pub const PRESENTATION_HISTORY_TYPE_ID: &str = "presentation.history";
 /// The write/read boundary that every Artifact client can use after discovering
 /// the capability catalog. Paths are URI templates rather than a second RPC
 /// surface, so agents, SDKs and MCP adapters all speak the same REST contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactTransportCapability {
     pub snapshot_endpoint: String,
@@ -45,7 +45,7 @@ pub struct ArtifactTransportCapability {
     pub idempotency_header: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactCapabilityStatus {
     Stable,
@@ -55,7 +55,7 @@ pub enum ArtifactCapabilityStatus {
 /// A semantic command accepted by an Artifact engine. `scope` allows a client
 /// to discover table-specific commands without pretending that tables are a
 /// second Artifact model (their namespace remains `document.table`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactCommandCapability {
     pub type_id: String,
@@ -64,7 +64,7 @@ pub struct ArtifactCommandCapability {
     pub supports_idempotency: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactCapability {
     pub kind: ArtifactKind,
@@ -76,7 +76,7 @@ pub struct ArtifactCapability {
 }
 
 /// Versioned discovery response for agent/SDK/MCP clients.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityCatalog {
     pub protocol_version: u16,
@@ -197,7 +197,7 @@ impl SnapshotEnvelope {
 ///
 /// 这里表达的是语义 command，不是 Document engine 的内部 operation。不同 Artifact
 /// 通过 `type_id` 扩展能力，服务端必须在进入领域 engine 前做对应的 command 校验。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactCommandEnvelope {
     pub protocol_version: u16,
@@ -263,7 +263,7 @@ pub struct CommandContext {
 }
 
 /// Command 是用户意图；payload 由对应 Artifact capability 负责校验。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandRecord {
     pub command_id: String,
@@ -312,7 +312,7 @@ impl OperationRecord {
 }
 
 /// 跨 Artifact 的最小持久化变更记录。具体 payload 由 Mutation registry 解释。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationRecord {
     pub type_id: String,
@@ -320,7 +320,7 @@ pub struct MutationRecord {
 }
 
 /// 提交后的领域事实。事件只能在事务成功提交后产生。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DomainEventRecord {
     pub event_id: String,
@@ -328,7 +328,7 @@ pub struct DomainEventRecord {
     pub payload: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityRef {
     pub entity_type: String,
@@ -336,7 +336,7 @@ pub struct EntityRef {
 }
 
 /// 只表达增量失效范围，不携带完整 snapshot。
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Invalidation {
     pub changed_entities: Vec<EntityRef>,
@@ -345,7 +345,7 @@ pub struct Invalidation {
 }
 
 /// 所有 Artifact 写入的唯一提交返回值。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitResult {
     pub protocol_version: u16,
@@ -365,7 +365,7 @@ pub struct PendingTransaction {
     pub envelope: ArtifactCommandEnvelope,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TransactionOrigin {
     Local,
@@ -814,4 +814,39 @@ mod tests {
         assert_eq!(decoded, envelope);
         assert_eq!(decoded.projection, ArtifactProjectionKind::Block);
     }
+}
+
+/// 机器可读协议形状的单源出口（ADR-0010）。
+///
+/// schema 直接由 Rust 类型派生，是后续 OpenAPI components 与 SDK 类型生成
+/// 的唯一真相。任何 wire 兼容性破坏都会在这里改变形状，由 golden 快照
+/// 测试拦截；`$defs` 引用保证同名类型全局唯一。
+pub fn generate_contract_schemas() -> serde_json::Map<String, serde_json::Value> {
+    macro_rules! schema_of {
+        ($map:ident, $($t:ty),+ $(,)?) => {$(
+            $map.insert(
+                stringify!($t).rsplit("::").next().unwrap().to_string(),
+                serde_json::to_value(schemars::schema_for!($t))
+                    .expect("contract schema must serialize"),
+            );
+        )+};
+    }
+    let mut schemas = serde_json::Map::new();
+    schema_of!(
+        schemas,
+        ArtifactCommandEnvelope,
+        CommandRecord,
+        TransactionOrigin,
+        CommitResult,
+        MutationRecord,
+        DomainEventRecord,
+        EntityRef,
+        Invalidation,
+        CapabilityCatalog,
+        ArtifactCapability,
+        ArtifactCommandCapability,
+        ArtifactTransportCapability,
+        ArtifactCapabilityStatus,
+    );
+    schemas
 }
