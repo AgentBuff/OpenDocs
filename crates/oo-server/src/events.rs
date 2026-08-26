@@ -14,6 +14,23 @@ use crate::auth::CurrentUser;
 use crate::error::AppError;
 use crate::{db, AppState};
 
+/// Stamp the acting principal onto every event payload.
+///
+/// The event feed is the only cross-client change stream: agents, SDKs and
+/// audit consumers must be able to attribute a change from the delivery
+/// itself instead of joining `artifact_transactions.author_id`. Adding the
+/// field to the JSON payload is additive and therefore protocol-compatible.
+pub(crate) fn stamp_actor(events: &mut [oo_protocol::DomainEventRecord], actor_id: &str) {
+    for event in events {
+        if let Some(object) = event.payload.as_object_mut() {
+            object.insert(
+                "actorId".to_string(),
+                serde_json::Value::String(actor_id.to_string()),
+            );
+        }
+    }
+}
+
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1_000;
 
