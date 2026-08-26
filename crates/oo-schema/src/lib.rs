@@ -294,6 +294,8 @@ fn validate_block_data(block: &DocumentBlock) -> Result<(), SchemaValidationErro
                 )));
             }
             image.transform.crop.validate(&block.id)?;
+            image.size.validate(&block.id)?;
+            image.placement.validate(&block.id)?;
         }
         (DocumentBlockKind::Table, BlockData::Table(table)) => {
             validate_table_payload(table, &block.id)?;
@@ -878,8 +880,85 @@ pub struct ImageBlock {
     pub original_asset_id: Option<AssetId>,
     #[serde(default)]
     pub transform: ImageTransform,
+    /// Explicit display dimensions in CSS pixels. `None` preserves the image's
+    /// intrinsic dimension, while a persisted size is shared by every renderer.
+    #[serde(default)]
+    pub size: ImageSize,
+    /// Flow-relative placement of the rendered image. Keeping placement as
+    /// domain data (rather than a DOM transform) lets a left/top resize keep
+    /// its opposite edge stable in every renderer.
+    #[serde(default)]
+    pub placement: ImagePlacement,
     #[serde(default)]
     pub caption: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageSize {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+    /// Images retain their source aspect ratio by default, matching document
+    /// and scene-graph editors. A future inspector can explicitly unlock it.
+    #[serde(default = "default_image_lock_aspect_ratio")]
+    pub lock_aspect_ratio: bool,
+}
+
+fn default_image_lock_aspect_ratio() -> bool {
+    true
+}
+
+impl Default for ImageSize {
+    fn default() -> Self {
+        Self {
+            width: None,
+            height: None,
+            lock_aspect_ratio: true,
+        }
+    }
+}
+
+impl ImageSize {
+    pub fn validate(&self, block_id: &str) -> Result<(), SchemaValidationError> {
+        for (axis, value) in [("width", self.width), ("height", self.height)] {
+            if let Some(value) = value {
+                if !value.is_finite() || !(24.0..=8192.0).contains(&value) {
+                    return Err(SchemaValidationError::InvalidValue(format!(
+                        "image block {block_id} 的 {axis} 必须在 24 到 8192 之间"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Placement is deliberately separate from visual transforms such as crop and
+/// flip. These offsets are part of block-flow layout, not a renderer-local
+/// CSS translation. They make a west/north handle change the near edge while
+/// preserving the opposite edge in a DOM-first document renderer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImagePlacement {
+    #[serde(default)]
+    pub offset_x: f32,
+    #[serde(default)]
+    pub offset_y: f32,
+}
+
+impl ImagePlacement {
+    pub fn validate(&self, block_id: &str) -> Result<(), SchemaValidationError> {
+        for (axis, value) in [("offsetX", self.offset_x), ("offsetY", self.offset_y)] {
+            if !value.is_finite() || !(-8192.0..=8192.0).contains(&value) {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "image block {block_id} 的 {axis} 必须在 -8192 到 8192 之间"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Persisted, non-destructive image display state. Percentages use the
@@ -2839,6 +2918,8 @@ mod tests {
             alt: String::new(),
             original_asset_id: None,
             transform: Default::default(),
+            size: Default::default(),
+            placement: Default::default(),
             caption: String::new(),
         });
         let document = DocumentModel {

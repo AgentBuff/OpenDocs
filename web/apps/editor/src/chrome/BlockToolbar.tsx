@@ -23,6 +23,7 @@ export function BlockToolbar({
   onInsertCallout,
   onInsertTodo,
   onInsertDivider,
+  onInsertImage,
   onInlineAttrs,
   onBlockPresentation,
   onHistory,
@@ -48,6 +49,7 @@ export function BlockToolbar({
   onInsertCallout: () => void;
   onInsertTodo: () => void;
   onInsertDivider: () => void;
+  onInsertImage: (file: File) => Promise<void> | void;
   onInlineAttrs: (attrs: Record<string, unknown | null>) => void;
   onBlockPresentation: (patch: Extract<DocumentCommand, { type: "setBlockPresentation" }>["patch"]) => void;
   onHistory: () => void;
@@ -122,9 +124,11 @@ export function BlockToolbar({
         onInsert={actionContext.onInsert}
         onInsertCode={onInsertCode}
         onInsertQuote={onInsertQuote}
+        onInsertCallout={onInsertCallout}
         onInsertTodo={onInsertTodo}
         onInsertDivider={onInsertDivider}
         onInsertLink={actionContext.onLink}
+        onInsertImage={onInsertImage}
         onInsertTable={actionContext.onInsertTable}
       />;
     }

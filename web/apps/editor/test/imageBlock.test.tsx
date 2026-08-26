@@ -28,6 +28,8 @@ const imageBlock: DocumentBlock = {
       alt: "产品截图",
       originalAssetId: null,
       transform: { crop: { top: 0, right: 0, bottom: 0, left: 0 }, flipHorizontal: false, flipVertical: false },
+      size: { width: null, height: null, lockAspectRatio: true },
+      placement: { offsetX: 0, offsetY: 0 },
       caption: "",
     },
   },
@@ -38,6 +40,8 @@ const imageSession = {
   setBlockPresentation: () => undefined,
   deleteBlock: () => undefined,
   setActiveBlock: () => undefined,
+  insertBefore: () => "before-image",
+  insertAfter: () => "after-image",
   reportError: () => undefined,
 } as unknown as BlockSessionApi;
 
@@ -57,6 +61,7 @@ describe("ImageBlockView", () => {
     expect(selected).toContain('aria-label="压缩图片"');
     expect(selected).toContain('aria-label="图片题注"');
     expect(selected).toContain('aria-label="删除图片"');
+    expect(selected).toContain('aria-label="调整图片尺寸"');
     expect(selected).toContain('src="/api/assets/asset-1"');
     expect(idle).not.toContain('aria-label="图片工具栏"');
   });

@@ -56,6 +56,16 @@
   --oo-motion-ease: cubic-bezier(0.2, 0, 0, 1);
   --oo-z-base: 0;
   --oo-z-sticky: 10;
+  /* Editor-local stacking still uses the shared vocabulary. A block may
+   * layer its geometry affordances without competing with app popovers. */
+  --oo-z-inline-content: 1;
+  --oo-z-inline-control: 2;
+  --oo-z-editor-affordance: 5;
+  --oo-z-editor-resize: 7;
+  --oo-z-editor-selection: 20;
+  --oo-z-editor-selection-layer: 30;
+  --oo-z-editor-selection-corner: 32;
+  --oo-z-editor-selection-toolbar: 40;
   --oo-z-dropdown: 1000;
   --oo-z-popover: 1100;
   --oo-z-modal: 1200;

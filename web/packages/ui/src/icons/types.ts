@@ -36,6 +36,7 @@ export type IconName =
   | "font-colors"
   | "highlight"
   | "history"
+  | "image"
   | "delete"
   | "ellipsis"
   | "eraser"

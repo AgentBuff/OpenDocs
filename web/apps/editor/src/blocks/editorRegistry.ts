@@ -1,5 +1,7 @@
 import type { BlockCommandContext, BlockRegistry } from "./registry.js";
 import { contentClassName, contentPlaceholder, createBlockRegistry } from "./registry.js";
+import { imageBehavior } from "./behaviors/imageBehavior.js";
+import { tableBehavior } from "./behaviors/tableBehavior.js";
 import { ContentBlockRenderer, CodeBlockRenderer, DividerBlockRenderer, ImageBlockRenderer, TableBlockRenderer } from "./renderers.js";
 
 export function createEditorBlockRegistry(): BlockRegistry {
@@ -18,6 +20,7 @@ export function createEditorBlockRegistry(): BlockRegistry {
       className: () => "divider",
       placeholder: () => "分割线",
       commands: [deleteCommand],
+      behavior: { selection: "none" },
     },
     {
       key: "code",
@@ -26,6 +29,7 @@ export function createEditorBlockRegistry(): BlockRegistry {
       className: () => "code",
       placeholder: () => "输入代码…",
       commands: [deleteCommand],
+      behavior: { selection: "object" },
     },
     {
       key: "table",
@@ -34,6 +38,7 @@ export function createEditorBlockRegistry(): BlockRegistry {
       className: () => "table",
       placeholder: () => "表格",
       commands: [deleteCommand],
+      behavior: tableBehavior,
     },
     {
       key: "image",
@@ -42,6 +47,7 @@ export function createEditorBlockRegistry(): BlockRegistry {
       className: () => "image",
       placeholder: () => "图片",
       commands: [deleteCommand],
+      behavior: imageBehavior,
     },
     {
       key: "content",
@@ -51,6 +57,7 @@ export function createEditorBlockRegistry(): BlockRegistry {
       className: (block) => contentClassName(block.kind),
       placeholder: (block) => contentPlaceholder(block.kind),
       commands: [deleteCommand],
+      behavior: { selection: "text" },
     },
   ]);
 }

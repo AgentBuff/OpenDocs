@@ -64,9 +64,19 @@
 .block-row--image .block-row__gutter { padding-top: 10px; }
 .block-row--divider .block-row__gutter { padding-top: 12px; }
 
+/* Heading content has intentional top/bottom rhythm. Anchor the gutter to
+ * the first line's visual centre instead of the block box top, otherwise the
+ * floating block affordance appears a full line above large headings. */
+.block-row--heading-1 .block-row__gutter { padding-top: 24px; }
+.block-row--heading-2 .block-row__gutter { padding-top: 18px; }
+.block-row--heading-3 .block-row__gutter { padding-top: 15px; }
+.block-row--heading-4 .block-row__gutter { padding-top: 12px; }
+.block-row--heading-5 .block-row__gutter { padding-top: 9px; }
+.block-row--heading-6 .block-row__gutter { padding-top: 6px; }
+
 .block-row__handle {
   position: relative;
-  z-index: 2;
+  z-index: var(--oo-z-inline-control);
   display: grid;
   place-items: center;
   width: 24px;
@@ -141,6 +151,7 @@
   border: 1px solid var(--oo-color-border);
   border-radius: var(--oo-radius-md);
   background: var(--oo-color-surface);
+  color: var(--oo-color-text);
   box-shadow: 0 14px 32px rgba(32, 36, 43, 0.14), 0 2px 8px rgba(32, 36, 43, 0.06);
 }
 
@@ -218,13 +229,54 @@
 }
 
 .block-row__menu-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 9px;
+  column-gap: 10px;
   min-height: 32px;
   padding: 7px 9px !important;
-  color: #3e4755;
+  color: var(--oo-color-text-secondary);
   text-align: left !important;
+}
+
+/* One explicit icon/text/trailing grid keeps the custom block items aligned
+ * with the shared MenuItem used by the table picker. */
+.block-row__menu-item > svg {
+  grid-column: 1;
+  justify-self: center;
+}
+
+.block-row__menu-item > span {
+  grid-column: 2;
+  min-width: 0;
+  line-height: 20px;
+}
+
+.block-row__menu .oo-menu-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 10px;
+  min-height: 32px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  color: var(--oo-color-text-secondary);
+}
+
+.block-row__menu .oo-menu-item__icon {
+  grid-column: 1;
+  width: 18px;
+  height: 18px;
+}
+
+.block-row__menu .oo-menu-item__label {
+  grid-column: 2;
+  line-height: 20px;
+}
+
+.block-row__menu .oo-menu-item__trailing {
+  grid-column: 3;
+  margin-left: 0;
 }
 
 .block-row__menu-item--danger {
@@ -242,6 +294,42 @@
   height: 1px;
   margin: 5px 0;
   background: var(--oo-color-border);
+}
+
+/* The document menu sits over mutable page content. In dark mode it uses a
+ * translucent, blurred material so the hierarchy remains legible without
+ * looking like a flat opaque rectangle. Never hard-code light text colours
+ * here: every icon and label must inherit the active theme tokens. */
+.oo-theme--dark .block-row__menu,
+.oo-theme--office-dark .block-row__menu {
+  border-color: rgba(201, 211, 228, 0.18);
+  background: rgba(30, 33, 40, 0.82);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.48), 0 3px 12px rgba(0, 0, 0, 0.3);
+  color: #edf2fa;
+  backdrop-filter: blur(22px) saturate(135%);
+  -webkit-backdrop-filter: blur(22px) saturate(135%);
+}
+
+.oo-theme--dark .block-row__menu-title,
+.oo-theme--office-dark .block-row__menu-title { color: #aeb8c8; }
+
+.oo-theme--dark .block-row__menu-icon,
+.oo-theme--office-dark .block-row__menu-icon { color: #cbd4e1; }
+
+.oo-theme--dark .block-row__menu-item,
+.oo-theme--dark .block-row__menu .oo-menu-item,
+.oo-theme--office-dark .block-row__menu-item,
+.oo-theme--office-dark .block-row__menu .oo-menu-item { color: #d7dee9; }
+
+.oo-theme--dark .block-row__menu-sep,
+.oo-theme--office-dark .block-row__menu-sep { background: rgba(216, 226, 241, 0.14); }
+
+.oo-theme--dark .block-row__menu button:hover,
+.oo-theme--dark .block-row__menu button:focus-visible,
+.oo-theme--office-dark .block-row__menu button:hover,
+.oo-theme--office-dark .block-row__menu button:focus-visible {
+  background: rgba(91, 146, 247, 0.19);
+  color: #f4f7fb;
 }
 
 .block-row__context-menu {
@@ -531,14 +619,14 @@
 .code-block__editor { position: relative; flex: 1; min-width: 0; min-height: 100%; overflow: hidden; background: var(--code-body-bg, var(--oo-color-surface)); }
 .code-block__highlight, .code-block__textarea { box-sizing: border-box; width: 100%; height: 100%; min-height: 160px; margin: 0; padding: 14px 16px 16px; border: 0; font: inherit; line-height: inherit; tab-size: 2; }
 .code-block__highlight { position: absolute; inset: 0; overflow: hidden; pointer-events: none; white-space: pre; word-break: normal; color: var(--code-text, var(--oo-color-text)); }
-.code-block__textarea { position: absolute; inset: 0; z-index: 1; resize: none; overflow: auto; overscroll-behavior: contain; background: transparent; color: transparent; caret-color: var(--code-text, var(--oo-color-text)); outline: none; -webkit-text-fill-color: transparent; scrollbar-width: thin; scrollbar-color: var(--code-scrollbar) transparent; }
+.code-block__textarea { position: absolute; inset: 0; z-index: var(--oo-z-inline-content); resize: none; overflow: auto; overscroll-behavior: contain; background: transparent; color: transparent; caret-color: var(--code-text, var(--oo-color-text)); outline: none; -webkit-text-fill-color: transparent; scrollbar-width: thin; scrollbar-color: var(--code-scrollbar) transparent; }
 .code-block__textarea::-webkit-scrollbar { width: 8px; height: 8px; }
 .code-block__textarea::-webkit-scrollbar-track { background: transparent; }
 .code-block__textarea::-webkit-scrollbar-thumb { border-radius: 8px; background: var(--code-scrollbar); }
 .code-block--dark .code-block__textarea { caret-color: #f4f7fb; }
 .code-block__textarea::selection { background: rgba(53, 111, 219, 0.22); }
 .code-block--dark .code-block__textarea::selection { background: rgba(104, 153, 255, 0.28); }
-.code-block__resize-handle { position: absolute; right: 0; bottom: -4px; z-index: 2; display: flex; align-items: center; justify-content: center; width: 100%; height: 8px; padding: 0; border: 0; background: transparent; cursor: ns-resize; touch-action: none; }
+.code-block__resize-handle { position: absolute; right: 0; bottom: -4px; z-index: var(--oo-z-inline-control); display: flex; align-items: center; justify-content: center; width: 100%; height: 8px; padding: 0; border: 0; background: transparent; cursor: ns-resize; touch-action: none; }
 .code-block__resize-handle > span { width: 54px; height: 4px; border-radius: 999px; background: var(--code-resize, #d6d9df); transition: background-color var(--oo-motion-fast) var(--oo-motion-ease), width var(--oo-motion-fast) var(--oo-motion-ease); }
 .code-block__resize-handle:hover, .code-block__resize-handle:focus-visible, .code-block__resize-handle.is-resizing { outline: none; }
 .code-block__resize-handle:hover > span, .code-block__resize-handle:focus-visible > span, .code-block__resize-handle.is-resizing > span { width: 64px; background: var(--oo-color-accent); }
@@ -607,7 +695,7 @@
 
 .block-table__controls {
   position: absolute;
-  z-index: 20;
+  z-index: var(--oo-z-editor-selection);
   inset: 0;
   pointer-events: none;
 }
@@ -618,7 +706,7 @@
   position: absolute;
   /* Row/column gutters stay below the edge insertion layer. The select-all
    * corner is rendered as a sibling so it can own only the shared corner. */
-  z-index: 30;
+  z-index: var(--oo-z-editor-selection-layer);
   inset: 0;
   pointer-events: none;
 }
@@ -650,7 +738,7 @@
 }
 
 .block-table__corner-selector {
-  z-index: 32;
+  z-index: var(--oo-z-editor-selection-corner);
   width: 12px;
   height: 12px;
   border-radius: 5px 0 0 0;
@@ -724,7 +812,7 @@
 
 .block-table__selection-toolbar {
   position: absolute;
-  z-index: 40;
+  z-index: var(--oo-z-editor-selection-toolbar);
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -848,7 +936,7 @@
 
 .block-table__resize-handle {
   position: absolute;
-  z-index: 7;
+  z-index: var(--oo-z-editor-resize);
   display: grid;
   place-items: center;
   width: 8px;
@@ -863,7 +951,7 @@
 
 .block-table__row-resize-handle {
   position: absolute;
-  z-index: 5;
+  z-index: var(--oo-z-editor-affordance);
   display: grid;
   place-items: center;
   height: 8px;
@@ -924,7 +1012,7 @@
 }
 
 .block-table__affordance {
-  z-index: 6;
+  z-index: var(--oo-z-editor-affordance);
 }
 
 .block-table__affordance:hover,
@@ -979,9 +1067,19 @@
 }
 
 .block-image__frame {
+  position: relative;
   max-width: 100%;
   overflow: hidden;
   border-radius: inherit;
+}
+
+.block-image.is-selected .block-image__frame {
+  cursor: grab;
+  touch-action: none;
+}
+
+.block-image.is-selected .block-image__frame:active {
+  cursor: grabbing;
 }
 
 .block-image__content {
@@ -993,6 +1091,55 @@
   transform-origin: center;
   transition: transform var(--oo-motion-fast) var(--oo-motion-ease), clip-path var(--oo-motion-fast) var(--oo-motion-ease);
 }
+
+.block-image__crop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: var(--oo-z-editor-affordance);
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.block-image__crop-selection {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #ffffff;
+  box-shadow: 0 0 0 9999px rgba(7, 12, 22, 0.54);
+  cursor: move;
+}
+
+.block-image__crop-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, transparent 33.15%, rgba(255, 255, 255, 0.72) 33.33%, transparent 33.5%),
+    linear-gradient(to right, transparent 66.48%, rgba(255, 255, 255, 0.72) 66.66%, transparent 66.83%),
+    linear-gradient(to bottom, transparent 33.15%, rgba(255, 255, 255, 0.72) 33.33%, transparent 33.5%),
+    linear-gradient(to bottom, transparent 66.48%, rgba(255, 255, 255, 0.72) 66.66%, transparent 66.83%);
+}
+
+.block-image__crop-handle {
+  position: absolute;
+  z-index: var(--oo-z-inline-content);
+  box-sizing: border-box;
+  width: 11px;
+  height: 11px;
+  padding: 0;
+  border: 1px solid #2f7cff;
+  border-radius: 2px;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(5, 18, 42, 0.36);
+}
+.block-image__crop-handle--nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.block-image__crop-handle--n { top: -6px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.block-image__crop-handle--ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.block-image__crop-handle--e { top: 50%; right: -6px; margin-top: -5px; cursor: ew-resize; }
+.block-image__crop-handle--se { right: -6px; bottom: -6px; cursor: nwse-resize; }
+.block-image__crop-handle--s { bottom: -6px; left: 50%; margin-left: -5px; cursor: ns-resize; }
+.block-image__crop-handle--sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.block-image__crop-handle--w { top: 50%; left: -6px; margin-top: -5px; cursor: ew-resize; }
 
 .block-image__caption {
   margin-top: 7px;
@@ -1008,6 +1155,29 @@
   border-color: var(--oo-color-border-focus);
   box-shadow: 0 0 0 1px var(--oo-color-border-focus);
 }
+
+.block-image__resize-handles { position: absolute; inset: 0; pointer-events: none; }
+.block-image__resize-handle {
+  position: absolute;
+  z-index: var(--oo-z-inline-control);
+  width: 10px;
+  height: 10px;
+  padding: 0;
+  border: 1px solid #ffffff;
+  border-radius: 1px;
+  background: var(--oo-color-accent);
+  box-shadow: 0 0 0 1px rgba(27, 94, 211, .6);
+  pointer-events: auto;
+}
+.block-image__resize-handle--nw { top: -5px; left: -5px; cursor: nwse-resize; }
+.block-image__resize-handle--n { top: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.block-image__resize-handle--ne { top: -5px; right: -5px; cursor: nesw-resize; }
+.block-image__resize-handle--e { top: calc(50% - 5px); right: -5px; cursor: ew-resize; }
+.block-image__resize-handle--se { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.block-image__resize-handle--s { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+.block-image__resize-handle--sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+.block-image__resize-handle--w { top: calc(50% - 5px); left: -5px; cursor: ew-resize; }
+.block-image__resize-handle:focus-visible { outline: 2px solid #1f6feb; outline-offset: 2px; }
 
 .block-image__toolbar {
   position: absolute;
@@ -1058,7 +1228,7 @@
   position: absolute;
   top: calc(100% + 8px);
   left: 50%;
-  z-index: 1;
+  z-index: var(--oo-z-inline-content);
   min-width: 188px;
   padding: 10px;
   transform: translateX(-50%);

@@ -168,6 +168,12 @@ export function Editor({ id, title, onBack }: Props) {
     if (insertTarget) session.insertAfter(insertTarget.id, { type: "todo" });
   }, [insertTarget, session]);
 
+  const insertImageFile = useCallback(async (file: File) => {
+    if (!insertTarget) return;
+    const imageBlockId = await session.insertPastedImage(insertTarget.id, file);
+    if (imageBlockId) session.setActiveBlock(imageBlockId);
+  }, [insertTarget, session]);
+
   const actionContext = useMemo<EditorActionContext>(() => ({
     hasActiveBlock: activeBlock !== null,
     hasTextSelection: toolbarSelection.hasTextSelection,
@@ -350,6 +356,7 @@ export function Editor({ id, title, onBack }: Props) {
         onInsertCallout={insertCalloutBlock}
         onInsertTodo={insertTodoBlock}
         onInsertDivider={insertDivider}
+        onInsertImage={insertImageFile}
         onInlineAttrs={session.setInlineAttrs}
         onBlockPresentation={(attrs) => activeBlock && session.setBlockPresentation(activeBlock.id, attrs)}
         onHistory={toggleHistory}

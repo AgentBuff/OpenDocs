@@ -13,7 +13,7 @@ use oo_schema::{
     TableBlock, TableBorder, TableCell, TableColumn, TableRange, TableRow, TodoBlock,
     VerticalAlign,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
 mod change;
@@ -27,6 +27,25 @@ use store::BlockStore;
 pub use table_grid::{
     GridBounds, GridCellTarget, TableCellSelection, TableGridProjection, TableGridQueryError,
 };
+
+/// Deserializes an explicit patch field without collapsing JSON `null` into an
+/// omitted field. `None` means unchanged, `Some(None)` means clear, and
+/// `Some(Some(value))` means set. Serde's default `Option<Option<T>>`
+/// handling cannot retain this distinction at a JSON boundary.
+fn deserialize_tri_state<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    if value.is_null() {
+        Ok(Some(None))
+    } else {
+        T::deserialize(value)
+            .map(|item| Some(Some(item)))
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 /// 当前文档 engine 的一次原子事务。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -233,6 +252,10 @@ pub struct ImageBlockPatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transform: Option<ImageTransform>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<oo_schema::ImageSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<oo_schema::ImagePlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
 }
 
@@ -338,23 +361,23 @@ pub enum TableBorderPreset {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BlockPresentationPatch {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub align: Option<Option<BlockAlignment>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub list: Option<Option<ListPresentation>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub indent_start: Option<Option<u8>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub indent_end: Option<Option<f32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub spacing_before: Option<Option<f32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub spacing_after: Option<Option<f32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub line_height: Option<Option<f32>>,
     /// Named paragraph style reference; this is separate from direct formatting so style
     /// selection can be cleared without mutating the other presentation fields.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub named_style: Option<Option<ParagraphStyleRef>>,
 }
 
@@ -396,23 +419,23 @@ impl TextRange {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineStylePatch {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub bold: Option<Option<bool>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub italic: Option<Option<bool>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub underline: Option<Option<bool>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub strikethrough: Option<Option<bool>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub font_family: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub font_size: Option<Option<f32>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub color: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub highlight: Option<Option<String>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_tri_state")]
     pub vertical_align: Option<Option<VerticalAlign>>,
 }
 
@@ -2264,6 +2287,17 @@ fn apply_image_patch(
             .map_err(|error| DocumentEngineError::InvalidImageConfig(error.to_string()))?;
         image.transform = transform;
     }
+    if let Some(size) = patch.size {
+        size.validate(block_id)
+            .map_err(|error| DocumentEngineError::InvalidImageConfig(error.to_string()))?;
+        image.size = size;
+    }
+    if let Some(placement) = patch.placement {
+        placement
+            .validate(block_id)
+            .map_err(|error| DocumentEngineError::InvalidImageConfig(error.to_string()))?;
+        image.placement = placement;
+    }
     if let Some(caption) = patch.caption {
         if caption.chars().count() > 512 {
             return Err(DocumentEngineError::InvalidImageConfig(
@@ -2742,7 +2776,7 @@ fn summarize_mutations(changes: &mut ChangeTracker, mutations: &[Mutation]) {
 mod tests {
     use super::*;
     use oo_schema::{
-        BlockAlignment, BlockExtension, ImageCrop, InlineRun, LinkBlock, ListKind,
+        BlockAlignment, BlockExtension, ImageCrop, ImageSize, InlineRun, LinkBlock, ListKind,
         ListPresentation, TableBorder, TableBorderStyle, TableCellStyle, TableColumn, TableRange,
         TableRow, TodoBlock,
     };
@@ -2855,6 +2889,8 @@ mod tests {
                 alt: "示例图片".into(),
                 original_asset_id: None,
                 transform: ImageTransform::default(),
+                size: Default::default(),
+                placement: Default::default(),
                 caption: String::new(),
             }),
         }
@@ -2892,6 +2928,15 @@ mod tests {
                             flip_horizontal: true,
                             flip_vertical: false,
                         }),
+                        size: Some(ImageSize {
+                            width: Some(640.0),
+                            height: Some(360.0),
+                            lock_aspect_ratio: true,
+                        }),
+                        placement: Some(oo_schema::ImagePlacement {
+                            offset_x: 16.0,
+                            offset_y: 8.0,
+                        }),
                         caption: Some("图 1：裁剪后的示例".into()),
                     },
                 }],
@@ -2904,6 +2949,11 @@ mod tests {
         assert_eq!(updated.asset_id, "asset-compressed");
         assert_eq!(updated.original_asset_id.as_deref(), Some("asset-original"));
         assert!(updated.transform.flip_horizontal);
+        assert_eq!(updated.size.width, Some(640.0));
+        assert_eq!(updated.size.height, Some(360.0));
+        assert!(updated.size.lock_aspect_ratio);
+        assert_eq!(updated.placement.offset_x, 16.0);
+        assert_eq!(updated.placement.offset_y, 8.0);
         assert_eq!(updated.caption, "图 1：裁剪后的示例");
 
         engine.undo().unwrap();
@@ -2970,6 +3020,51 @@ mod tests {
         assert!(
             matches!(non_image, Err(DocumentEngineError::NotImageBlock(id)) if id == "paragraph-1")
         );
+    }
+
+    #[test]
+    fn presentation_patch_accepts_canonical_wire_field_names() {
+        let batch: DocumentCommandBatch = serde_json::from_value(serde_json::json!({
+            "baseRevision": 4,
+            "commands": [{
+                "type": "setBlockPresentation",
+                "blockId": "p-1",
+                "patch": {
+                    "list": { "kind": "ordered", "level": 2 },
+                    "indentStart": 2,
+                    "indentEnd": 3.5
+                }
+            }]
+        }))
+        .expect("the public web command shape must decode");
+
+        let DocumentCommand::SetBlockPresentation { patch, .. } = &batch.commands[0] else {
+            panic!("expected a presentation command");
+        };
+        assert_eq!(
+            patch.list,
+            Some(Some(ListPresentation {
+                kind: ListKind::Ordered,
+                level: 2,
+            }))
+        );
+        assert_eq!(patch.indent_start, Some(Some(2)));
+        assert_eq!(patch.indent_end, Some(Some(3.5)));
+
+        let clear_batch: DocumentCommandBatch = serde_json::from_value(serde_json::json!({
+            "baseRevision": 4,
+            "commands": [{
+                "type": "setBlockPresentation",
+                "blockId": "p-1",
+                "patch": { "list": null, "indentStart": null }
+            }]
+        }))
+        .expect("an explicit null must remain a clear operation");
+        let DocumentCommand::SetBlockPresentation { patch, .. } = &clear_batch.commands[0] else {
+            panic!("expected a presentation command");
+        };
+        assert_eq!(patch.list, Some(None));
+        assert_eq!(patch.indent_start, Some(None));
     }
 
     #[test]

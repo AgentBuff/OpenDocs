@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { Icon, Toolbar, ToolbarButton, ToolbarGroup, ToolbarSeparator } from "@open-office/ui";
 import { defaultImageTransform, type ImageBlock, type ImageTransform, type RichText } from "@open-office/schema/artifact";
 
 import type { BlockSessionApi } from "../../hooks/useBlockSession.js";
+import { useManagedOverlay } from "../../interaction/OverlayCoordinator.js";
 
 type ImagePanel = "crop" | "flip" | "caption" | null;
 type TextDetectorResult = { rawValue: string };
@@ -17,15 +18,6 @@ function cropIsDefault(transform: ImageTransform): boolean {
 
 function transformIsDefault(transform: ImageTransform): boolean {
   return cropIsDefault(transform) && !transform.flipHorizontal && !transform.flipVertical;
-}
-
-function clampCrop(next: ImageTransform, edge: keyof ImageTransform["crop"], value: number): ImageTransform {
-  const crop = { ...next.crop, [edge]: Math.max(0, Math.min(0.9, value)) };
-  const horizontal = crop.left + crop.right;
-  const vertical = crop.top + crop.bottom;
-  if (horizontal >= 0.95) crop[edge] = Math.max(0, crop[edge] - (horizontal - 0.94));
-  if (vertical >= 0.95) crop[edge] = Math.max(0, crop[edge] - (vertical - 0.94));
-  return { ...next, crop };
 }
 
 async function compressAsset(assetUrl: string): Promise<File> {
@@ -59,23 +51,34 @@ export function ImageBlockToolbar({
   image,
   assetUrl,
   session,
+  cropDraft,
+  onCropDraftChange,
+  onCropEditingChange,
+  onCropCommit,
 }: {
   blockId: string;
   image: ImageBlock;
   assetUrl: string;
   session: BlockSessionApi;
+  cropDraft: ImageTransform | null;
+  onCropDraftChange: (next: ImageTransform | null) => void;
+  onCropEditingChange: (editing: boolean) => void;
+  onCropCommit: (transform: ImageTransform) => void;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const [panel, setPanel] = useState<ImagePanel>(null);
   const [busy, setBusy] = useState(false);
   const [transformDraft, setTransformDraft] = useState<ImageTransform | null>(null);
   const [captionDraft, setCaptionDraft] = useState(image.caption);
 
-  const transform = transformDraft ?? image.transform;
-  const updateTransform = (next: ImageTransform) => setTransformDraft(next);
+  const transform = panel === "crop" ? cropDraft ?? image.transform : transformDraft ?? image.transform;
   const commitTransform = () => {
-    if (!transformDraft) return;
+    const draft = panel === "crop" ? cropDraft : transformDraft;
+    if (!draft) return;
     setTransformDraft(null);
-    session.setImageConfig(blockId, { transform: transformDraft });
+    onCropDraftChange(null);
+    if (panel === "crop") onCropCommit(draft);
+    else session.setImageConfig(blockId, { transform: draft });
   };
   const commitCaption = () => {
     const next = captionDraft.trim();
@@ -143,17 +146,43 @@ export function ImageBlockToolbar({
       if (next === "crop") commitTransform();
       if (next === "caption") commitCaption();
       setPanel(null);
+      if (next === "crop") onCropEditingChange(false);
       return;
     }
-    if (panel === "crop") commitTransform();
+    if (panel === "crop") {
+      commitTransform();
+      onCropEditingChange(false);
+    }
     if (panel === "caption") commitCaption();
-    if (next === "crop" || next === "flip") setTransformDraft(image.transform);
+    if (next === "crop") {
+      onCropDraftChange(image.transform);
+      onCropEditingChange(true);
+    }
+    if (next === "flip") setTransformDraft(image.transform);
     if (next === "caption") setCaptionDraft(image.caption);
     setPanel(next);
   };
-  const crop = transform.crop;
-
+  const dismissPanel = useCallback(() => {
+    // An outside click/Escape cancels an unfinished object edit. Committed
+    // toolbar actions still produce their semantic image command immediately.
+    if (panel === "crop") {
+      onCropDraftChange(null);
+      onCropEditingChange(false);
+    }
+    if (panel === "caption") setCaptionDraft(image.caption);
+    setTransformDraft(null);
+    setPanel(null);
+  }, [image.caption, onCropDraftChange, onCropEditingChange, panel]);
+  useManagedOverlay({
+    id: `image-tool-panel:${blockId}`,
+    kind: "dialog",
+    priority: 70,
+    rootRef,
+    enabled: panel !== null,
+    onDismiss: dismissPanel,
+  });
   return (
+    <div ref={rootRef}>
     <Toolbar className="block-image__toolbar" density="compact" aria-label="图片工具栏">
       <ToolbarGroup aria-label="图片文件操作">
         <ToolbarButton aria-label="下载图片" title="下载图片" onClick={downloadAsset}>
@@ -191,39 +220,6 @@ export function ImageBlockToolbar({
         </ToolbarButton>
       </ToolbarGroup>
 
-      {panel === "crop" && (
-        <div className="block-image__tool-panel block-image__crop-panel" role="dialog" aria-label="裁剪图片">
-          <strong>裁剪</strong>
-          {(["top", "right", "bottom", "left"] as const).map((edge) => (
-            <label key={edge}>
-              <span>{{ top: "上", right: "右", bottom: "下", left: "左" }[edge]}</span>
-              <input
-                type="range"
-                min="0"
-                max="0.8"
-                step="0.01"
-                value={crop[edge]}
-                onChange={(event) => updateTransform(clampCrop(transform, edge, Number(event.currentTarget.value)))}
-                onPointerUp={commitTransform}
-                onBlur={commitTransform}
-                onKeyUp={(event) => {
-                  if (event.key === "Enter") commitTransform();
-                }}
-              />
-              <output>{Math.round(crop[edge] * 100)}%</output>
-            </label>
-          ))}
-          <button
-            type="button"
-            onClick={() => {
-              setTransformDraft(null);
-              session.setImageConfig(blockId, { transform: defaultImageTransform() });
-            }}
-          >
-            重置裁剪
-          </button>
-        </div>
-      )}
       {panel === "flip" && (
         <div className="block-image__tool-panel block-image__flip-panel" role="dialog" aria-label="翻转图片">
           <button
@@ -275,5 +271,6 @@ export function ImageBlockToolbar({
         </div>
       )}
     </Toolbar>
+    </div>
   );
 }

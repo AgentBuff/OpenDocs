@@ -1,8 +1,11 @@
-import type { ComponentType, KeyboardEvent, RefObject } from "react";
+import type { ComponentType, KeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 
 import type { DocumentBlock, DocumentBlockKind } from "@open-office/schema/artifact";
 
 import type { BlockSessionApi } from "../hooks/useBlockSession.js";
+import type { TableSelection } from "./table/model.js";
+import type { EditorSelection } from "../interaction/types.js";
+import type { InteractionStore } from "../interaction/interactionStore.js";
 
 /** Renderer slot names are stable product capabilities, not DOM component names. */
 export type BlockRendererKey = "content" | "divider" | "table" | "image" | "code";
@@ -19,6 +22,10 @@ export interface BlockRendererProps {
   placeholder: string;
   onInput: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
+  onFocus?: () => void;
+  onSelectObject?: () => void;
+  onTableSelection?: (selection: TableSelection | null) => void;
+  editorSelection?: EditorSelection;
 }
 
 export type BlockRenderer = ComponentType<BlockRendererProps>;
@@ -46,6 +53,31 @@ export interface BlockMenuCapability {
   commands: readonly BlockCommandCapability[];
 }
 
+/**
+ * Interaction declarations are deliberately separate from rendering. A
+ * behavior may request an ephemeral selection transition or call an existing
+ * semantic session API, but never receives mutable document payloads.
+ */
+export interface BlockBehaviorContext extends BlockCommandContext {
+  blockId: string;
+}
+
+/**
+ * Table selections are ephemeral view state, but their ownership still
+ * belongs to the registered table behavior.  This prevents BlockNode from
+ * becoming a second table interaction controller as table capabilities grow.
+ */
+export interface BlockTableSelectionContext extends BlockBehaviorContext {
+  interaction: InteractionStore;
+}
+
+export interface BlockBehavior {
+  selection: "text" | "object" | "table" | "none";
+  keyboard?: (event: KeyboardEvent<HTMLElement>, context: BlockBehaviorContext) => void;
+  pointer?: (event: ReactPointerEvent<HTMLElement>, context: BlockBehaviorContext) => void;
+  tableSelection?: (selection: TableSelection | null, context: BlockTableSelectionContext) => void;
+}
+
 export interface BlockDefinition {
   key: BlockRendererKey;
   matches: (block: DocumentBlock) => boolean;
@@ -56,6 +88,7 @@ export interface BlockDefinition {
   placeholder?: (block: DocumentBlock) => string;
   menu?: readonly BlockMenuCapability[];
   commands?: readonly BlockCommandCapability[];
+  behavior?: BlockBehavior;
 }
 
 export interface BlockRegistry {
@@ -78,6 +111,11 @@ export function createBlockRegistry(definitions: readonly BlockDefinition[]): Bl
   }
   if (definitions.filter((definition) => definition.fallback).length !== 1) {
     throw new Error("block registry requires a fallback definition");
+  }
+  for (const definition of definitions) {
+    if ((definition.key === "image" || definition.key === "table" || definition.key === "code") && !definition.behavior) {
+      throw new Error(`原子块必须声明交互行为: ${definition.key}`);
+    }
   }
   return {
     resolve(block) {

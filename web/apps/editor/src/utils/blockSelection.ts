@@ -27,8 +27,8 @@ export function readTableCellTextSelection(root: HTMLElement): TableCellTextSele
   const rowId = startCell.dataset.tableRowId;
   const cellId = startCell.dataset.tableCellId;
   if (!rowId || !cellId) return null;
-  const start = offsetWithin(startCell, range.startContainer, range.startOffset);
-  const end = offsetWithin(startCell, range.endContainer, range.endOffset);
+  const start = scalarOffsetWithin(startCell, range.startContainer, range.startOffset);
+  const end = scalarOffsetWithin(startCell, range.endContainer, range.endOffset);
   return end > start ? { rowId, cellId, start, end } : null;
 }
 
@@ -38,8 +38,8 @@ export function restoreTableCellTextSelection(root: HTMLElement, selectionRange:
     `[data-table-row-id="${CSS.escape(selectionRange.rowId)}"][data-table-cell-id="${CSS.escape(selectionRange.cellId)}"]`,
   );
   if (!cell) return;
-  const start = boundaryAtOffset(cell, selectionRange.start);
-  const end = boundaryAtOffset(cell, selectionRange.end);
+  const start = scalarBoundaryAtOffset(cell, selectionRange.start);
+  const end = scalarBoundaryAtOffset(cell, selectionRange.end);
   const selection = window.getSelection();
   if (!start || !end || !selection) return;
   const range = document.createRange();
@@ -67,10 +67,10 @@ export function readBlockTextSelection(page: HTMLElement | null = document.query
     const blockId = element.closest<HTMLElement>("[data-block-id]")?.dataset.blockId;
     if (!blockId) continue;
     const start = containsBoundary(element, range.startContainer)
-      ? offsetWithin(element, range.startContainer, range.startOffset)
+      ? scalarOffsetWithin(element, range.startContainer, range.startOffset)
       : 0;
     const end = containsBoundary(element, range.endContainer)
-      ? offsetWithin(element, range.endContainer, range.endOffset)
+      ? scalarOffsetWithin(element, range.endContainer, range.endOffset)
       : textLength;
     if (end > start) ranges.push({ blockId, start, end });
   }
@@ -85,8 +85,8 @@ export function restoreBlockTextSelection(ranges: readonly BlockTextSelection[],
   const firstRoot = page.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(first.blockId)}"] .block-row__content[contenteditable]`);
   const lastRoot = page.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(last.blockId)}"] .block-row__content[contenteditable]`);
   if (!firstRoot || !lastRoot) return;
-  const start = boundaryAtOffset(firstRoot, first.start);
-  const end = boundaryAtOffset(lastRoot, last.end);
+  const start = scalarBoundaryAtOffset(firstRoot, first.start);
+  const end = scalarBoundaryAtOffset(lastRoot, last.end);
   if (!start || !end) return;
   const selection = window.getSelection();
   if (!selection) return;
@@ -109,7 +109,8 @@ function containsBoundary(root: Node, node: Node): boolean {
   return root === node || root.contains(node);
 }
 
-function offsetWithin(root: HTMLElement, node: Node, offset: number): number {
+/** Convert a DOM boundary to the editor's Unicode scalar offset. */
+export function scalarOffsetWithin(root: HTMLElement, node: Node, offset: number): number {
   try {
     const range = document.createRange();
     range.selectNodeContents(root);
@@ -120,7 +121,8 @@ function offsetWithin(root: HTMLElement, node: Node, offset: number): number {
   }
 }
 
-function boundaryAtOffset(root: HTMLElement, offset: number): { node: Node; offset: number } | null {
+/** Convert an editor Unicode scalar offset back into a concrete DOM boundary. */
+export function scalarBoundaryAtOffset(root: HTMLElement, offset: number): { node: Node; offset: number } | null {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let remaining = Math.max(0, offset);
   let node: Node | null;

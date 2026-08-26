@@ -443,7 +443,11 @@ export class ArtifactApiClient {
   }
 
   private async get(path: string): Promise<unknown> {
-    return this.request(path, { method: "GET" });
+    // Artifact projections are mutable while retaining stable URLs. Never let a
+    // browser reuse a previous revision here: callers already receive ETag and
+    // revision fields, and a stale deck can otherwise fail strict decoding after
+    // a schema or projection upgrade.
+    return this.request(path, { method: "GET", cache: "no-store" });
   }
 
   private async request(path: string, init: RequestInit): Promise<unknown> {
