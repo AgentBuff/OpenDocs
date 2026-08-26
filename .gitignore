@@ -18,6 +18,9 @@
 # -----------------------------------------------------------------------------
 /data/
 /data/schema-backup/
+/.e2e-data/
+/web/test-results/
+/web/playwright-report/
 *.db
 *.db-shm
 *.db-wal
