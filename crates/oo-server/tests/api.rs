@@ -174,7 +174,7 @@ async fn capabilities_expose_only_implemented_document_commands() {
     for (namespace, expected_status) in [
         ("spreadsheet", "planned"),
         ("presentation", "stable"),
-        ("mindmap", "planned"),
+        ("mindmap", "stable"),
         ("whiteboard", "planned"),
     ] {
         let planned = artifacts
@@ -840,6 +840,16 @@ async fn capability_catalog_locks_the_engine_command_surface() {
         "document.splitTableCells",
         "document.history",
     ];
+    const MINDMAP_COMMANDS: &[&str] = &[
+        "mindmap.addNode",
+        "mindmap.updateNode",
+        "mindmap.setNodeCollapsed",
+        "mindmap.moveNode",
+        "mindmap.deleteNode",
+        "mindmap.addEdge",
+        "mindmap.updateEdge",
+        "mindmap.deleteEdge",
+    ];
     const PRESENTATION_COMMANDS: &[&str] = &[
         "presentation.registerAsset",
         "presentation.setPageSpec",
@@ -932,11 +942,93 @@ async fn capability_catalog_locks_the_engine_command_surface() {
         "presentation catalog 与引擎命令面漂移"
     );
 
-    // The other kinds are honest about being planned: no invented commands.
-    for kind in ["spreadsheet", "mindmap", "whiteboard"] {
+    let mut mindmap = commands_of("mindmap");
+    mindmap.sort();
+    let mut expected_mindmap: Vec<String> =
+        MINDMAP_COMMANDS.iter().map(|s| s.to_string()).collect();
+    expected_mindmap.sort();
+    assert_eq!(
+        mindmap, expected_mindmap,
+        "mindmap catalog 与引擎命令面漂移"
+    );
+
+    // The remaining kinds are honest about being planned: no invented commands.
+    for kind in ["spreadsheet", "whiteboard"] {
         let commands = commands_of(kind);
         assert!(commands.is_empty(), "{kind} 不应虚报命令：{commands:?}");
     }
+}
+
+/// C3 minimal complete path for Mindmap: create -> typed semantic edit ->
+/// revision advance -> idempotent replay -> stale revision rejection.
+#[tokio::test]
+async fn mindmap_transactions_follow_the_canonical_contract() {
+    let app = TestApp::new().await;
+    let (status, meta) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "mindmap", "title": "导图"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = meta["id"].as_str().unwrap().to_string();
+    assert_eq!(meta["kind"], "mindmap");
+
+    let envelope = |tx: &str, base: u64| {
+        transaction_request(
+            &id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": tx,
+                "intentId": format!("intent-{tx}"),
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": base,
+                "origin": "local",
+                "commands": [{
+                    "commandId": format!("op-{tx}"),
+                    "typeId": "mindmap.addNode",
+                    "payload": {"type": "addNode", "nodeId": "root-child", "index": 0}
+                }]
+            }),
+        )
+    };
+
+    let (status, commit) = app.json(envelope("mm-1", 1)).await;
+    assert_eq!(status, StatusCode::OK, "响应：{commit}");
+    assert_eq!(commit["revision"], 2);
+    assert_eq!(
+        commit["invalidation"]["changedEntities"][0]["entityType"],
+        "mindmap.node"
+    );
+    let events = commit["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["typeId"], "mindmap.nodeInserted");
+    assert_eq!(events[0]["payload"]["actorId"], "dev-user");
+
+    // Idempotent replay returns the committed revision without new events.
+    let (retry_status, retry) = app.json(envelope("mm-1", 1)).await;
+    assert_eq!(retry_status, StatusCode::OK);
+    assert_eq!(retry["revision"], commit["revision"]);
+    assert!(retry["events"].as_array().unwrap().is_empty());
+
+    // A stale base revision is rejected with a machine-readable conflict.
+    let (stale_status, stale) = app.json(envelope("mm-2", 1)).await;
+    assert_eq!(stale_status, StatusCode::CONFLICT);
+    assert_eq!(stale["code"], "version_conflict");
+
+    // The persisted snapshot really contains the graph node.
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    assert_eq!(
+        snapshot["artifact"]["payload"]["data"]["nodes"][0]["id"],
+        "root-child"
+    );
 }
 
 /// C1 Principal seam: every delivered domain event must attribute the
