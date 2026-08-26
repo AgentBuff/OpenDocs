@@ -19,6 +19,13 @@ export async function deleteFixture(request: APIRequestContext, fixture: Documen
   expect(response.ok()).toBeTruthy();
 }
 
+export async function readArtifactRevision(request: APIRequestContext, artifactId: string): Promise<number> {
+  const response = await request.get(`http://127.0.0.1:8788/api/artifacts/${artifactId}`);
+  expect(response.ok()).toBeTruthy();
+  const artifact = await response.json() as { version: number };
+  return artifact.version;
+}
+
 export async function readDocumentText(request: APIRequestContext, artifactId: string): Promise<string> {
   const response = await request.get(`http://127.0.0.1:8788/api/artifacts/${artifactId}/snapshot`);
   expect(response.ok()).toBeTruthy();

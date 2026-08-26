@@ -6,11 +6,11 @@ import { useBlockProjection } from "../store/blockProjectionStore.js";
 import type { BlockProjectionStore } from "../store/blockProjectionStore.js";
 import { BlockContextMenu } from "./BlockContextMenu.js";
 import { BlockGutter } from "./BlockGutter.js";
-import { focusBlock } from "./focus.js";
 import type { InteractionStore } from "../interaction/interactionStore.js";
 import { useEditorSelection } from "../interaction/interactionStore.js";
 import { richTextFromHtml, richTextToDom } from "./richText.js";
 import { createContentBehavior } from "./behaviors/contentBehavior.js";
+import { createGutterActions } from "./behaviors/gutterActions.js";
 import { useBlockContextMenu } from "./behaviors/useBlockContextMenu.js";
 import type { TableSelection } from "./table/model.js";
 import { readDomTextSelection } from "../interaction/domSelection.js";
@@ -171,34 +171,7 @@ function BlockNodeImpl({
         align={align}
         listType={listType}
         onMenuOpenChange={setMenuOpen}
-        onInsert={() => {
-          const nextId = session.insertAfter(block.id);
-          setMenuOpen(false);
-          if (nextId) requestAnimationFrame(() => focusBlock(nextId));
-        }}
-        onDelete={() => { session.deleteBlock(block.id); setMenuOpen(false); }}
-        onKind={(kind) => { session.convertBlock(block.id, kind); setMenuOpen(false); }}
-        onAlignment={(nextAlign) => { session.setBlockPresentation(block.id, { align: nextAlign }); setMenuOpen(false); }}
-        onList={(type) => { session.setBlockPresentation(block.id, { listType: listType === type ? null : type }); setMenuOpen(false); }}
-        onLink={() => {
-          const currentUrl = block.data.type === "link" ? block.data.data.url : "";
-          const url = window.prompt("链接地址", currentUrl || "https://");
-          if (!url?.trim()) return;
-          if (block.kind.type === "link") session.setLinkTarget(block.id, url.trim());
-          else session.convertToLink(block.id, url.trim());
-          setMenuOpen(false);
-        }}
-        onInsertTable={(rows, columns) => { session.insertTableAfter(block.id, rows, columns); setMenuOpen(false); }}
-        onInsertImage={async (file) => {
-          setMenuOpen(false);
-          const imageId = await session.insertPastedImage(block.id, file);
-          if (imageId) session.setActiveBlock(imageId);
-        }}
-        onInsertQuote={() => { session.insertAfter(block.id, { type: "quote" }); setMenuOpen(false); }}
-        onInsertCallout={() => { session.insertAfter(block.id, { type: "callout" }); setMenuOpen(false); }}
-        onInsertTodo={() => { session.insertAfter(block.id, { type: "todo" }); setMenuOpen(false); }}
-        onInsertCode={() => { session.insertAfter(block.id, { type: "code" }); setMenuOpen(false); }}
-        onDivider={() => { session.insertAfter(block.id, { type: "divider" }); setMenuOpen(false); }}
+        {...createGutterActions({ block, listType, session, closeMenu: () => setMenuOpen(false) })}
       />
       <div
         className="block-row__body"
