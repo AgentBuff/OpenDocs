@@ -67,6 +67,25 @@ const forbidden = [
 const files = [];
 for (const scanRoot of scanRoots) await collect(scanRoot, files);
 
+// I01-09: block renderer/chrome modules must not own global event lifecycles.
+// Escape/outside-click arbitration belongs to the interaction OverlayCoordinator,
+// and keyboard routing belongs to keyboardRouter. The only approved exceptions
+// are transient pointer-drag capture and measurement adapters reviewed under
+// I01-07/I01-08; a new listener needs an explicit allowlist entry plus rationale.
+const editorSrcRoot = resolve(webRoot, "apps/editor/src");
+const rendererListenerApproved = new Set([
+  "web/apps/editor/src/blocks/table/useTableResize.ts",
+  "web/apps/editor/src/blocks/table/useTableGeometry.ts",
+  "web/apps/editor/src/blocks/table/useTableSelectionController.ts",
+  "web/apps/editor/src/blocks/code/CodeBlockView.tsx",
+]);
+const rendererListenerRoots = [
+  resolve(editorSrcRoot, "blocks"),
+  resolve(editorSrcRoot, "chrome"),
+];
+const rendererListenerFiles = [];
+for (const scanRoot of rendererListenerRoots) await collect(scanRoot, rendererListenerFiles);
+
 const violations = [];
 for (const file of files) {
   const source = await readFile(file, "utf8");
@@ -77,6 +96,20 @@ for (const file of files) {
       const line = source.slice(0, match.index).split("\n").length;
       violations.push(`${relative(root, file)}:${line} ${rule.name}`);
     }
+  }
+}
+
+for (const file of rendererListenerFiles) {
+  const relativePath = relative(root, file);
+  if (rendererListenerApproved.has(relativePath.replaceAll("\\", "/"))) continue;
+  const source = await readFile(file, "utf8");
+  const listenerPattern = /\b(?:window|document)\.addEventListener\s*\(/g;
+  let match;
+  while ((match = listenerPattern.exec(source)) !== null) {
+    const line = source.slice(0, match.index).split("\n").length;
+    violations.push(
+      `${relativePath}:${line} global event listener in renderer module (approved drag/measurement adapters only; extend the allowlist with rationale)`,
+    );
   }
 }
 

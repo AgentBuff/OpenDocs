@@ -20,7 +20,7 @@ Progress recorded 2026-08-23:
 - Chromium now creates a native UTF-16 range over `甲🙂`, verifies scalar-safe semantic formatting and confirms the visible rich-text run after model reconciliation.
 - Focused DOM-first content now compares its parsed RichText runs with the canonical projection: ordinary input with identical text/runs is never rebuilt, while semantic inline formatting is immediately rendered and the browser range can be restored.
 
-## I01-03 — pointer and keyboard routers — in progress
+## I01-03 — pointer and keyboard routers — complete
 
 - Create `web/apps/editor/src/interaction/pointerRouter.ts`.
 - Create `web/apps/editor/src/interaction/keyboardRouter.ts`.
@@ -34,7 +34,7 @@ Progress recorded 2026-08-23:
 - Root routing resolves the focused atomic block from its stable DOM block id, then dispatches only that block's registered behavior. Editable paragraph and table-cell keystrokes are therefore left to native DOM editing.
 - Image `ArrowLeft`/`ArrowRight`/`Enter` navigation is registered through `imageBehavior`, rather than passed as an image-renderer callback. Browser coverage verifies an existing trailing paragraph receives focus on Enter instead of a duplicate paragraph being created.
 
-## I01-04 — overlay coordinator — in progress
+## I01-04 — overlay coordinator — complete
 
 - Create `web/apps/editor/src/interaction/OverlayCoordinator.tsx` and `overlayStore.ts`.
 - Update `BlockNode.tsx`, `BlockContextMenu.tsx`, `ImageBlockToolbar.tsx`, `TableSelectionToolbar.tsx`, `TableContextMenu.tsx`, `ColorPalette.tsx`, and UI Popover integration to register overlays.
@@ -47,7 +47,7 @@ Progress recorded 2026-08-23:
 - `OverlayStore` continues to arbitrate priority and outside/Escape dismissal; its focused unit contract passes.
 - Chromium verifies a table-cell context menu is portalled outside its block and is the topmost element over the table selection layer.
 
-## I01-05 — extend the block registry — in progress
+## I01-05 — extend the block registry — complete
 
 - Update `web/apps/editor/src/blocks/registry.ts` with `BlockBehavior` types.
 - Create `web/apps/editor/src/blocks/behaviors/contentBehavior.ts`.
@@ -73,7 +73,7 @@ Progress recorded 2026-08-23:
 - Chromium coverage additionally verifies real pointer movement, south-east resize, crop-mode commit and Escape cancellation in `e2e/document/table-image.spec.ts`.
 - The shared image behavior is now invoked by `keyboardRouter.ts`; Chromium verifies ArrowLeft creates/focuses a preceding paragraph when no neighbour exists, Enter inserts/focuses a following paragraph for an isolated image, and Escape explicitly clears the image selection and object toolbar.
 
-## I01-07 — migrate table behavior — in progress
+## I01-07 — migrate table behavior — complete
 
 - Update `blocks/table/TableSelectionLayer.tsx` to dispatch `table` selection transitions only.
 - Update `TableSelectionToolbar.tsx` to render solely when interaction selection is a qualifying table range or text selection.
@@ -87,7 +87,7 @@ Progress recorded 2026-08-23:
 - `table/useTableSelectionController.ts` now owns stable-id normalization/validation, interaction publication, pointer-drag promotion, Shift expansion and Shift+Arrow expansion. `TableBlockView` supplies only the address of a rendered cell and table command callbacks.
 - Chromium coverage verifies both surface-drag range expansion and Shift+Arrow range expansion, in addition to cell editing, merge/split and row context actions.
 
-## I01-08 — simplify BlockNode and renderers — in progress
+## I01-08 — simplify BlockNode and renderers — complete
 
 - Reduce `BlockNode.tsx` to DOM projection, block menu trigger and behavior attachment.
 - Extract text input event handling to `blocks/behaviors/contentBehavior.ts`.
@@ -105,7 +105,7 @@ Progress recorded 2026-08-23:
 - `table/useTableGeometryController.ts` now forms the geometry behavior boundary: it joins DOM-only measurement with transient resize previews and delegates persistent dimensions to `BlockSessionApi` only on pointer release.
 - Chromium coverage verifies that a column boundary changes only its adjacent columns and a row boundary changes only the row above it. The geometry/resize path is no longer wired directly from `TableBlockView`.
 
-## I01-09 — remove obsolete paths — pending
+## I01-09 — remove obsolete paths — complete
 
 - Remove duplicate `window` listeners once coordinator/router owns the lifecycle.
 - Remove CSS state selectors that infer domain selection from focus alone.
@@ -115,3 +115,16 @@ Progress recorded 2026-08-23:
 Progress recorded 2026-08-23:
 
 - Added `web/vitest.config.ts` so browser scenarios under `apps/editor/e2e` are excluded from the unit-test runner. `pnpm test` no longer imports a second Playwright runtime and now provides a meaningful unit-test gate.
+
+Progress recorded 2026-08-26:
+
+- Architecture gate now prohibits `(window|document).addEventListener` inside
+  `src/blocks/**` and `src/chrome/**`; only four reviewed transient drag/measurement
+  adapters remain allowlisted (`useTableResize`, `useTableGeometry`,
+  `useTableSelectionController`, `CodeBlockView`). New listeners fail CI until the
+  allowlist is extended with rationale.
+- Remaining `:focus` rules in `styles/blocks.css` are focus-ring/caret affordances,
+  not domain-selection inference; selection visuals are driven by interaction-store
+  state classes only.
+- All retained `z-index:` declarations reference semantic tokens from
+  `@open-office/ui` theme.
