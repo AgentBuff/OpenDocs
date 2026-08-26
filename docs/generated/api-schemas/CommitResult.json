@@ -1,49 +1,47 @@
 {
-  "type": "object",
+  "description": "所有 Artifact 写入的唯一提交返回值。",
+  "properties": {
+    "artifactId": {
+      "type": "string"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/components/schemas/DomainEventRecord"
+      },
+      "type": "array"
+    },
+    "invalidation": {
+      "$ref": "#/components/schemas/Invalidation"
+    },
+    "mutations": {
+      "items": {
+        "$ref": "#/components/schemas/MutationRecord"
+      },
+      "type": "array"
+    },
+    "protocolVersion": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "transactionId": {
+      "type": "string"
+    }
+  },
   "required": [
     "protocolVersion",
     "artifactId",
     "transactionId",
-    "baseRevision",
     "revision",
     "invalidation",
     "mutations",
     "events"
   ],
-  "properties": {
-    "protocolVersion": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "artifactId": {
-      "type": "string"
-    },
-    "transactionId": {
-      "type": "string"
-    },
-    "baseRevision": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "revision": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "invalidation": {
-      "type": "object"
-    },
-    "mutations": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
-    },
-    "events": {
-      "type": "array",
-      "items": {
-        "type": "object"
-      }
-    }
-  },
-  "additionalProperties": false
+  "type": "object"
 }

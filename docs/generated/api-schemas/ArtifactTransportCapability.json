@@ -1,0 +1,24 @@
+{
+  "description": "The write/read boundary that every Artifact client can use after discovering\nthe capability catalog. Paths are URI templates rather than a second RPC\nsurface, so agents, SDKs and MCP adapters all speak the same REST contract.",
+  "properties": {
+    "idempotencyHeader": {
+      "type": "string"
+    },
+    "revisionHeader": {
+      "type": "string"
+    },
+    "snapshotEndpoint": {
+      "type": "string"
+    },
+    "transactionEndpoint": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "snapshotEndpoint",
+    "transactionEndpoint",
+    "revisionHeader",
+    "idempotencyHeader"
+  ],
+  "type": "object"
+}

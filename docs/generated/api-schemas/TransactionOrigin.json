@@ -1,0 +1,11 @@
+{
+  "enum": [
+    "local",
+    "remote",
+    "undo",
+    "redo",
+    "import",
+    "system"
+  ],
+  "type": "string"
+}

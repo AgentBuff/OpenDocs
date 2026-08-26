@@ -1,0 +1,14 @@
+{
+  "description": "跨 Artifact 的最小持久化变更记录。具体 payload 由 Mutation registry 解释。",
+  "properties": {
+    "payload": true,
+    "typeId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "typeId",
+    "payload"
+  ],
+  "type": "object"
+}

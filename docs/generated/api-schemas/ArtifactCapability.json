@@ -1,0 +1,27 @@
+{
+  "properties": {
+    "commands": {
+      "description": "Empty for planned engines. An empty list is intentional: it is not a\npromise that an unimplemented command exists.",
+      "items": {
+        "$ref": "#/components/schemas/ArtifactCommandCapability"
+      },
+      "type": "array"
+    },
+    "kind": {
+      "$ref": "#/components/schemas/ArtifactKind"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    }
+  },
+  "required": [
+    "kind",
+    "namespace",
+    "status",
+    "commands"
+  ],
+  "type": "object"
+}

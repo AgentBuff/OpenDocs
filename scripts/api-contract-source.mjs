@@ -5,6 +5,8 @@
  * second domain model.
  */
 
+import { readFile } from "node:fs/promises";
+
 const json = (schema) => ({ "content": { "application/json": { schema } } });
 const ref = (name) => ({ "$ref": `#/components/schemas/${name}` });
 const artifactId = {
@@ -44,6 +46,61 @@ const artifactResponse = { description: "Artifact metadata", ...json(ref("Artifa
 const commitResponse = { description: "Committed semantic transaction", ...json(ref("CommitResult")) };
 const errorResponse = { description: "Stable machine-readable error", ...json(ref("ErrorEnvelope")) };
 
+// ADR-0010 phase 2: protocol DTO shapes come from the Rust typed contract.
+// The golden snapshot is produced by `oo_protocol::generate_contract_schemas`
+// and locked by a cargo test; this file only flattens its per-type $defs so
+// internal refs resolve against the OpenAPI components root. Hand-written
+// schemas below describe server-owned transport DTOs that do not exist in
+// oo-protocol yet.
+const protocolSnapshotPath = new URL("../crates/oo-protocol/tests/snapshots/contract_schemas.json", import.meta.url);
+const rawProtocolSchemas = JSON.parse(await readFile(protocolSnapshotPath, "utf8"));
+
+function rewriteRefs(value) {
+  if (Array.isArray(value)) return value.map(rewriteRefs);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = key === "$ref" && typeof item === "string" && item.startsWith("#/$defs/")
+        ? `#/components/schemas/${item.slice("#/$defs/".length)}`
+        : rewriteRefs(item);
+    }
+    return out;
+  }
+  return value;
+}
+
+const protocolSchemas = (() => {
+  const out = {};
+  // Top-level entries embed a $schema keyword and duplicate their referenced
+  // types under per-entry $defs; both are normalized away so components hold
+  // one canonical copy of every protocol type.
+  const put = (name, value) => {
+    const encoded = JSON.stringify(value);
+    if (out[name]) {
+      if (JSON.stringify(out[name]) !== encoded) {
+        throw new Error(`conflicting protocol schema: ${name}`);
+      }
+      return;
+    }
+    out[name] = value;
+  };
+  const stripMeta = (value) => {
+    const { $schema, ...rest } = value;
+    // The components key already carries the type name; schemars only emits
+    // `title` on standalone roots, which would otherwise break dedup.
+    delete rest.title;
+    return rest;
+  };
+  for (const [name, schema] of Object.entries(rawProtocolSchemas)) {
+    const { $defs = {}, ...rest } = schema;
+    put(name, rewriteRefs(stripMeta(rest)));
+    for (const [defName, def] of Object.entries($defs)) {
+      put(defName, rewriteRefs(stripMeta(def)));
+    }
+  }
+  return out;
+})();
+
 export const schemas = {
   ArtifactMeta: {
     type: "object",
@@ -67,87 +124,10 @@ export const schemas = {
     properties: { artifacts: { type: "array", items: ref("ArtifactMeta") } },
     additionalProperties: false,
   },
-  CapabilityCatalog: {
-    type: "object",
-    required: ["protocolVersion", "contractVersion", "transport", "artifacts"],
-    properties: {
-      protocolVersion: { type: "integer", minimum: 1 },
-      contractVersion: { type: "integer", minimum: 1 },
-      transport: {
-        type: "object",
-        required: ["snapshotEndpoint", "transactionEndpoint", "revisionHeader", "idempotencyHeader"],
-        properties: {
-          snapshotEndpoint: { type: "string" },
-          transactionEndpoint: { type: "string" },
-          revisionHeader: { type: "string" },
-          idempotencyHeader: { type: "string" },
-        },
-        additionalProperties: false,
-      },
-      artifacts: {
-        type: "array",
-        items: {
-          type: "object",
-          required: ["kind", "namespace", "status", "commands"],
-          properties: {
-            kind: { enum: ["document", "spreadsheet", "presentation", "mindmap", "whiteboard"] },
-            namespace: { type: "string" },
-            status: { enum: ["stable", "planned"] },
-            commands: {
-              type: "array",
-              items: {
-                type: "object",
-                required: ["typeId", "scope", "requiresRevision", "supportsIdempotency"],
-                properties: {
-                  typeId: { type: "string" },
-                  scope: { type: "string" },
-                  requiresRevision: { type: "boolean" },
-                  supportsIdempotency: { type: "boolean" },
-                },
-                additionalProperties: false,
-              },
-            },
-          },
-          additionalProperties: false,
-        },
-      },
-    },
-    additionalProperties: false,
-  },
-  ArtifactCommandEnvelope: {
-    type: "object",
-    required: ["protocolVersion", "transactionId", "intentId", "artifactId", "actorId", "baseRevision", "origin", "commands"],
-    properties: {
-      protocolVersion: { type: "integer", minimum: 1 },
-      transactionId: { type: "string", minLength: 1 },
-      intentId: { type: "string", minLength: 1 },
-      artifactId: { type: "string", minLength: 1 },
-      actorId: { type: "string", minLength: 1 },
-      baseRevision: { type: "integer", minimum: 0 },
-      origin: { type: "string" },
-      commands: { type: "array", minItems: 1, items: { type: "object" } },
-    },
-    additionalProperties: false,
-  },
   SnapshotEnvelope: {
     type: "object",
     required: ["protocolVersion", "artifact"],
     properties: { protocolVersion: { type: "integer", minimum: 1 }, artifact: { type: "object" } },
-    additionalProperties: false,
-  },
-  CommitResult: {
-    type: "object",
-    required: ["protocolVersion", "artifactId", "transactionId", "baseRevision", "revision", "invalidation", "mutations", "events"],
-    properties: {
-      protocolVersion: { type: "integer", minimum: 1 },
-      artifactId: { type: "string" },
-      transactionId: { type: "string" },
-      baseRevision: { type: "integer", minimum: 0 },
-      revision: { type: "integer", minimum: 0 },
-      invalidation: { type: "object" },
-      mutations: { type: "array", items: { type: "object" } },
-      events: { type: "array", items: { type: "object" } },
-    },
     additionalProperties: false,
   },
   ProjectionEnvelope: {
@@ -440,6 +420,7 @@ export function buildOpenApi() {
         PresentationSlideInclude: { name: "include", in: "query", description: "Comma-separated slide sections: nodes, notes, timeline. Defaults to metadata only.", schema: { type: "string" } },
       },
       schemas: {
+        ...protocolSchemas,
         ...schemas,
       },
     },
@@ -450,6 +431,12 @@ export function generatedFiles() {
   const openapi = buildOpenApi();
   return {
     "docs/generated/openapi.json": openapi,
-    ...Object.fromEntries(Object.entries(schemas).map(([name, schema]) => [`docs/generated/api-schemas/${name}.json`, schema])),
+    // Server DTOs and generated protocol types each get one stable file.
+    ...Object.fromEntries(
+      Object.entries({ ...protocolSchemas, ...schemas }).map(([name, schema]) => [
+        `docs/generated/api-schemas/${name}.json`,
+        schema,
+      ]),
+    ),
   };
 }

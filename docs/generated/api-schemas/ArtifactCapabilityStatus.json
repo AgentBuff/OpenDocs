@@ -1,0 +1,7 @@
+{
+  "enum": [
+    "stable",
+    "planned"
+  ],
+  "type": "string"
+}

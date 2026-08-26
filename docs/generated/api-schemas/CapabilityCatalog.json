@@ -1,104 +1,33 @@
 {
-  "type": "object",
+  "description": "Versioned discovery response for agent/SDK/MCP clients.",
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/components/schemas/ArtifactCapability"
+      },
+      "type": "array"
+    },
+    "contractVersion": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "protocolVersion": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "transport": {
+      "$ref": "#/components/schemas/ArtifactTransportCapability"
+    }
+  },
   "required": [
     "protocolVersion",
     "contractVersion",
     "transport",
     "artifacts"
   ],
-  "properties": {
-    "protocolVersion": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "contractVersion": {
-      "type": "integer",
-      "minimum": 1
-    },
-    "transport": {
-      "type": "object",
-      "required": [
-        "snapshotEndpoint",
-        "transactionEndpoint",
-        "revisionHeader",
-        "idempotencyHeader"
-      ],
-      "properties": {
-        "snapshotEndpoint": {
-          "type": "string"
-        },
-        "transactionEndpoint": {
-          "type": "string"
-        },
-        "revisionHeader": {
-          "type": "string"
-        },
-        "idempotencyHeader": {
-          "type": "string"
-        }
-      },
-      "additionalProperties": false
-    },
-    "artifacts": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "kind",
-          "namespace",
-          "status",
-          "commands"
-        ],
-        "properties": {
-          "kind": {
-            "enum": [
-              "document",
-              "spreadsheet",
-              "presentation",
-              "mindmap",
-              "whiteboard"
-            ]
-          },
-          "namespace": {
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "stable",
-              "planned"
-            ]
-          },
-          "commands": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "typeId",
-                "scope",
-                "requiresRevision",
-                "supportsIdempotency"
-              ],
-              "properties": {
-                "typeId": {
-                  "type": "string"
-                },
-                "scope": {
-                  "type": "string"
-                },
-                "requiresRevision": {
-                  "type": "boolean"
-                },
-                "supportsIdempotency": {
-                  "type": "boolean"
-                }
-              },
-              "additionalProperties": false
-            }
-          }
-        },
-        "additionalProperties": false
-      }
-    }
-  },
-  "additionalProperties": false
+  "type": "object"
 }

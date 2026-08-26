@@ -1,0 +1,26 @@
+{
+  "description": "只表达增量失效范围，不携带完整 snapshot。",
+  "properties": {
+    "changedContainers": {
+      "items": {
+        "$ref": "#/components/schemas/EntityRef"
+      },
+      "type": "array"
+    },
+    "changedEntities": {
+      "items": {
+        "$ref": "#/components/schemas/EntityRef"
+      },
+      "type": "array"
+    },
+    "structureChanged": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "changedEntities",
+    "changedContainers",
+    "structureChanged"
+  ],
+  "type": "object"
+}

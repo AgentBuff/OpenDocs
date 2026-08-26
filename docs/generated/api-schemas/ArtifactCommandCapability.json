@@ -1,0 +1,24 @@
+{
+  "description": "A semantic command accepted by an Artifact engine. `scope` allows a client\nto discover table-specific commands without pretending that tables are a\nsecond Artifact model (their namespace remains `document.table`).",
+  "properties": {
+    "requiresRevision": {
+      "type": "boolean"
+    },
+    "scope": {
+      "type": "string"
+    },
+    "supportsIdempotency": {
+      "type": "boolean"
+    },
+    "typeId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "typeId",
+    "scope",
+    "requiresRevision",
+    "supportsIdempotency"
+  ],
+  "type": "object"
+}

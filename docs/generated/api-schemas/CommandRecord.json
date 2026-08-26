@@ -1,0 +1,18 @@
+{
+  "description": "Command 是用户意图；payload 由对应 Artifact capability 负责校验。",
+  "properties": {
+    "commandId": {
+      "type": "string"
+    },
+    "payload": true,
+    "typeId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "commandId",
+    "typeId",
+    "payload"
+  ],
+  "type": "object"
+}
