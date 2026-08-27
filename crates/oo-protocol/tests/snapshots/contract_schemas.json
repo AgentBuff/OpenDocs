@@ -584,6 +584,26 @@
     "title": "MutationRecord",
     "type": "object"
   },
+  "OperationRecord": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Operation 表示不进入 Artifact snapshot 的视图/协同状态，例如选区和滚动位置。\n它与 CommandRecord 有意使用不同的 ID 字段，避免把临时状态误当成持久化意图。",
+    "properties": {
+      "operationId": {
+        "type": "string"
+      },
+      "payload": true,
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "operationId",
+      "typeId",
+      "payload"
+    ],
+    "title": "OperationRecord",
+    "type": "object"
+  },
   "TransactionOrigin": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "enum": [
