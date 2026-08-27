@@ -11,6 +11,7 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::artifact_routes::{authorize, Role};
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind, ArtifactMeta, NewArtifact};
 use crate::error::AppError;
@@ -1389,13 +1390,8 @@ async fn load_owned(
     user: &CurrentUser,
     id: &str,
 ) -> Result<ArtifactMeta, AppError> {
-    let meta = db::get_artifact(&state.pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("文档 {id} 不存在")))?;
-    if meta.owner_id != user.id {
-        return Err(AppError::Forbidden);
-    }
-    Ok(meta)
+    // 授权统一走 C4 分层：document 的写路径要求 editor 及以上。
+    authorize(state, user, id, Role::Editor).await
 }
 
 #[cfg(test)]

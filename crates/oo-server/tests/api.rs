@@ -1318,3 +1318,223 @@ async fn docx_export_reports_semantic_losses() {
     let losses = response.headers().get("x-docx-losses").unwrap();
     assert_eq!(losses, "todoState:1");
 }
+
+/// C4 授权矩阵：owner 全权；editor 可读+可提交事务、不可管理协作者与元数据；
+/// viewer 只读；陌生人一律 403。Principal 由 X-OO-User 头参数化（dev 约定）。
+#[tokio::test]
+async fn collaborator_roles_enforce_the_full_matrix() {
+    let app = TestApp::new().await;
+    let (_, meta) = app.upload_fixture("minimal.docx").await;
+    let id = meta["id"].as_str().unwrap();
+    let request_with_user = |user: &str, method: &str, uri: String, body: Option<String>| {
+        let builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-oo-user", user);
+        match body {
+            Some(body) => builder
+                .header("content-type", "application/json")
+                .body(Body::from(body)),
+            None => builder.body(Body::empty()),
+        }
+        .unwrap()
+    };
+
+    // Owner grants editor and viewer.
+    for (user, role) in [("editor-1", "editor"), ("viewer-1", "viewer")] {
+        let response = app
+            .router
+            .clone()
+            .oneshot(request_with_user(
+                "dev-user",
+                "PUT",
+                format!("/api/artifacts/{id}/collaborators/{user}"),
+                Some(json!({"role": role}).to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT, "{user}");
+    }
+    // Invalid role rejected.
+    let bad_role = app
+        .router
+        .clone()
+        .oneshot(request_with_user(
+            "dev-user",
+            "PUT",
+            format!("/api/artifacts/{id}/collaborators/ghost"),
+            Some(json!({"role": "owner"}).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(bad_role.status(), StatusCode::BAD_REQUEST);
+
+    // Listing requires editor+: viewers do not get to enumerate other
+    // principals on the artifact.
+    for (user, expect_status) in [
+        ("dev-user", StatusCode::OK),
+        ("editor-1", StatusCode::OK),
+        ("viewer-1", StatusCode::FORBIDDEN),
+        ("stranger", StatusCode::FORBIDDEN),
+    ] {
+        let (status, body) = app
+            .json(request_with_user(
+                user,
+                "GET",
+                format!("/api/artifacts/{id}/collaborators"),
+                None,
+            ))
+            .await;
+        assert_eq!(status, expect_status, "list as {user}: {body}");
+        if status == StatusCode::OK {
+            let roles: Vec<&str> = body["collaborators"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| entry["role"].as_str().unwrap())
+                .collect();
+            assert!(roles.contains(&"editor") && roles.contains(&"viewer"));
+        }
+    }
+
+    // Reads: viewer+ can read snapshot; stranger cannot.
+    for (user, expect) in [
+        ("owner", "dev-user"),
+        ("collaborator-editor", "editor-1"),
+        ("collaborator-viewer", "viewer-1"),
+    ] {
+        let _ = (user, expect);
+    }
+    for (user, expect_status) in [
+        ("dev-user", StatusCode::OK),
+        ("editor-1", StatusCode::OK),
+        ("viewer-1", StatusCode::OK),
+        ("stranger", StatusCode::FORBIDDEN),
+    ] {
+        let (status, _) = app
+            .json(request_with_user(
+                user,
+                "GET",
+                format!("/api/artifacts/{id}/snapshot"),
+                None,
+            ))
+            .await;
+        assert_eq!(status, expect_status, "snapshot read as {user}");
+    }
+
+    // Transactions require editor+: viewer and stranger are forbidden even
+    // with a perfect envelope.
+    let (_, snapshot) = app
+        .json(request_with_user(
+            "editor-1",
+            "GET",
+            format!("/api/artifacts/{id}/snapshot"),
+            None,
+        ))
+        .await;
+    let block_id = snapshot["artifact"]["payload"]["data"]["blocks"][0]["id"]
+        .as_str()
+        .unwrap();
+    let transaction_body = json!({
+        "protocolVersion": 1,
+        "transactionId": "tx-acl",
+        "intentId": "intent-acl",
+        "artifactId": id,
+        "actorId": "editor-1",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [{
+            "commandId": "op-acl",
+            "typeId": "document.replaceBlockText",
+            "payload": {"type": "replaceBlockText", "blockId": block_id, "content": {"text": "by editor", "runs": []}}
+        }]
+    })
+    .to_string();
+    for (user, expect_status) in [
+        ("editor-1", StatusCode::OK),
+        ("viewer-1", StatusCode::FORBIDDEN),
+        ("stranger", StatusCode::FORBIDDEN),
+    ] {
+        let denied = json!({
+            "protocolVersion": 1,
+            "transactionId": format!("tx-denied-{user}"),
+            "intentId": format!("intent-denied-{user}"),
+            "artifactId": id,
+            "actorId": user,
+            "baseRevision": 1,
+            "origin": "local",
+            "commands": []
+        });
+        let payload = if user == "editor-1" {
+            transaction_body.clone()
+        } else {
+            // 被拒角色使用独立事务 id，避免与 editor 的幂等记录互相污染。
+            denied.to_string()
+        };
+        let transaction: serde_json::Value = serde_json::from_str(&transaction_body).unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/api/artifacts/{id}/transactions"))
+            .header("content-type", "application/json")
+            .header("x-oo-user", user)
+            .header("if-match", "\"1\"")
+            .header(
+                "x-transaction-id",
+                transaction["transactionId"].as_str().unwrap(),
+            )
+            .body(Body::from(payload))
+            .unwrap();
+        let (status, body) = app.json(request).await;
+        assert_eq!(status, expect_status, "transaction as {user}: {body}");
+        if status == StatusCode::OK {
+            // 审计 actor 必须是真实 Principal，而不是请求体里声称的人。
+            assert_eq!(body["events"][0]["payload"]["actorId"], user);
+        }
+    }
+
+    // Viewer cannot escalate: collaborator management stays owner-only.
+    for (user, expect_status) in [
+        ("editor-1", StatusCode::FORBIDDEN),
+        ("viewer-1", StatusCode::FORBIDDEN),
+    ] {
+        let response = app
+            .router
+            .clone()
+            .oneshot(request_with_user(
+                user,
+                "PUT",
+                format!("/api/artifacts/{id}/collaborators/viewer-2"),
+                Some(json!({"role": "editor"}).to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expect_status, "escalation by {user}");
+    }
+
+    // Owner removal revokes access immediately.
+    let response = app
+        .router
+        .clone()
+        .oneshot(request_with_user(
+            "dev-user",
+            "DELETE",
+            format!("/api/artifacts/{id}/collaborators/viewer-1"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let (status, _) = app
+        .json(request_with_user(
+            "viewer-1",
+            "GET",
+            format!("/api/artifacts/{id}/snapshot"),
+            None,
+        ))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "revoked viewer must lose read"
+    );
+}

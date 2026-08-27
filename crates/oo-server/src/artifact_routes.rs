@@ -51,6 +51,8 @@ pub const ARTIFACT_HISTORY_PATH: &str = "/api/artifacts/{id}/history";
 pub const ARTIFACT_TRANSACTIONS_PATH: &str = "/api/artifacts/{id}/transactions";
 pub const ARTIFACT_SOURCE_PATH: &str = "/api/artifacts/{id}/source";
 pub const ARTIFACT_EXPORT_PATH: &str = "/api/artifacts/{id}/export/{format}";
+pub const ARTIFACT_COLLABORATORS_PATH: &str = "/api/artifacts/{id}/collaborators";
+pub const ARTIFACT_COLLABORATOR_PATH: &str = "/api/artifacts/{id}/collaborators/{userId}";
 pub const ARTIFACT_ASSETS_PATH: &str = "/api/artifacts/{id}/assets";
 pub const ARTIFACT_ASSET_PATH: &str = "/api/artifacts/{id}/assets/{asset_id}";
 
@@ -292,6 +294,12 @@ fn presentation_command_capabilities() -> Vec<ArtifactCommandCapability> {
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactList {
     pub artifacts: Vec<ArtifactMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertCollaboratorRequest {
+    pub role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -751,7 +759,7 @@ pub async fn upload_asset(
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Editor).await?;
     let mut file_name = None;
     let mut content_type = None;
     let mut bytes = None;
@@ -823,7 +831,7 @@ pub async fn list_assets(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<AssetList>, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Viewer).await?;
     Ok(Json(AssetList {
         assets: db::list_artifact_assets(&state.pool, &id).await?,
     }))
@@ -834,7 +842,7 @@ pub async fn get_asset(
     user: CurrentUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Viewer).await?;
     let asset = db::get_artifact_asset(&state.pool, &id, &asset_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("资产 {asset_id} 不存在")))?;
@@ -860,7 +868,7 @@ pub async fn delete_asset(
     user: CurrentUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Editor).await?;
     let asset = db::get_artifact_asset(&state.pool, &id, &asset_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("资产 {asset_id} 不存在")))?;
@@ -1010,7 +1018,8 @@ pub async fn transactions(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<document_support::TransactionCommit>, AppError> {
-    let meta = owned_meta(&state, &user, &id).await?;
+    // 事务是写路径：editor 及以上（C4 授权分层）；owner 之外由协作者角色决定。
+    let meta = authorize(&state, &user, &id, Role::Editor).await?;
     match meta.kind {
         ArtifactKind::Document => {
             document_support::submit_transaction(State(state), user, Path(id), headers, body).await
@@ -1058,7 +1067,7 @@ pub async fn source(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let meta = owned_meta(&state, &user, &id).await?;
+    let meta = authorize(&state, &user, &id, Role::Viewer).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
@@ -1173,13 +1182,92 @@ pub(crate) async fn owned_meta(
     user: &CurrentUser,
     id: &str,
 ) -> Result<ArtifactMeta, AppError> {
+    authorize(state, user, id, Role::Owner).await
+}
+
+/// 委派角色层级。owner 即 `artifacts.owner_id`，editor/viewer 来自
+/// `artifact_collaborators`；owner 拥有全部能力，不需要出现在表里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Role {
+    Viewer,
+    Editor,
+    Owner,
+}
+
+impl Role {
+    fn from_str(role: &str) -> Option<Self> {
+        match role {
+            "viewer" => Some(Self::Viewer),
+            "editor" => Some(Self::Editor),
+            _ => None,
+        }
+    }
+}
+
+/// 统一授权入口：解析 artifact 元数据并断言调用者至少拥有 [`Role::min`]。
+pub(crate) async fn authorize(
+    state: &AppState,
+    user: &CurrentUser,
+    id: &str,
+    min: Role,
+) -> Result<ArtifactMeta, AppError> {
     let meta = db::get_artifact(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
-    if meta.owner_id != user.id {
-        return Err(AppError::Forbidden);
+    let granted = if meta.owner_id == user.id {
+        Some(Role::Owner)
+    } else {
+        db::list_collaborators(&state.pool, id)
+            .await?
+            .into_iter()
+            .find(|collaborator| collaborator.user_id == user.id)
+            .and_then(|collaborator| Role::from_str(&collaborator.role))
+    };
+    match granted {
+        Some(role) if role >= min => Ok(meta),
+        _ => Err(AppError::Forbidden),
     }
-    Ok(meta)
+}
+
+/// `GET /api/artifacts/{id}/collaborators`（editor 及以上）：viewer 不应能枚举
+/// 同一 artifact 上的其他 Principal。
+pub async fn list_collaborators(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<db::CollaboratorList>, AppError> {
+    authorize(&state, &user, &id, Role::Editor).await?;
+    let collaborators = db::list_collaborators(&state.pool, &id).await?;
+    Ok(Json(db::CollaboratorList { collaborators }))
+}
+
+/// `PUT /api/artifacts/{id}/collaborators/{userId}`（仅 owner）。
+pub async fn upsert_collaborator(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, target_user)): Path<(String, String)>,
+    Json(request): Json<UpsertCollaboratorRequest>,
+) -> Result<StatusCode, AppError> {
+    authorize(&state, &user, &id, Role::Owner).await?;
+    if !db::COLLABORATOR_ROLES.contains(&request.role.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "角色必须是 {:?} 之一",
+            db::COLLABORATOR_ROLES
+        )));
+    }
+    db::upsert_collaborator(&state.pool, &id, &target_user, &request.role).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/artifacts/{id}/collaborators/{userId}`（仅 owner）。
+pub async fn delete_collaborator(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, target_user)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    authorize(&state, &user, &id, Role::Owner).await?;
+    db::delete_collaborator(&state.pool, &id, &target_user).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn load_artifact(
@@ -1187,7 +1275,9 @@ pub(crate) async fn load_artifact(
     user: &CurrentUser,
     id: &str,
 ) -> Result<(ArtifactMeta, ArtifactEnvelope), AppError> {
-    let meta = owned_meta(state, user, id).await?;
+    // 读路径（snapshot/events/export/source 与事务装载前的元数据检查）降至
+    // viewer+；写与管理面在各自入口再收紧到 editor/owner。
+    let meta = authorize(state, user, id, Role::Viewer).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;

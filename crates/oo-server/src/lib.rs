@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
@@ -127,6 +127,14 @@ pub fn build_router(state: AppState) -> Router {
             get(artifact_routes::list_assets)
                 .post(artifact_routes::upload_asset)
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
+        )
+        .route(
+            artifact_routes::ARTIFACT_COLLABORATORS_PATH,
+            get(artifact_routes::list_collaborators),
+        )
+        .route(
+            artifact_routes::ARTIFACT_COLLABORATOR_PATH,
+            put(artifact_routes::upsert_collaborator).delete(artifact_routes::delete_collaborator),
         )
         .route(
             artifact_routes::ARTIFACT_ASSET_PATH,

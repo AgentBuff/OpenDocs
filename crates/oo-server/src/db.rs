@@ -1704,3 +1704,88 @@ mod tests {
             .is_none());
     }
 }
+
+// --- C4: per-artifact collaborators -----------------------------------------
+
+/// 委派角色。owner 永远记录在 `artifacts.owner_id`，不进入本表。
+pub const COLLABORATOR_ROLES: &[&str] = &["editor", "viewer"];
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Collaborator {
+    pub user_id: String,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+}
+
+pub async fn list_collaborators(
+    pool: &SqlitePool,
+    artifact_id: &str,
+) -> Result<Vec<Collaborator>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT user_id, role, created_at FROM artifact_collaborators \
+         WHERE artifact_id = ? ORDER BY created_at, user_id",
+    )
+    .bind(artifact_id)
+    .fetch_all(pool)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(Collaborator {
+                user_id: row.try_get("user_id")?,
+                role: row.try_get("role")?,
+                created_at: DateTime::parse_from_rfc3339(&row.try_get::<String, _>("created_at")?)
+                    .map_err(|error| sqlx::Error::ColumnDecode {
+                        index: "created_at".into(),
+                        source: Box::new(error),
+                    })?
+                    .with_timezone(&Utc),
+            })
+        })
+        .collect()
+}
+
+/// 授予或更新一个协作者角色；角色合法性由路由层校验。
+pub async fn upsert_collaborator(
+    pool: &SqlitePool,
+    artifact_id: &str,
+    user_id: &str,
+    role: &str,
+) -> Result<(), sqlx::Error> {
+    if !COLLABORATOR_ROLES.contains(&role) {
+        panic!("upsert_collaborator 仅接受 {COLLABORATOR_ROLES:?}");
+    }
+    let now = Utc::now().to_rfc3339();
+    sqlx::query(
+        "INSERT INTO artifact_collaborators (artifact_id, user_id, role, created_at) \
+         VALUES (?, ?, ?, ?) \
+         ON CONFLICT(artifact_id, user_id) DO UPDATE SET role = excluded.role",
+    )
+    .bind(artifact_id)
+    .bind(user_id)
+    .bind(role)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_collaborator(
+    pool: &SqlitePool,
+    artifact_id: &str,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result =
+        sqlx::query("DELETE FROM artifact_collaborators WHERE artifact_id = ? AND user_id = ?")
+            .bind(artifact_id)
+            .bind(user_id)
+            .execute(pool)
+            .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollaboratorList {
+    pub collaborators: Vec<Collaborator>,
+}
