@@ -33,8 +33,8 @@ Exposed interaction surfaces and their capability rows:
 
 | Capability | Typed domain / semantic command | UI/read projection | Evidence status | Current result |
 | --- | --- | --- | --- | --- |
-| Paragraph and headings | `DocumentBlock`, `replaceBlockText`, `convertBlock` | DOM-first block renderer | Rust/TS/Vitest; `e2e/document/boot.spec.ts` | partial — persistence/reload is covered; IME and cross-block coverage remain |
-| Inline style | RichText runs, `patchInlineRange` | toolbar and editable projection | Rust/TS unit coverage | partial — range mapping and cross-block selection are not unified |
+| Paragraph and headings | `DocumentBlock`, `replaceBlockText`, `convertBlock` | DOM-first block renderer | Rust/TS/Vitest; `e2e/document/boot.spec.ts`; `e2e/document/history.spec.ts`; `e2e/document/selection.spec.ts` | partial — persistence/reload, undo/redo revision monotonicity, offline autosave recovery and cross-block delete/format are covered in Chromium; IME deep-dive remains |
+| Inline style | RichText runs, `patchInlineRange` | toolbar and editable projection | Rust/TS unit coverage; cross-block batched bold via `e2e/document/selection.spec.ts` | partial — range mapping unified (batched per-block commands); visual coverage remains |
 | Block presentation | `BlockPresentation`, `setBlockPresentation` | toolbar, block menu | Rust protocol test; list E2E | partial — wire-level tri-state clear and list keyboard behavior are covered; visual/other keyboard behavior remains |
 | Ordered/bullet lists | `presentation.list`, `setBlockPresentation` | block marker and Enter handler | `e2e/document/list.spec.ts` | partial — Enter continuation and empty-item exit are covered; nested/cross-block/paste behavior remains |
 | Todo | `TodoBlock`, `setTodoChecked` | checkbox renderer | engine/schema tests | partial — accessibility and browser persistence need coverage |
@@ -45,8 +45,8 @@ Exposed interaction surfaces and their capability rows:
 | Table merge/split | `mergeTableCells`, `splitTableCells` | row/col span projection | Rust engine tests; Chromium coverage in `table-image.spec.ts` | partial — reported overlap defects require E2E closure for nested tables |
 | Table border/size | border commands, row/column width commands | border menu and resize UI | Rust/TS tests; adjacent-boundary drag coverage in Chromium | partial — visual acceptance missing |
 | Context/block menus | no persistent model | `BlockMenu`, `BlockContextMenu`, table menu | `e2e/overlays/menu.spec.ts`, `e2e/visual/chrome.spec.ts` | partial — Escape/outside dismissal and dark block-menu baseline are covered; nested/table overlays remain |
-| Undo/redo/history | mutation journal, history transaction | toolbar/history API | server/engine tests | partial — browser conflict/reload/recovery proof incomplete |
-| Autosave/outbox | session outbox + artifact transaction | status UI | unit implementation exists | partial — debounce/max-wait/visibility behavior needs E2E and metrics |
+| Undo/redo/history | server-authoritative history intent + journal reload | toolbar/history API/shortcuts | `e2e/document/history.spec.ts` | partial — undo/redo and offline recovery proven in Chromium; conflict-rebase visual proof incomplete |
+| Autosave/outbox | session outbox + artifact transaction | status UI | unit tests; offline delivery via `e2e/document/history.spec.ts` | partial — offline delivery proven in Chromium; metrics/visibility behaviors still need E2E |
 | Import/export DOCX | `oo-docx` writer/importer, artifact export route | import/export controls; `x-docx-losses` header | round-trip text/format/image tests; loss-report unit test; `api.rs::docx_export_reports_semantic_losses` | partial — todo state/link target/containers are reported as losses instead of silently dropped; fidelity matrix and visual tests remain |
 | Outline/projections/events | artifact projection/event APIs | API client boundaries | server/API tests | partial — editor and external consumer acceptance incomplete |
 | Presence | ephemeral presence API | no mature Document UI | route/module exists | planned — not real-time collaboration |

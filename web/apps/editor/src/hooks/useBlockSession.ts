@@ -1006,8 +1006,13 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     const baseRevision = baseRevisionRef.current;
     setState((current) => ({ ...current, saving: true, error: null }));
     try {
-      const result = await historyAdapter.submit(documentId, action, baseRevision);
+  const result = await historyAdapter.submit(documentId, action, baseRevision);
       await load(result.invalidation);
+      // The reload rebuilds block DOM, which drops focus to <body>; without
+      // restoring it the very next undo/redo shortcut is silently swallowed.
+      requestAnimationFrame(() =>
+        document.querySelector<HTMLElement>('.block-row__content[contenteditable="true"]')?.focus(),
+      );
       setState((current) => ({ ...current, canUndo: result.canUndo, canRedo: result.canRedo, saving: false }));
     } catch (error) {
       reportError(error);

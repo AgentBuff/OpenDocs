@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { ThemeRuntime } from "@open-office/ui";
 import { App } from "./App.js";
 import "./styles/index.css";
+import "./styles/print.css";
 import "./styles/presentation.css";
 
 const container = document.getElementById("root");
