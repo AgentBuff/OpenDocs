@@ -1,0 +1,55 @@
+/**
+ * Print / pagination baseline (C2).
+ *
+ * The screen editor owns chrome (topbar, toolbar, gutters, status). Printing
+ * or PDF export must project only the canonical page surface: white paper,
+ * block content in flow, no interactive affordances. This file intentionally
+ * uses plain @media print without a paged.js dependency — true pagination
+ * preview remains a future Canvas renderer per ADR-0002.
+ */
+
+@media print {
+  @page {
+    /* A4 default; users can override via the browser print dialog. */
+    size: A4;
+    margin: 18mm 16mm;
+  }
+
+  .editor__topbar,
+  .editor__toolbar,
+  .editor__status,
+  .block-row__gutter,
+  .block-row__menu,
+  .block-table__controls,
+  .code-block__toolbar,
+  .code-block__gutter,
+  .presentation-* {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+
+  .block-editor__page {
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: auto !important;
+    min-height: auto !important;
+    background: #ffffff !important;
+  }
+
+  .block-row {
+    break-inside: avoid-page;
+  }
+
+  .block-row__content {
+    caret-color: transparent;
+  }
+
+  [contenteditable]:focus {
+    outline: none !important;
+  }
+}
