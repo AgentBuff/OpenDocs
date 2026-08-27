@@ -7,13 +7,29 @@
  */
 
 import { parsePresentationV5Deck, type PresentationV5Deck } from "./presentation-v5.js";
+import type {
+  ArtifactCommandEnvelope,
+  ArtifactKind,
+  CommitResult,
+  DomainEventRecord,
+  EntityRef,
+  MutationRecord,
+  TransactionOrigin,
+} from "./protocol.generated.js";
 
-export type ArtifactKind =
-  | "document"
-  | "spreadsheet"
-  | "presentation"
-  | "mindmap"
-  | "whiteboard";
+// 协议 wire 类型由 Rust 契约生成(ADR-0010)，此处仅转发以保持子路径导入兼容。
+export type {
+  ArtifactCommandEnvelope,
+  ArtifactKind,
+  CommandRecord,
+  CommitResult,
+  DomainEventRecord,
+  EntityRef,
+  Invalidation,
+  MutationRecord,
+  OperationRecord,
+  TransactionOrigin,
+} from "./protocol.generated.js";
 
 /** Runtime accepts this version only; older snapshots must go through the offline migrator. */
 export const CURRENT_SCHEMA_VERSION = 5;
@@ -541,7 +557,6 @@ export interface SnapshotEnvelope {
   artifact: ArtifactEnvelope;
 }
 
-export type TransactionOrigin = "local" | "remote" | "undo" | "redo" | "import" | "system";
 
 /** Server-authoritative history intent. Clients never send inverse block patches. */
 export type DocumentHistoryAction = "undo" | "redo";
@@ -552,19 +567,7 @@ export interface DocumentHistoryOperation {
 
 export const DOCUMENT_HISTORY_TYPE_ID = "document.history";
 
-/** Command 是用户意图；payload 由对应 Artifact capability 负责校验。 */
-export interface CommandRecord {
-  commandId: string;
-  typeId: string;
-  payload: Record<string, unknown>;
-}
 
-/** Operation 只描述不进入 Artifact snapshot 的视图状态。 */
-export interface OperationRecord {
-  operationId: string;
-  typeId: string;
-  payload: Record<string, unknown>;
-}
 
 export interface CommandContext {
   artifactId: string;
@@ -575,43 +578,11 @@ export interface CommandContext {
   origin: TransactionOrigin;
 }
 
-/** 所有 Artifact 写入的唯一网络提交 envelope。 */
-export interface ArtifactCommandEnvelope extends CommandContext {
-  protocolVersion: number;
-  commands: CommandRecord[];
-}
 
-export interface MutationRecord {
-  typeId: string;
-  payload: Record<string, unknown>;
-}
 
-export interface DomainEventRecord {
-  eventId: string;
-  typeId: string;
-  payload: Record<string, unknown>;
-}
 
-export interface EntityRef {
-  entityType: string;
-  entityId: string;
-}
 
-export interface Invalidation {
-  changedEntities: EntityRef[];
-  changedContainers: EntityRef[];
-  structureChanged: boolean;
-}
 
-export interface CommitResult {
-  protocolVersion: number;
-  artifactId: string;
-  transactionId: string;
-  revision: number;
-  invalidation: Invalidation;
-  mutations: MutationRecord[];
-  events: DomainEventRecord[];
-}
 
 export interface PendingTransaction {
   sequence: number;

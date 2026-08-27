@@ -57,6 +57,7 @@ fn contract_schema_snapshot_is_stable() {
             "EntityRef",
             "Invalidation",
             "MutationRecord",
+            "OperationRecord",
             "TransactionOrigin",
         ]
     );

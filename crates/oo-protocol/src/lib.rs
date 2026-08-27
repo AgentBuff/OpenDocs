@@ -288,7 +288,7 @@ impl CommandRecord {
 
 /// Operation 表示不进入 Artifact snapshot 的视图/协同状态，例如选区和滚动位置。
 /// 它与 CommandRecord 有意使用不同的 ID 字段，避免把临时状态误当成持久化意图。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperationRecord {
     pub operation_id: String,
@@ -836,6 +836,7 @@ pub fn generate_contract_schemas() -> serde_json::Map<String, serde_json::Value>
         schemas,
         ArtifactCommandEnvelope,
         CommandRecord,
+        OperationRecord,
         TransactionOrigin,
         CommitResult,
         MutationRecord,
