@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": [
+    "role"
+  ],
+  "properties": {
+    "role": {
+      "enum": [
+        "editor",
+        "viewer"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

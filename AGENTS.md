@@ -51,6 +51,9 @@ GET    /api/artifacts/{id}/outline
 GET    /api/artifacts/{id}/blocks?parentId=&cursor=&limit=&include=&maxBytes=
 GET    /api/artifacts/{id}/blocks/{blockId}
 GET    /api/artifacts/{id}/events?sinceRevision=&cursor=&limit=
+GET    /api/artifacts/{id}/collaborators
+PUT    /api/artifacts/{id}/collaborators/{userId}
+DELETE /api/artifacts/{id}/collaborators/{userId}
 GET    /api/artifacts/{id}/source
 GET    /api/artifacts/{id}/export/{format}
 ```

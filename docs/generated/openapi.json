@@ -1261,6 +1261,121 @@
         }
       }
     },
+    "/api/artifacts/{id}/collaborators": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listCollaborators",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaboratorList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/collaborators/{userId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "userId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "put": {
+        "operationId": "upsertCollaborator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertCollaboratorRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Role granted or updated"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCollaborator",
+        "responses": {
+          "204": {
+            "description": "Collaborator removed"
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/artifacts/{id}/source": {
       "parameters": [
         {
@@ -1709,6 +1824,60 @@
           "payload"
         ],
         "type": "object"
+      },
+      "CollaboratorList": {
+        "type": "object",
+        "required": [
+          "collaborators"
+        ],
+        "properties": {
+          "collaborators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Collaborator"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Collaborator": {
+        "type": "object",
+        "required": [
+          "userId",
+          "role",
+          "createdAt"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "editor",
+              "viewer"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpsertCollaboratorRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "editor",
+              "viewer"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
       "ArtifactMeta": {
         "type": "object",

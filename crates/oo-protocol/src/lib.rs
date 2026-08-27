@@ -467,6 +467,42 @@ fn validate_protocol_version(version: u16) -> Result<(), ProtocolValidationError
     Ok(())
 }
 
+/// 机器可读协议形状的单源出口（ADR-0010）。
+///
+/// schema 直接由 Rust 类型派生，是后续 OpenAPI components 与 SDK 类型生成
+/// 的唯一真相。任何 wire 兼容性破坏都会在这里改变形状，由 golden 快照
+/// 测试拦截；`$defs` 引用保证同名类型全局唯一。
+pub fn generate_contract_schemas() -> serde_json::Map<String, serde_json::Value> {
+    macro_rules! schema_of {
+        ($map:ident, $($t:ty),+ $(,)?) => {$(
+            $map.insert(
+                stringify!($t).rsplit("::").next().unwrap().to_string(),
+                serde_json::to_value(schemars::schema_for!($t))
+                    .expect("contract schema must serialize"),
+            );
+        )+};
+    }
+    let mut schemas = serde_json::Map::new();
+    schema_of!(
+        schemas,
+        ArtifactCommandEnvelope,
+        CommandRecord,
+        OperationRecord,
+        TransactionOrigin,
+        CommitResult,
+        MutationRecord,
+        DomainEventRecord,
+        EntityRef,
+        Invalidation,
+        CapabilityCatalog,
+        ArtifactCapability,
+        ArtifactCommandCapability,
+        ArtifactTransportCapability,
+        ArtifactCapabilityStatus,
+    );
+    schemas
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,40 +850,4 @@ mod tests {
         assert_eq!(decoded, envelope);
         assert_eq!(decoded.projection, ArtifactProjectionKind::Block);
     }
-}
-
-/// 机器可读协议形状的单源出口（ADR-0010）。
-///
-/// schema 直接由 Rust 类型派生，是后续 OpenAPI components 与 SDK 类型生成
-/// 的唯一真相。任何 wire 兼容性破坏都会在这里改变形状，由 golden 快照
-/// 测试拦截；`$defs` 引用保证同名类型全局唯一。
-pub fn generate_contract_schemas() -> serde_json::Map<String, serde_json::Value> {
-    macro_rules! schema_of {
-        ($map:ident, $($t:ty),+ $(,)?) => {$(
-            $map.insert(
-                stringify!($t).rsplit("::").next().unwrap().to_string(),
-                serde_json::to_value(schemars::schema_for!($t))
-                    .expect("contract schema must serialize"),
-            );
-        )+};
-    }
-    let mut schemas = serde_json::Map::new();
-    schema_of!(
-        schemas,
-        ArtifactCommandEnvelope,
-        CommandRecord,
-        OperationRecord,
-        TransactionOrigin,
-        CommitResult,
-        MutationRecord,
-        DomainEventRecord,
-        EntityRef,
-        Invalidation,
-        CapabilityCatalog,
-        ArtifactCapability,
-        ArtifactCommandCapability,
-        ArtifactTransportCapability,
-        ArtifactCapabilityStatus,
-    );
-    schemas
 }

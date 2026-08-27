@@ -102,6 +102,28 @@ const protocolSchemas = (() => {
 })();
 
 export const schemas = {
+  CollaboratorList: {
+    type: "object",
+    required: ["collaborators"],
+    properties: { collaborators: { type: "array", items: ref("Collaborator") } },
+    additionalProperties: false,
+  },
+  Collaborator: {
+    type: "object",
+    required: ["userId", "role", "createdAt"],
+    properties: {
+      userId: { type: "string" },
+      role: { enum: ["editor", "viewer"] },
+      createdAt: { type: "string", format: "date-time" },
+    },
+    additionalProperties: false,
+  },
+  UpsertCollaboratorRequest: {
+    type: "object",
+    required: ["role"],
+    properties: { role: { enum: ["editor", "viewer"] } },
+    additionalProperties: false,
+  },
   ArtifactMeta: {
     type: "object",
     required: ["id", "kind", "title", "ownerId", "size", "version", "starred", "createdAt", "updatedAt"],
@@ -399,6 +421,12 @@ export function buildOpenApi() {
     "/api/artifacts/{id}/revisions/{version}": { parameters: [artifactId, version], get: { operationId: "getRevision", responses: { "200": json(ref("SnapshotEnvelope")), "404": errorResponse } } },
     "/api/artifacts/{id}/revisions/{version}/restore": { parameters: [artifactId, version], post: { operationId: "restoreRevision", parameters: [ifMatch, transactionId], responses: { "200": commitResponse, "409": errorResponse } } },
     "/api/artifacts/{id}/history": { parameters: [artifactId], get: { operationId: "getHistory", responses: { "200": { description: "History state", content: { "application/json": { schema: { type: "object", required: ["canUndo", "canRedo"], properties: { canUndo: { type: "boolean" }, canRedo: { type: "boolean" } }, additionalProperties: false } } } } } } },
+    "/api/artifacts/{id}/collaborators": { parameters: [artifactId], get: { operationId: "listCollaborators", responses: { "200": json(ref("CollaboratorList")), "403": errorResponse } } },
+    "/api/artifacts/{id}/collaborators/{userId}": {
+      parameters: [artifactId, { name: "userId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+      put: { operationId: "upsertCollaborator", requestBody: json(ref("UpsertCollaboratorRequest")), responses: { "204": { description: "Role granted or updated" }, "400": errorResponse, "403": errorResponse } },
+      delete: { operationId: "deleteCollaborator", responses: { "204": { description: "Collaborator removed" }, "403": errorResponse } },
+    },
     "/api/artifacts/{id}/source": { parameters: [artifactId], get: { operationId: "getOriginalSource", responses: { "200": { description: "Original source bytes" }, "404": errorResponse } } },
     "/api/artifacts/{id}/export/{format}": { parameters: [artifactId, { name: "format", in: "path", required: true, schema: { type: "string" } }], get: { operationId: "exportArtifact", responses: { "200": { description: "Exported artifact bytes" }, "400": errorResponse } } },
   };

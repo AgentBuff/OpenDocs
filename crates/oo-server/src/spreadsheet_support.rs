@@ -19,7 +19,7 @@ use oo_spreadsheet::{
     SpreadsheetMutation,
 };
 
-use crate::artifact_routes::{artifact_for, load_artifact};
+use crate::artifact_routes::{artifact_for, authorize, load_artifact, Role};
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind};
 use crate::document_support::TransactionCommit;
@@ -50,6 +50,8 @@ pub async fn submit_transaction(
         .map_err(|_| AppError::BadRequest("事务 baseRevision 超出服务端范围".into()))?;
 
     let _write_guard = state.write_lock.lock().await;
+    // 事务是写路径：editor 及以上（C4 授权分层）。
+    authorize(&state, &user, &id, Role::Editor).await?;
     let (meta, snapshot) = load_artifact(&state, &user, &id).await?;
     if meta.kind != ArtifactKind::Spreadsheet {
         return Err(AppError::UnsupportedArtifact(meta.kind));

@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": [
+    "collaborators"
+  ],
+  "properties": {
+    "collaborators": {
+      "type": "array",
+      "items": {
+        "$ref": "#/components/schemas/Collaborator"
+      }
+    }
+  },
+  "additionalProperties": false
+}
