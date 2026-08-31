@@ -176,3 +176,59 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod perf_bench {
+    use super::*;
+    use oo_schema::{CellModel, SheetModel};
+    use std::time::Instant;
+
+    fn dense_model(rows: u32, cols: u32) -> SpreadsheetModel {
+        let mut cells = Vec::with_capacity((rows * cols) as usize);
+        for row in 0..rows {
+            for col in 0..cols {
+                cells.push(CellModel {
+                    row,
+                    column: col,
+                    value: Some(((row * cols + col) as i64).into()),
+                    style: None,
+                    ..CellModel::default()
+                });
+            }
+        }
+        SpreadsheetModel {
+            sheets: vec![SheetModel {
+                id: "sheet-1".into(),
+                name: "Sheet 1".into(),
+                cells,
+                ..SheetModel::default()
+            }],
+            ..SpreadsheetModel::default()
+        }
+    }
+
+    /// R7 budget: 100k sparse cells with a 200x50 viewport must project only the
+    /// in-window materialized cells (no DOM/JSON for empty regions).
+    #[test]
+    #[ignore = "engine perf harness; run with --release -- --ignored perf_"]
+    fn perf_viewport_projects_bounded_window() {
+        let model = dense_model(200, 500); // 100k materialized cells
+        let viewport = GridViewport::new(40, 90, 20, 70).unwrap(); // 200x50 window
+
+        let started = Instant::now();
+        let projection = SparseGridViewport::project(&model, "sheet-1", viewport).unwrap();
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "perf_viewport project_ms={elapsed_ms:.3} projected_cells={} is_sparse={}",
+            projection.cells.len(),
+            projection.is_sparse()
+        );
+        // The projection must not materialize the 100k cell sheet; only the window.
+        assert_eq!(projection.cells.len(), 50 * 50); // 40..90 x 20..70 window
+        assert!(
+            elapsed_ms < 10.0,
+            "viewport projection took {elapsed_ms:.3}ms"
+        );
+    }
+}
