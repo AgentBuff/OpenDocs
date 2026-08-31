@@ -458,11 +458,18 @@ impl InlineStylePatch {
                 "至少设置或清除一个行内样式字段".into(),
             ));
         }
-        for (name, value) in [
-            ("fontFamily", &self.font_family),
-            ("color", &self.color),
-            ("highlight", &self.highlight),
-        ] {
+        // fontFamily 是自由 CSS 栈字符串，不参与颜色校验。
+        if self
+            .font_family
+            .as_ref()
+            .and_then(|item| item.as_ref())
+            .is_some_and(|text| text.trim().is_empty())
+        {
+            return Err(DocumentEngineError::InvalidInlinePatch(
+                "fontFamily 不能是空字符串".into(),
+            ));
+        }
+        for (name, value) in [("color", &self.color), ("highlight", &self.highlight)] {
             if value
                 .as_ref()
                 .and_then(|item| item.as_ref())
@@ -4057,6 +4064,69 @@ mod tests {
                 .vertical_align,
             Some(VerticalAlign::Superscript)
         );
+    }
+
+    #[test]
+    fn font_family_is_a_free_css_stack_not_a_color() {
+        let mut engine = engine();
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 4,
+                commands: vec![DocumentCommand::InsertBlock {
+                    block: paragraph("font-1", "styled"),
+                    parent_id: None,
+                    index: 0,
+                }],
+            })
+            .unwrap();
+        // A full CSS font stack must pass the patch validator; it is not a color.
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 5,
+                commands: vec![DocumentCommand::PatchInlineRange {
+                    block_id: "font-1".into(),
+                    range: TextRange { start: 0, end: 6 },
+                    patch: InlineStylePatch {
+                        font_family: Some(Some(
+                            "\"Noto Sans SC\", \"PingFang SC\", sans-serif".into(),
+                        )),
+                        ..Default::default()
+                    },
+                }],
+            })
+            .unwrap();
+        assert_eq!(
+            engine
+                .read_block("font-1")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .runs[0]
+                .style
+                .font_family
+                .as_deref(),
+            Some("\"Noto Sans SC\", \"PingFang SC\", sans-serif")
+        );
+        // color still enforces the hex/rgb contract.
+        let error = engine
+            .execute(DocumentCommandBatch {
+                base_revision: 6,
+                commands: vec![DocumentCommand::PatchInlineRange {
+                    block_id: "font-1".into(),
+                    range: TextRange { start: 0, end: 1 },
+                    patch: InlineStylePatch {
+                        color: Some(Some("not-a-color".into())),
+                        ..Default::default()
+                    },
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DocumentEngineError::InvalidInlinePatch(message)
+                if message.contains("颜色")
+        ));
     }
 
     #[test]

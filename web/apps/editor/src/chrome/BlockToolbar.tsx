@@ -10,6 +10,7 @@ import { PageSetupPanel } from "./PageSetupPanel.js";
 import { ColorPalette, type ColorRole, type ColorValue } from "./ColorPalette.js";
 import { ParagraphSettingsDialog, type ParagraphSettingsValue } from "./ParagraphSettingsDialog.js";
 import type { ToolbarSelectionState } from "../toolbar/selectionState.js";
+import { FONT_OPTIONS } from "../typography/fonts.js";
 
 type ActionToolbarItem = ToolbarItem & { kind: "button" | "toggle" };
 
@@ -170,14 +171,7 @@ export function BlockToolbar({
           if (nextValue) onInlineAttrs({ fontFamily: nextValue });
         }}
         aria-label="字体"
-        options={[
-          { value: "", label: "字体" },
-          { value: "Arial", label: "Arial" },
-          { value: "Helvetica", label: "Helvetica" },
-          { value: "PingFang SC", label: "苹方" },
-          { value: "Microsoft YaHei", label: "微软雅黑" },
-          { value: "Georgia", label: "Georgia" },
-        ]}
+        options={FONT_OPTIONS}
       />
       <ToolbarSelect
         className="toolbar-select--size"
