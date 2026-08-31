@@ -166,26 +166,24 @@ describe("editor UI contracts", () => {
   });
 
   it("keeps code blocks aligned with the document-card interaction contract", () => {
-    expect(codeBlockView).toContain('placeholder="请输入代码块名称"');
-    expect(codeBlockView).toContain('aria-label="代码主题"');
     expect(codeBlockView).toContain('<Icon name={copied ? "check" : "copy"} />');
     expect(codeBlockView).toContain('<Icon name="ellipsis" />');
     expect(codeBlockView).toContain('<Icon name="delete" />');
     expect(blocksCss).toContain(".code-block:focus-within");
     expect(blocksCss).toContain(".code-block__toolbar::-webkit-scrollbar");
-    expect(blocksCss).toContain(".code-block__select--theme");
+    expect(blocksCss).toContain(".code-block__select--language");
     expect(codeBlockView).toContain('aria-label="调整代码块高度"');
     expect(codeBlockView).toContain("CODE_BLOCK_MAX_HEIGHT");
     expect(blocksCss).toContain(".code-block__resize-handle");
     expect(blocksCss).toContain("cursor: ns-resize");
     expect(blocksCss).not.toContain("border-top-color: var(--oo-color-border-focus)");
     expect(codeBlockView).toContain("code-block__tool--copy");
+    expect(codeBlockView).toContain("code-block__tool--delete");
     expect(blocksCss).toContain("min-height: 160px");
     expect(blocksCss).toContain("scrollbar-color");
   });
 
   it("keeps code settings on the themed select primitive", () => {
-    expect(codeBlockView).toContain('aria-label="设置代码主题"');
     expect(codeBlockView).toContain('aria-label="缩进模式"');
     expect(codeBlockView).toContain('aria-label="缩进宽度"');
     expect(codeBlockView).toContain("code-block__settings-select");
