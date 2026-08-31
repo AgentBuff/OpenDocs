@@ -1538,3 +1538,102 @@ async fn collaborator_roles_enforce_the_full_matrix() {
         "revoked viewer must lose read"
     );
 }
+
+/// Spreadsheet grid projection: a bounded, read-only viewport window over the
+/// sparse grid. It must return only in-window cells, reject oversized windows,
+/// and never materialize the whole sheet (C3 frontend prereq).
+#[tokio::test]
+async fn spreadsheet_grid_projection_is_bounded_and_windowed() {
+    let app = TestApp::new().await;
+    let (status, meta) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"kind": "spreadsheet"}).to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = meta["id"].as_str().unwrap().to_string();
+
+    // Create a sheet and seed cells across a wide range (row 5, col 7; row 200, col 300).
+    let transaction = |tx: &str| {
+        transaction_request(
+            &id,
+            json!({
+                "protocolVersion": 1,
+                "transactionId": tx,
+                "intentId": format!("intent-{tx}"),
+                "artifactId": id,
+                "actorId": "dev-user",
+                "baseRevision": 1,
+                "origin": "local",
+                "commands": [
+                    {"commandId": format!("s-{tx}"), "typeId": "spreadsheet.createSheet",
+                     "payload": {"type": "createSheet", "id": "s1", "name": "Sheet1"}},
+                    {"commandId": format!("c1-{tx}"), "typeId": "spreadsheet.setCell",
+                     "payload": {"type": "setCell", "sheetId": "s1", "row": 5, "column": 7, "value": "near"}},
+                    {"commandId": format!("c2-{tx}"), "typeId": "spreadsheet.setCell",
+                     "payload": {"type": "setCell", "sheetId": "s1", "row": 200, "column": 300, "value": "far"}},
+                    {"commandId": format!("c3-{tx}"), "typeId": "spreadsheet.setCell",
+                     "payload": {"type": "setCell", "sheetId": "s1", "row": 6, "column": 8, "value": "also-near"}}
+                ]
+            }),
+        )
+    };
+    let (status, commit) = app.json(transaction("grid-1")).await;
+    assert_eq!(status, StatusCode::OK, "响应:{commit}");
+
+    // A window around the near cells returns only those, not the far cell.
+    let (status, proj) = app
+        .json(get(&format!(
+            "/api/artifacts/{id}/projection/spreadsheet?\
+         sheetId=s1&startRow=0&endRow=10&startColumn=0&endColumn=10"
+        )))
+        .await;
+    assert_eq!(status, StatusCode::OK, "投影:{proj}");
+    assert_eq!(proj["projection"], "spreadsheet");
+    assert_eq!(
+        proj["data"]["cellCount"], 2,
+        "应只包含窗口内 2 个近 cell:{proj}"
+    );
+    let cells = proj["data"]["cells"].as_array().unwrap();
+    assert_eq!(cells.len(), 2);
+    let rows: Vec<u64> = cells
+        .iter()
+        .map(|c| c["address"]["row"].as_u64().unwrap())
+        .collect();
+    assert!(rows.contains(&5) && rows.contains(&6));
+
+    // An oversized window is rejected (does not try to materialize the grid).
+    let (status, body) = app
+        .json(get(&format!(
+            "/api/artifacts/{id}/projection/spreadsheet?\
+         sheetId=s1&startRow=0&endRow=100000&startColumn=0&endColumn=21"
+        )))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "超大窗口应被拒绝:{body}");
+
+    // Missing sheetId is rejected.
+    let (status, body) = app
+        .json(get(&format!(
+            "/api/artifacts/{id}/projection/spreadsheet?\
+         startRow=0&endRow=10&startColumn=0&endColumn=10"
+        )))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "缺 sheetId 应被拒绝:{body}"
+    );
+
+    // The projection never reads the whole snapshot at the route level beyond the
+    // viewport; a snapshot listing still shows the far cell persisted.
+    let (_, snapshot) = app
+        .json(get(&format!("/api/artifacts/{id}/snapshot")))
+        .await;
+    let cells = snapshot["artifact"]["payload"]["data"]["sheets"][0]["cells"]
+        .as_array()
+        .unwrap();
+    assert_eq!(cells.len(), 3);
+}

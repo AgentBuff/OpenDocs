@@ -19,7 +19,7 @@ import {
 } from "./presentation-v5.js";
 
 export type CapabilityStatus = "stable" | "planned";
-export type ProjectionKind = "outline" | "block" | "presentation" | "presentationOutline" | "presentationSlide" | "presentationNode";
+export type ProjectionKind = "outline" | "block" | "presentation" | "presentationOutline" | "presentationSlide" | "presentationNode" | "mindmap" | "whiteboard" | "spreadsheet";
 
 export interface ArtifactMeta {
   id: string;

@@ -102,6 +102,9 @@ pub enum ArtifactProjectionKind {
     PresentationNode,
     Mindmap,
     Whiteboard,
+    /// Bounded, sparse Grid window over a Spreadsheet model. Renderer-only read
+    /// model; the transaction protocol stays free of viewport or scroll state.
+    Spreadsheet,
 }
 
 /// Common envelope for bounded read projections. `data` is an opaque, additive

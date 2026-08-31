@@ -27,6 +27,7 @@ use oo_schema::presentation_v5::{
     Deck, SceneNode, Slide, SlideLayout, SlideMaster, SlidePageSpec, Timeline,
 };
 use oo_schema::{ArtifactPayload, DocumentBlock, DocumentBlockKind, DocumentModel};
+use oo_spreadsheet::{GridViewport, SparseGridViewport};
 use oo_whiteboard::export_projection as export_whiteboard_projection;
 
 const DEFAULT_MAX_BYTES: usize = 256 * 1024;
@@ -54,6 +55,42 @@ pub struct ProjectionQuery {
 pub struct ArtifactProjectionQuery {
     /// Mindmap theme is renderer state and is deliberately not persisted.
     pub theme: Option<String>,
+    /// Spreadsheet grid window: half-open `[start, end)` per axis. Read-only
+    /// request, never persisted. Absent fields default to a small window over
+    /// the sheet origin.
+    pub sheet_id: Option<String>,
+    pub start_row: Option<u32>,
+    pub end_row: Option<u32>,
+    pub start_column: Option<u32>,
+    pub end_column: Option<u32>,
+}
+
+const MIN_GRID_WINDOW_ROWS: u32 = 1;
+const MAX_GRID_WINDOW_ROWS: u32 = 1_000;
+const MAX_GRID_WINDOW_COLUMNS: u32 = 200;
+
+impl ArtifactProjectionQuery {
+    fn spreadsheet_viewport(&self) -> Result<GridViewport, AppError> {
+        let start_row = self.start_row.unwrap_or(0);
+        let end_row = self.end_row.unwrap_or_else(|| start_row + 30);
+        let start_column = self.start_column.unwrap_or(0);
+        let end_column = self.end_column.unwrap_or_else(|| start_column + 20);
+        if start_row >= end_row || start_column >= end_column {
+            return Err(AppError::BadRequest(
+                "网格窗口必须是半开区间 [start, end)".into(),
+            ));
+        }
+        if (end_row - start_row) > MAX_GRID_WINDOW_ROWS
+            || (end_column - start_column) > MAX_GRID_WINDOW_COLUMNS
+            || (end_row - start_row) < MIN_GRID_WINDOW_ROWS
+        {
+            return Err(AppError::BadRequest(format!(
+                "网格窗口过大：行数 ≤ {MAX_GRID_WINDOW_ROWS}，列数 ≤ {MAX_GRID_WINDOW_COLUMNS}"
+            )));
+        }
+        GridViewport::new(start_row, end_row, start_column, end_column)
+            .map_err(|error| AppError::BadRequest(format!("网格窗口无效：{error}")))
+    }
 }
 
 const DEFAULT_PRESENTATION_SLIDE_LIMIT: usize = 100;
@@ -140,6 +177,36 @@ pub async fn artifact_projection(
             )
         }
         ("mindmap" | "whiteboard" | "presentation", _) => {
+            return Err(AppError::UnsupportedCapability(format!(
+                "artifact kind 与 projection 不匹配：{kind}"
+            )))
+        }
+        ("spreadsheet", ArtifactPayload::Spreadsheet(model)) => {
+            let Some(sheet_id) = query.sheet_id.as_deref().filter(|s| !s.is_empty()) else {
+                return Err(AppError::BadRequest(
+                    "spreadsheet projection 需要 sheetId".into(),
+                ));
+            };
+            let viewport = query.spreadsheet_viewport()?;
+            let projection =
+                SparseGridViewport::project(model, sheet_id, viewport).map_err(|error| {
+                    AppError::BadRequest(format!("spreadsheet projection 失败：{error}"))
+                })?;
+            (
+                ArtifactProjectionKind::Spreadsheet,
+                serde_json::json!({
+                    "sheetId": sheet_id,
+                    "startRow": viewport.start_row,
+                    "endRow": viewport.end_row,
+                    "startColumn": viewport.start_column,
+                    "endColumn": viewport.end_column,
+                    "cells": projection.cells,
+                    "cellCount": projection.materialized_cell_count,
+                    "sparse": projection.is_sparse(),
+                }),
+            )
+        }
+        ("spreadsheet", _) => {
             return Err(AppError::UnsupportedCapability(format!(
                 "artifact kind 与 projection 不匹配：{kind}"
             )))
