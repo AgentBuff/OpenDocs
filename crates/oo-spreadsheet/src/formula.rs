@@ -779,3 +779,69 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod perf_bench {
+    use super::*;
+    use oo_schema::{CellModel, SheetModel};
+    use std::time::Instant;
+
+    fn chain_model(n: usize) -> SpreadsheetModel {
+        // A chain A1 -> A2 -> ... -> An so a single change ripples through the graph.
+        let cells = (0..n)
+            .map(|index| CellModel {
+                row: index as u32,
+                column: 0,
+                formula: Some(format!("=A{}", index + 2)),
+                style: None,
+                ..CellModel::default()
+            })
+            .collect();
+        SpreadsheetModel {
+            sheets: vec![SheetModel {
+                id: "sheet-1".into(),
+                name: "Sheet 1".into(),
+                cells,
+                ..SheetModel::default()
+            }],
+            ..SpreadsheetModel::default()
+        }
+    }
+
+    /// R7 budget: a 10k-node dependency graph must recompute only the affected
+    /// topology on a single-node change, not degrade to a full clone/diff.
+    #[test]
+    #[ignore = "engine perf harness; run with --release -- --ignored perf_"]
+    fn perf_formula_update_recomputes_bounded_subgraph() {
+        let model = chain_model(10_000);
+        let built = Instant::now();
+        let mut index = FormulaDependencyIndex::from_model(&model).unwrap();
+        let build_ms = built.elapsed().as_secs_f64() * 1000.0;
+
+        // Update the head of the chain; only it changes.
+        let changed = CellAddress {
+            sheet_id: "sheet-1".into(),
+            row: 0,
+            column: 0,
+        };
+        let started = Instant::now();
+        let subgraph = index
+            .update(&model, std::slice::from_ref(&changed))
+            .unwrap();
+        let update_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "perf_formula build_ms={build_ms:.3} update_ms={update_ms:.3} affected_nodes={}",
+            subgraph.nodes.len()
+        );
+        assert!(
+            update_ms < 40.0,
+            "formula update took {update_ms:.3}ms for 10k nodes"
+        );
+        assert!(
+            subgraph.nodes.len() < 10,
+            "affected topology should be bounded, got {}",
+            subgraph.nodes.len()
+        );
+    }
+}

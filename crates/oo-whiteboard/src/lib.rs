@@ -1521,3 +1521,72 @@ mod tests {
         assert_eq!(model.elements[0].transform.x, 0.0);
     }
 }
+
+#[cfg(test)]
+mod perf_bench {
+    use super::*;
+    use std::time::Instant;
+
+    fn element_at(id: &str, x: f32, y: f32) -> SceneElement {
+        SceneElement {
+            id: id.into(),
+            type_id: "shape".into(),
+            transform: oo_schema::Transform {
+                x,
+                y,
+                width: 10.0,
+                height: 10.0,
+                ..oo_schema::Transform::default()
+            },
+            ..SceneElement::default()
+        }
+    }
+
+    fn spread_elements(n: usize) -> WhiteboardModel {
+        let elements = (0..n)
+            .map(|index| {
+                element_at(
+                    &format!("e-{index}"),
+                    index as f32 * 20.0,
+                    (index % 20) as f32 * 20.0,
+                )
+            })
+            .collect();
+        WhiteboardModel {
+            elements,
+            camera: Camera::default(),
+        }
+    }
+
+    /// R7 budget: a 10k-element scene must not scan the whole set for a
+    /// viewport query; candidate and examined-cell counts stay bounded.
+    #[test]
+    #[ignore = "engine perf harness; run with --release -- --ignored perf_"]
+    fn perf_spatial_query_bounds_candidates_at_10k() {
+        let model = spread_elements(10_000);
+        let built = Instant::now();
+        let index = WhiteboardSpatialIndex::build(&model, 32.0).unwrap();
+        let build_ms = built.elapsed().as_secs_f64() * 1000.0;
+
+        let target = WorldRect::new(600.0, 0.0, 40.0, 20.0).unwrap();
+        let started = Instant::now();
+        let query = index.query_with_stats(target).unwrap();
+        let query_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "perf_whiteboard build_ms={build_ms:.3} query_ms={query_ms:.3} candidates={} examined={} of {} elements",
+            query.candidate_count, query.cells_examined, model.elements.len()
+        );
+        assert!(
+            query.candidate_count < model.elements.len() / 50,
+            "candidates {} not bounded",
+            query.candidate_count
+        );
+        assert!(
+            query.cells_examined <= 8,
+            "cells_examined {} not bounded",
+            query.cells_examined
+        );
+        assert!(query_ms < 10.0, "spatial query took {query_ms:.3}ms");
+    }
+}
