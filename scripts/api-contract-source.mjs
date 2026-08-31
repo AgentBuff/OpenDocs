@@ -371,6 +371,14 @@ export function buildOpenApi() {
       parameters: [artifactId, blockId],
       get: { operationId: "getBlock", parameters: [{ "$ref": "#/components/parameters/ProjectionInclude" }, { "$ref": "#/components/parameters/ProjectionCursor" }, { "$ref": "#/components/parameters/ProjectionMaxBytes" }], responses: { "200": json(ref("ProjectionEnvelope")), "404": errorResponse, "413": errorResponse } },
     },
+    "/api/artifacts/{id}/projection/spreadsheet": {
+      parameters: [artifactId, { name: "sheetId", in: "query", required: true, schema: { type: "string", minLength: 1 } },
+        { name: "startRow", in: "query", required: true, schema: { type: "integer", minimum: 0 } },
+        { name: "endRow", in: "query", required: true, schema: { type: "integer", minimum: 1 } },
+        { name: "startColumn", in: "query", required: true, schema: { type: "integer", minimum: 0 } },
+        { name: "endColumn", in: "query", required: true, schema: { type: "integer", minimum: 1 } }],
+      get: { operationId: "getSpreadsheetGrid", responses: { "200": json(ref("ProjectionEnvelope")), "304": { description: "ETag matched current revision" }, "400": errorResponse, "403": errorResponse, "413": errorResponse } },
+    },
     "/api/artifacts/{id}/projection/presentation": {
       parameters: [artifactId],
       get: { operationId: "getPresentationDeckProjection", responses: { "200": json(ref("ProjectionEnvelope")), "304": { description: "ETag matched current revision" }, "404": errorResponse } },
