@@ -55,22 +55,58 @@ pub struct ProjectionQuery {
 pub struct ArtifactProjectionQuery {
     /// Mindmap theme is renderer state and is deliberately not persisted.
     pub theme: Option<String>,
-    /// Spreadsheet grid window: half-open `[start, end)` per axis. Read-only
-    /// request, never persisted. Absent fields default to a small window over
-    /// the sheet origin.
-    pub sheet_id: Option<String>,
-    pub start_row: Option<u32>,
-    pub end_row: Option<u32>,
-    pub start_column: Option<u32>,
-    pub end_column: Option<u32>,
+    /// Spreadsheet grid window, flattened so the single axum `Query` extractor
+    /// serves both mindmap theme and the grid viewport.
+    #[serde(flatten)]
+    pub spreadsheet: SpreadsheetProjectionQuery,
 }
 
 const MIN_GRID_WINDOW_ROWS: u32 = 1;
 const MAX_GRID_WINDOW_ROWS: u32 = 1_000;
 const MAX_GRID_WINDOW_COLUMNS: u32 = 200;
 
-impl ArtifactProjectionQuery {
-    fn spreadsheet_viewport(&self) -> Result<GridViewport, AppError> {
+/// Bounded spreadsheet grid window. The viewport is a read-only request, never
+/// persisted; only materialized cells in the half-open range are returned so a
+/// million-row sheet does not materialize a million render nodes. Deliberately
+/// a standalone type: it owns its own deserialization and boundary validation.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpreadsheetProjectionQuery {
+    #[serde(default)]
+    pub sheet_id: Option<String>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub start_row: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub end_row: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub start_column: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub end_column: Option<u32>,
+}
+
+/// Query strings deserialize every value as a string; a `#[serde(flatten)]`
+/// struct does not inherit the coercion axum applies to top-level numeric
+/// fields, so accept both the numeric and string forms here. Missing (`null`)
+/// becomes `None` so the caller's default windowing kicks in.
+fn de_u32_query<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum U32Value {
+        Number(u32),
+        String(String),
+    }
+    match Option::<U32Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(U32Value::Number(n)) => Ok(Some(n)),
+        Some(U32Value::String(text)) => text.parse().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
+impl SpreadsheetProjectionQuery {
+    fn viewport(&self) -> Result<GridViewport, AppError> {
         let start_row = self.start_row.unwrap_or(0);
         let end_row = self.end_row.unwrap_or_else(|| start_row + 30);
         let start_column = self.start_column.unwrap_or(0);
@@ -182,12 +218,17 @@ pub async fn artifact_projection(
             )))
         }
         ("spreadsheet", ArtifactPayload::Spreadsheet(model)) => {
-            let Some(sheet_id) = query.sheet_id.as_deref().filter(|s| !s.is_empty()) else {
+            let Some(sheet_id) = query
+                .spreadsheet
+                .sheet_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+            else {
                 return Err(AppError::BadRequest(
                     "spreadsheet projection 需要 sheetId".into(),
                 ));
             };
-            let viewport = query.spreadsheet_viewport()?;
+            let viewport = query.spreadsheet.viewport()?;
             let projection =
                 SparseGridViewport::project(model, sheet_id, viewport).map_err(|error| {
                     AppError::BadRequest(format!("spreadsheet projection 失败：{error}"))
