@@ -3,6 +3,11 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10"
+  },
   "scripts": {
     "dev": "pnpm build:wasm && pnpm --filter @open-office/editor dev",
     "build:document-engine-wasm": "wasm-pack build ../crates/oo-document-wasm --target web --out-dir ../../web/packages/document-engine/wasm --no-pack",
