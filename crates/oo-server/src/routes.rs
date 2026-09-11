@@ -3,17 +3,27 @@
 //! 公共 HTTP 资源只在 `artifact_routes` 注册为 `/api/artifacts/**`。本模块承载
 //! Document 专属的 snapshot、history 和 transaction 支撑实现；它不是公共资源树，
 //! 也不得重新注册旧的 `/api/docs/**` 路由。
+//!
+//! **不要在本模块新增处理器。** 唯一真正注册的路由是 [`health`]；其余 `pub` 项
+//! （[`list_snapshots`]、[`get_snapshot`]、[`restore_snapshot`]、[`history_state`]、
+//! [`submit_transaction`]、[`artifact_snapshot_key`]、[`download_content_disposition`]）
+//! 都是被 `artifact_routes` 复用的支撑函数，不是路由。
+//!
+//! cutover 之前这里曾并存一整套 `upload` / `create` / `patch` / `list` / `get_meta` /
+//! `get_artifact` / `get_original` / `export_docx` / `delete` 处理器：它们既未注册、
+//! 也无任何调用点，却和活跃实现同名同形。这类「第二套写路径」本身不可达，但极容易
+//! 在后续维护中被误当成活跃入口接回去，因此已整体删除，不要恢复。
 
-use axum::extract::{Multipart, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
+use axum::response::IntoResponse;
 use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
 use crate::artifact_routes::{authorize, Role};
 use crate::auth::CurrentUser;
-use crate::db::{self, ArtifactKind, ArtifactMeta, NewArtifact};
+use crate::db::{self, ArtifactKind, ArtifactMeta};
 use crate::error::AppError;
 use crate::request_context;
 use crate::transaction_kernel;
@@ -29,176 +39,8 @@ use oo_protocol::{
 };
 use oo_schema::{ArtifactEnvelope, ArtifactPayload, AssetReferenceSource, DocumentModel};
 
-/// 上传体积上限。过大的文档在解析和对象存储阶段都可能阻塞请求，早点拒绝比超时更友好。
-const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentList {
-    pub documents: Vec<ArtifactMeta>,
-}
-
 pub async fn health() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
-}
-
-/// 导入 Document 源文件，解析后同时保存原件与 canonical Artifact。
-///
-/// 在上传时就解析，一是能立刻校验文件是否可读（坏文件不会等到打开时才报错），
-/// 二是让打开文档只需要拉一份 JSON。
-pub async fn upload(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    mut multipart: Multipart,
-) -> Result<Response, AppError> {
-    let mut file_name = None;
-    let mut bytes = None;
-
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::BadRequest(format!("表单解析失败：{e}")))?
-    {
-        if field.name() == Some("file") {
-            file_name = field.file_name().map(str::to_string);
-            let data = field
-                .bytes()
-                .await
-                .map_err(|e| AppError::BadRequest(format!("读取上传内容失败：{e}")))?;
-            if data.len() > MAX_UPLOAD_BYTES {
-                return Err(AppError::BadRequest(format!(
-                    "文件超过 {} MB 的上限",
-                    MAX_UPLOAD_BYTES / 1024 / 1024
-                )));
-            }
-            bytes = Some(data);
-        }
-    }
-
-    let bytes = bytes.ok_or_else(|| AppError::BadRequest("缺少 file 字段".into()))?;
-    if bytes.is_empty() {
-        return Err(AppError::BadRequest("上传内容为空".into()));
-    }
-
-    let doc_id = uuid::Uuid::new_v4().to_string();
-    // 解析失败会经 AppError::Docx 变成 422，且此时还没写入任何存储。
-    // 上传边界直接产出 canonical DocumentModel；Artifact 信封是唯一持久化正文。
-    let model = oo_docx::parse_docx(&bytes, &doc_id)?;
-    let artifact = artifact_for(&doc_id, 1, ArtifactPayload::Document(model.clone()))?;
-    let content_json = serde_json::to_vec(&artifact)
-        .map_err(|e| AppError::Internal(format!("序列化 Artifact 失败：{e}")))?;
-
-    let source_key = format!("{doc_id}/source.docx");
-    let snapshot_key = artifact_snapshot_key(&doc_id, 1);
-    state.store.put(&source_key, &bytes).await?;
-    state.store.put(&snapshot_key, &content_json).await?;
-
-    let title = derive_title(file_name.as_deref(), &model);
-    let transaction_id = format!("artifact:create:{doc_id}");
-    let events = vec![DomainEventRecord {
-        event_id: format!("{transaction_id}:1:0"),
-        type_id: "artifact.created".into(),
-        payload: serde_json::json!({
-            "artifactId": doc_id,
-            "artifactKind": "document",
-            "revision": 1,
-            "actorId": user.id,
-        }),
-    }];
-    let meta = db::insert_artifact(
-        &state.pool,
-        NewArtifact {
-            id: &doc_id,
-            kind: ArtifactKind::Document,
-            title: &title,
-            owner_id: &user.id,
-            size: bytes.len() as i64,
-            source_key: &source_key,
-            snapshot_key: &snapshot_key,
-            events: &events,
-        },
-    )
-    .await?;
-
-    Ok((StatusCode::CREATED, Json(meta)).into_response())
-}
-
-/// 文件名去掉扩展名作为标题；没有文件名时退回文档首行文字。
-fn derive_title(file_name: Option<&str>, document: &DocumentModel) -> String {
-    if let Some(name) = file_name {
-        let stem = name.rsplit('/').next().unwrap_or(name);
-        let stem = stem.strip_suffix(".docx").unwrap_or(stem);
-        if !stem.trim().is_empty() {
-            return stem.trim().to_string();
-        }
-    }
-    document
-        .plain_text()
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| line.chars().take(40).collect())
-        .unwrap_or_else(|| "未命名文档".to_string())
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateRequest {
-    pub title: Option<String>,
-}
-
-/// 创建空白 Document Artifact 的内部实现。
-///
-/// 空白文档也走和上传一样的存储结构（原件 + 内容 JSON），这样后续的读取、保存、
-/// 删除都不需要区分文档是传上来的还是新建的。区别只是原件为空。
-pub async fn create(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    body: Option<Json<CreateRequest>>,
-) -> Result<Response, AppError> {
-    let title = body
-        .and_then(|Json(req)| req.title)
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| "未命名文档".to_string());
-
-    let doc_id = uuid::Uuid::new_v4().to_string();
-    // 空白文档带一个空 Paragraph block：完全没有 block 的话光标无处可放。
-    let model = DocumentModel::empty();
-    let artifact = artifact_for(&doc_id, 1, ArtifactPayload::Document(model))?;
-    let content_json = serde_json::to_vec(&artifact)
-        .map_err(|e| AppError::Internal(format!("序列化 Artifact 失败：{e}")))?;
-    let source_key = format!("{doc_id}/source.docx");
-    let snapshot_key = artifact_snapshot_key(&doc_id, 1);
-    state.store.put(&snapshot_key, &content_json).await?;
-    state.store.put(&source_key, &[]).await?;
-
-    let transaction_id = format!("artifact:create:{doc_id}");
-    let events = vec![DomainEventRecord {
-        event_id: format!("{transaction_id}:1:0"),
-        type_id: "artifact.created".into(),
-        payload: serde_json::json!({
-            "artifactId": doc_id,
-            "artifactKind": "document",
-            "revision": 1,
-            "actorId": user.id,
-        }),
-    }];
-    let meta = db::insert_artifact(
-        &state.pool,
-        NewArtifact {
-            id: &doc_id,
-            kind: ArtifactKind::Document,
-            title: &title,
-            owner_id: &user.id,
-            size: content_json.len() as i64,
-            source_key: &source_key,
-            snapshot_key: &snapshot_key,
-            events: &events,
-        },
-    )
-    .await?;
-
-    Ok((StatusCode::CREATED, Json(meta)).into_response())
 }
 
 #[derive(serde::Deserialize)]
@@ -206,97 +48,6 @@ pub async fn create(
 pub struct PatchRequest {
     pub title: Option<String>,
     pub starred: Option<bool>,
-}
-
-/// 更新 Artifact 元数据的内部实现。
-pub async fn patch(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-    Json(req): Json<PatchRequest>,
-) -> Result<Json<ArtifactMeta>, AppError> {
-    let mut meta = load_owned(&state, &user, &id).await?;
-
-    if let Some(title) = req.title {
-        let title = title.trim();
-        if title.is_empty() {
-            return Err(AppError::BadRequest("标题不能为空".into()));
-        }
-        meta = db::rename_artifact(&state.pool, &id, title).await?;
-    }
-    if let Some(starred) = req.starred {
-        meta = db::set_artifact_starred(&state.pool, &id, starred).await?;
-    }
-
-    Ok(Json(meta))
-}
-
-/// 列出 Document 元数据的内部实现。
-pub async fn list(
-    State(state): State<AppState>,
-    user: CurrentUser,
-) -> Result<Json<DocumentList>, AppError> {
-    let documents = db::list_artifacts(&state.pool, &user.id).await?;
-    Ok(Json(DocumentList { documents }))
-}
-
-/// 读取 Document 元数据的内部实现。
-pub async fn get_meta(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-) -> Result<Json<ArtifactMeta>, AppError> {
-    let meta = load_owned(&state, &user, &id).await?;
-    Ok(Json(meta))
-}
-
-/// 读取 canonical Artifact，并校验信封、路径 id 与元数据 revision 一致。
-async fn load_stored_artifact(
-    state: &AppState,
-    user: &CurrentUser,
-    id: &str,
-) -> Result<(ArtifactMeta, SnapshotEnvelope), AppError> {
-    let (meta, model) = load_stored_model(state, user, id).await?;
-    let snapshot = SnapshotEnvelope {
-        protocol_version: CURRENT_PROTOCOL_VERSION,
-        artifact: artifact_for(
-            id,
-            u64::try_from(meta.version)
-                .map_err(|_| AppError::Internal("文档版本超出协议范围".into()))?,
-            ArtifactPayload::Document(model),
-        )?,
-    };
-    Ok((meta, snapshot))
-}
-
-async fn load_stored_model(
-    state: &AppState,
-    user: &CurrentUser,
-    id: &str,
-) -> Result<(ArtifactMeta, DocumentModel), AppError> {
-    let meta = load_owned(state, user, id).await?;
-    let blobs = db::get_artifact_blob_keys(&state.pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("文档 {id} 不存在")))?;
-    let snapshot_key = blobs.snapshot_key;
-    let bytes = state.store.get(&snapshot_key).await?;
-    let artifact: ArtifactEnvelope = serde_json::from_slice(&bytes)
-        .map_err(|e| AppError::Internal(format!("已保存的 Artifact JSON 无效：{e}")))?;
-    artifact
-        .validate()
-        .map_err(|error| AppError::Internal(format!("已保存的 Artifact 无效：{error}")))?;
-    if artifact.artifact_id != id || artifact.revision != u64::try_from(meta.version).unwrap_or(0) {
-        return Err(AppError::Internal("Artifact 与文档元数据不一致".into()));
-    }
-    let model = match artifact.payload {
-        ArtifactPayload::Document(model) => model,
-        _ => {
-            return Err(AppError::Internal(
-                "文档记录包含非 Document Artifact".into(),
-            ))
-        }
-    };
-    Ok((meta, model))
 }
 
 /// Load a historical object-store snapshot for an authoritative undo/redo
@@ -352,19 +103,6 @@ async fn load_snapshot(
         protocol_version: CURRENT_PROTOCOL_VERSION,
         artifact,
     })
-}
-
-/// 返回版本化 Artifact snapshot 的内部实现。
-pub async fn get_artifact(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-) -> Result<Json<SnapshotEnvelope>, AppError> {
-    let (_, snapshot) = load_stored_artifact(&state, &user, &id).await?;
-    snapshot
-        .validate()
-        .map_err(|error| AppError::Internal(format!("生成 Artifact 快照失败：{error}")))?;
-    Ok(Json(snapshot))
 }
 
 #[derive(Debug, Serialize)]
@@ -1126,64 +864,6 @@ fn transaction_id_header(headers: &HeaderMap) -> Result<String, AppError> {
     request_context::transaction_id(headers)
 }
 
-/// 下载上传时的原始 Document source。
-pub async fn get_original(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let meta = load_owned(&state, &user, &id).await?;
-    let blobs = db::get_artifact_blob_keys(&state.pool, &id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("文档 {id} 不存在")))?;
-    let source_key = blobs.source_key;
-    let bytes = state.store.get(&source_key).await?;
-
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    .to_string(),
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                download_content_disposition(&meta.title, "docx"),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
-}
-
-/// 从 canonical DocumentModel 生成最新 DOCX。
-///
-/// 这和 original 明确分开：original 是上传时的原始字节，export 是当前编辑内容的可逆能力子集。
-pub async fn export_docx(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-) -> Result<Response, AppError> {
-    let (meta, model) = load_stored_model(&state, &user, &id).await?;
-    let bytes = oo_docx::write_docx(&model)
-        .map_err(|error| AppError::Internal(format!("生成 DOCX 失败：{error}")))?;
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                    .to_string(),
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                download_content_disposition(&meta.title, "docx"),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
-}
-
 pub(crate) fn download_content_disposition(title: &str, extension: &str) -> String {
     let mut fallback: String = title
         .chars()
@@ -1224,31 +904,6 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
-/// 删除 Document Artifact 的内部实现。
-pub async fn delete(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    load_owned(&state, &user, &id).await?;
-
-    // 先删对象再删记录：反过来的话，删记录成功而删对象失败会留下无人认领的垃圾对象。
-    if let Some(blobs) = db::get_artifact_blob_keys(&state.pool, &id).await? {
-        let source_key = blobs.source_key;
-        let snapshot_key = blobs.snapshot_key;
-        state.store.delete(&source_key).await?;
-        let mut snapshot_keys = db::list_artifact_snapshot_keys(&state.pool, &id).await?;
-        if !snapshot_keys.iter().any(|key| key == &snapshot_key) {
-            snapshot_keys.push(snapshot_key);
-        }
-        for key in snapshot_keys {
-            state.store.delete(&key).await?;
-        }
-    }
-    db::delete_artifact(&state.pool, &id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 /// 取出文档并校验归属。
 ///
 /// 不存在与无权访问在这里被区分开：当前仍是开发用户，但把这条边界画清楚，
@@ -1265,31 +920,6 @@ async fn load_owned(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn doc_with_text(text: &str) -> DocumentModel {
-        let mut doc = DocumentModel::empty();
-        doc.blocks[0].content.as_mut().unwrap().text = text.into();
-        doc
-    }
-
-    #[test]
-    fn title_comes_from_the_file_name() {
-        let doc = doc_with_text("正文");
-        assert_eq!(derive_title(Some("季度报告.docx"), &doc), "季度报告");
-        assert_eq!(derive_title(Some("a/b/report.docx"), &doc), "report");
-    }
-
-    #[test]
-    fn title_falls_back_to_first_line_of_text() {
-        let doc = doc_with_text("文档的第一行");
-        assert_eq!(derive_title(None, &doc), "文档的第一行");
-        assert_eq!(derive_title(Some("   "), &doc), "文档的第一行");
-    }
-
-    #[test]
-    fn empty_document_gets_a_placeholder_title() {
-        assert_eq!(derive_title(None, &DocumentModel::default()), "未命名文档");
-    }
 
     #[test]
     fn download_filename_has_safe_ascii_fallback_and_utf8_name() {
