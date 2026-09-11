@@ -587,11 +587,11 @@ export function buildOpenApi() {
 export function generatedFiles() {
   const openapi = buildOpenApi();
   return {
-    "docs/generated/openapi.json": openapi,
+    "scripts/generated/openapi.json": openapi,
     // Server DTOs and generated protocol types each get one stable file.
     ...Object.fromEntries(
       Object.entries({ ...protocolSchemas, ...schemas }).map(([name, schema]) => [
-        `docs/generated/api-schemas/${name}.json`,
+        `scripts/generated/api-schemas/${name}.json`,
         schema,
       ]),
     ),

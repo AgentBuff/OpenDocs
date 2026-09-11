@@ -1,0 +1,18 @@
+{
+  "description": "提交后的领域事实。事件只能在事务成功提交后产生。",
+  "properties": {
+    "eventId": {
+      "type": "string"
+    },
+    "payload": true,
+    "typeId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "eventId",
+    "typeId",
+    "payload"
+  ],
+  "type": "object"
+}

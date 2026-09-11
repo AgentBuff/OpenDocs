@@ -13,8 +13,17 @@ const requiredDocs = [
   "CONTRIBUTING.md",
   "SECURITY.md",
 ];
+// `docs/` is intentionally not tracked (see .gitignore): these process documents are
+// expected to exist in a maintainer checkout only. This gate is therefore local-only
+// by design — a clean clone will not have them.
 for (const file of requiredDocs) {
-  try { await access(resolve(root, file)); } catch { throw new Error(`缺少发布文档：${file}`); }
+  try {
+    await access(resolve(root, file));
+  } catch {
+    throw new Error(
+      `缺少发布文档：${file}（docs/ 为本地保留目录，不随仓库分发；请在维护者检出中运行本检查）`,
+    );
+  }
 }
 const commands = [
   ["generated-api-contract", "node", ["scripts/check-generated-api-contract.mjs"]],

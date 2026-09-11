@@ -1,0 +1,38 @@
+{
+  "description": "Read-only slide-scoped v5 node. assetIds and slideNodeIds permit strict SDK reference validation.",
+  "type": "object",
+  "required": [
+    "slideId",
+    "node",
+    "childNodeIds",
+    "assetIds",
+    "slideNodeIds"
+  ],
+  "properties": {
+    "slideId": {
+      "type": "string"
+    },
+    "node": {
+      "type": "object"
+    },
+    "childNodeIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "assetIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "slideNodeIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

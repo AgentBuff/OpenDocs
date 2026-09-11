@@ -1,0 +1,15 @@
+{
+  "type": "object",
+  "required": [
+    "artifacts"
+  ],
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/components/schemas/ArtifactMeta"
+      }
+    }
+  },
+  "additionalProperties": false
+}

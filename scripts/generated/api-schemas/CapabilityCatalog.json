@@ -1,0 +1,33 @@
+{
+  "description": "Versioned discovery response for agent/SDK/MCP clients.",
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/components/schemas/ArtifactCapability"
+      },
+      "type": "array"
+    },
+    "contractVersion": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "protocolVersion": {
+      "format": "uint16",
+      "maximum": 65535,
+      "minimum": 0,
+      "type": "integer"
+    },
+    "transport": {
+      "$ref": "#/components/schemas/ArtifactTransportCapability"
+    }
+  },
+  "required": [
+    "protocolVersion",
+    "contractVersion",
+    "transport",
+    "artifacts"
+  ],
+  "type": "object"
+}

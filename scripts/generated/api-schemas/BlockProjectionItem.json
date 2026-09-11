@@ -1,0 +1,4 @@
+{
+  "description": "A single block projection; payload and refs are optional and controlled by include.",
+  "$ref": "#/components/schemas/ProjectionItem"
+}

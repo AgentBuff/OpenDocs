@@ -1,0 +1,54 @@
+{
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "title",
+    "ownerId",
+    "size",
+    "version",
+    "starred",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "document",
+        "spreadsheet",
+        "presentation",
+        "mindmap",
+        "whiteboard"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "ownerId": {
+      "type": "string"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "starred": {
+      "type": "boolean"
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": false
+}

@@ -18,5 +18,15 @@ security advisory / 维护者私下渠道提交，并提供影响范围、复现
 
 ## 依赖与披露
 
-运行 `node scripts/dependency-audit.mjs` 生成依赖清单，并在发布前执行高危漏洞与许可证扫描。
-发现依赖漏洞时优先升级或隔离；无法立即修复时在 CHANGELOG 和安全公告中记录缓解措施。
+运行 `node scripts/dependency-audit.mjs` 执行依赖清单、许可证复核与漏洞扫描。该脚本覆盖**完整
+的第三方依赖图**（Cargo.lock 解析出的全部 crate，以及 pnpm-lock.yaml），而不是仅 workspace
+成员：
+
+- 许可证：workspace crate 与第三方 crate 都必须声明 license；不在允许列表内的许可证会列出
+  供人工复核。
+- Rust 漏洞：委托 `cargo audit`（RustSec）。本地需先 `cargo install cargo-audit`。
+- JS 漏洞：委托 `pnpm audit`。生产依赖的漏洞会阻断；仅 devDependencies 可达的漏洞只作为警告
+  列出，不阻断构建。
+
+CI 以 `OO_REQUIRE_DEPENDENCY_SCANNERS=1` 运行该脚本，此时缺少任一扫描器即视为失败。发现依赖
+漏洞时优先升级或隔离；无法立即修复时在 CHANGELOG 和安全公告中记录缓解措施。

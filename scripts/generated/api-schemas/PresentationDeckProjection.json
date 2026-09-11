@@ -1,0 +1,41 @@
+{
+  "description": "Read-only v5 Presentation Deck summary; it never grants write capability.",
+  "type": "object",
+  "required": [
+    "pageSpec",
+    "themeId",
+    "themeName",
+    "slideCount",
+    "masterCount",
+    "layoutCount",
+    "assetCount"
+  ],
+  "properties": {
+    "pageSpec": {
+      "type": "object"
+    },
+    "themeId": {
+      "type": "string"
+    },
+    "themeName": {
+      "type": "string"
+    },
+    "slideCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "masterCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "layoutCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "assetCount": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

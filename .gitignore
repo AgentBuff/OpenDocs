@@ -43,6 +43,7 @@
 /.codex/
 /.claude/
 /.cursor/
+/.workbuddy-ai/
 /task_plan.md
 /progress.md
 /findings.md
@@ -53,8 +54,8 @@
 
 # -----------------------------------------------------------------------------
 # Internal design, planning and decision records are kept out of the repository.
-# This covers the whole docs/ tree, including the generated API contract
-# artifacts under docs/generated/ (produced by scripts/api-contract-source.mjs).
+# Generated API contract artifacts do NOT live here: they are tracked under
+# scripts/generated/ so the contract drift check works on a clean checkout.
 # -----------------------------------------------------------------------------
 /docs/
 

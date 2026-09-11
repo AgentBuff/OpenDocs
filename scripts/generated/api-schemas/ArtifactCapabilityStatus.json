@@ -1,0 +1,9 @@
+{
+  "enum": [
+    "stable",
+    "preview",
+    "planned",
+    "unsupported"
+  ],
+  "type": "string"
+}

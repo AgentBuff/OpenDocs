@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": [
+    "artifactId",
+    "revision",
+    "threads"
+  ],
+  "properties": {
+    "artifactId": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": false
+}

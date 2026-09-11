@@ -1,0 +1,27 @@
+{
+  "properties": {
+    "commands": {
+      "description": "Empty when editing is planned or unsupported. An empty list is\nintentional: it is not a promise that an unimplemented command exists.",
+      "items": {
+        "$ref": "#/components/schemas/ArtifactCommandCapability"
+      },
+      "type": "array"
+    },
+    "features": {
+      "$ref": "#/components/schemas/ArtifactFeatureCapabilities"
+    },
+    "kind": {
+      "$ref": "#/components/schemas/ArtifactKind"
+    },
+    "namespace": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "namespace",
+    "features",
+    "commands"
+  ],
+  "type": "object"
+}

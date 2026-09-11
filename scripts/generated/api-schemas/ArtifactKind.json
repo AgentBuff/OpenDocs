@@ -1,0 +1,10 @@
+{
+  "enum": [
+    "document",
+    "spreadsheet",
+    "presentation",
+    "mindmap",
+    "whiteboard"
+  ],
+  "type": "string"
+}

@@ -1,0 +1,57 @@
+{
+  "type": "object",
+  "required": [
+    "threadId",
+    "messageId",
+    "anchor",
+    "body",
+    "mentions",
+    "suggestion"
+  ],
+  "properties": {
+    "threadId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "anchor": {
+      "$ref": "#/components/schemas/DocumentReviewAnchor"
+    },
+    "body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10000
+    },
+    "mentions": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "type": "string"
+      }
+    },
+    "suggestion": {
+      "type": "object",
+      "required": [
+        "originalText",
+        "replacement"
+      ],
+      "properties": {
+        "originalText": {
+          "type": "string"
+        },
+        "replacement": {
+          "type": "string",
+          "maxLength": 10000
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

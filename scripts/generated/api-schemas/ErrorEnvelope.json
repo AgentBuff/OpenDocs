@@ -1,0 +1,27 @@
+{
+  "type": "object",
+  "required": [
+    "error",
+    "code",
+    "requestId",
+    "retryable"
+  ],
+  "properties": {
+    "error": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string"
+    },
+    "requestId": {
+      "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "details": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

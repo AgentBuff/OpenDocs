@@ -1,0 +1,3477 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "open-office Artifact API",
+    "version": "0.1.0",
+    "description": "Canonical REST boundary for all Artifact clients."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8787"
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "Healthy"
+          }
+        }
+      }
+    },
+    "/api/capabilities": {
+      "get": {
+        "operationId": "getCapabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityCatalog"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts": {
+      "get": {
+        "operationId": "listArtifacts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactList"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createArtifact",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateArtifactRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Artifact metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactMeta"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/import": {
+      "post": {
+        "operationId": "importArtifact",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "audit",
+                      "strict"
+                    ],
+                    "default": "audit"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Artifact metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactMeta"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getArtifactMeta",
+        "responses": {
+          "200": {
+            "description": "Artifact metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactMeta"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "patchArtifact",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchArtifactRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Artifact metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactMeta"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteArtifact",
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/snapshot": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getSnapshot",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/transactions": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "submitTransaction",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "description": "Quoted snapshot revision; must equal baseRevision.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\\"[0-9]+\\\"$"
+            }
+          },
+          {
+            "name": "x-transaction-id",
+            "in": "header",
+            "required": true,
+            "description": "Idempotency key; must equal envelope.transactionId.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ArtifactCommandEnvelope"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Committed semantic transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/outline": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getOutline",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionInclude"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionCursor"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/toc": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getTableOfContents",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionCursor"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/projection/documentPrint": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getDocumentPrintProjection",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/blocks": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listBlocks",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionInclude"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionCursor"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          },
+          {
+            "name": "parentId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/blocks/{blockId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "blockId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getBlock",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionInclude"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionCursor"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/projection/spreadsheet": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "sheetId",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "startRow",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "endRow",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        {
+          "name": "startColumn",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        {
+          "name": "endColumn",
+          "in": "query",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getSpreadsheetGrid",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/projection/presentation": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getPresentationDeckProjection",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/presentation/outline": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getPresentationOutline",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionCursor"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/presentation/slides/{slideId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "slideId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getPresentationSlide",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/PresentationSlideInclude"
+          },
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/presentation/slides/{slideId}/nodes/{nodeId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "slideId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "nodeId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getPresentationNode",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProjectionMaxBytes"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectionEnvelope"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "ETag matched current revision"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/assets": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listAssets",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssetList"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "uploadAsset",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactAsset"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/assets/{assetId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "assetId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getAsset",
+        "responses": {
+          "200": {
+            "description": "Verified asset bytes"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAsset",
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/events": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listEvents",
+        "parameters": [
+          {
+            "name": "sinceRevision",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/event-stream": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "streamArtifactEvents",
+        "parameters": [
+          {
+            "name": "sinceRevision",
+            "in": "query",
+            "description": "Exclusive durable revision cursor used for reconnect.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent durable revision notices and ephemeral presence snapshots",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/reviews": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listDocumentReviews",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentReviewPage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createDocumentReview",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocumentReview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentReviewPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/suggestions": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "createDocumentSuggestion",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocumentSuggestion"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentReviewPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/reviews/{threadId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "threadId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "patch": {
+        "operationId": "updateDocumentReview",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "state"
+                ],
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "open",
+                      "resolved",
+                      "accepted",
+                      "rejected"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Review state updated"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/reviews/{threadId}/messages": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "threadId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "post": {
+        "operationId": "replyDocumentReview",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateDocumentReviewMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Reply created"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/presence": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getArtifactPresence",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentPresencePage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/presence/{sessionId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "sessionId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "put": {
+        "operationId": "updateArtifactPresence",
+        "requestBody": {
+          "required": true,
+          "description": "JSON request",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentPresenceUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Ephemeral presence refreshed"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/revisions": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listRevisions",
+        "responses": {
+          "200": {
+            "description": "Revision metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/revisions/{version}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getRevision",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/revisions/{version}/restore": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "version",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      ],
+      "post": {
+        "operationId": "restoreRevision",
+        "parameters": [
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "description": "Quoted snapshot revision; must equal baseRevision.",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\\"[0-9]+\\\"$"
+            }
+          },
+          {
+            "name": "x-transaction-id",
+            "in": "header",
+            "required": true,
+            "description": "Idempotency key; must equal envelope.transactionId.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Committed semantic transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/history": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getHistory",
+        "responses": {
+          "200": {
+            "description": "History state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "canUndo",
+                    "canRedo"
+                  ],
+                  "properties": {
+                    "canUndo": {
+                      "type": "boolean"
+                    },
+                    "canRedo": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/collaborators": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "listCollaborators",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaboratorList"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/collaborators/{userId}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "userId",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      ],
+      "put": {
+        "operationId": "upsertCollaborator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertCollaboratorRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Role granted or updated"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteCollaborator",
+        "responses": {
+          "204": {
+            "description": "Collaborator removed"
+          },
+          "403": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/source": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getOriginalSource",
+        "responses": {
+          "200": {
+            "description": "Original source bytes"
+          },
+          "404": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/artifacts/{id}/export/{format}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        {
+          "name": "format",
+          "in": "path",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "enum": [
+              "docx",
+              "xlsx",
+              "pptx",
+              "json",
+              "md",
+              "svg",
+              "pdf"
+            ]
+          }
+        }
+      ],
+      "get": {
+        "operationId": "exportArtifact",
+        "parameters": [
+          {
+            "name": "paper",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "a4",
+                "a3"
+              ]
+            }
+          },
+          {
+            "name": "orientation",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "portrait",
+                "landscape"
+              ]
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "fit",
+                "tile"
+              ]
+            }
+          },
+          {
+            "name": "margin",
+            "in": "query",
+            "schema": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported artifact bytes"
+          },
+          "400": {
+            "description": "Stable machine-readable error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "ProjectionInclude": {
+        "name": "include",
+        "in": "query",
+        "description": "Comma-separated projection includes: content, headingPath, refs (single-block only).",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ProjectionCursor": {
+        "name": "cursor",
+        "in": "query",
+        "description": "Opaque cursor tied to the snapshot revision.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ProjectionMaxBytes": {
+        "name": "maxBytes",
+        "in": "query",
+        "description": "Response byte budget (256..4194304).",
+        "schema": {
+          "type": "integer",
+          "minimum": 256,
+          "maximum": 4194304
+        }
+      },
+      "PresentationSlideInclude": {
+        "name": "include",
+        "in": "query",
+        "description": "Comma-separated slide sections: nodes, notes, timeline. Defaults to metadata only.",
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "ArtifactCapability": {
+        "properties": {
+          "commands": {
+            "description": "Empty when editing is planned or unsupported. An empty list is\nintentional: it is not a promise that an unimplemented command exists.",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactCommandCapability"
+            },
+            "type": "array"
+          },
+          "features": {
+            "$ref": "#/components/schemas/ArtifactFeatureCapabilities"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ArtifactKind"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "namespace",
+          "features",
+          "commands"
+        ],
+        "type": "object"
+      },
+      "ArtifactCapabilityStatus": {
+        "enum": [
+          "stable",
+          "preview",
+          "planned",
+          "unsupported"
+        ],
+        "type": "string"
+      },
+      "ArtifactCommandCapability": {
+        "description": "A semantic command accepted by an Artifact engine. `scope` allows a client\nto discover table-specific commands without pretending that tables are a\nsecond Artifact model (their namespace remains `document.table`).",
+        "properties": {
+          "requiresRevision": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "supportsIdempotency": {
+            "type": "boolean"
+          },
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typeId",
+          "scope",
+          "requiresRevision",
+          "supportsIdempotency"
+        ],
+        "type": "object"
+      },
+      "ArtifactFeatureCapabilities": {
+        "description": "Independent product maturity signals. A client must inspect the feature it\nintends to use instead of treating one implemented command as proof that\nimport, history, assets or collaboration are equally mature.",
+        "properties": {
+          "assets": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "edit": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "export": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "history": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "import": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "presence": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          },
+          "projection": {
+            "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+          }
+        },
+        "required": [
+          "edit",
+          "history",
+          "projection",
+          "import",
+          "export",
+          "assets",
+          "presence"
+        ],
+        "type": "object"
+      },
+      "ArtifactKind": {
+        "enum": [
+          "document",
+          "spreadsheet",
+          "presentation",
+          "mindmap",
+          "whiteboard"
+        ],
+        "type": "string"
+      },
+      "ArtifactCommandEnvelope": {
+        "description": "一次用户意图或协同更新的网络边界。\n\n这里表达的是语义 command，不是 Document engine 的内部 operation。不同 Artifact\n通过 `type_id` 扩展能力，服务端必须在进入领域 engine 前做对应的 command 校验。",
+        "properties": {
+          "actorId": {
+            "description": "Client-local device/session identity for correlation only. Servers must\nderive authorization, audit author and event actor from authentication.",
+            "type": "string"
+          },
+          "artifactId": {
+            "type": "string"
+          },
+          "baseRevision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/CommandRecord"
+            },
+            "type": "array"
+          },
+          "intentId": {
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/TransactionOrigin"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transactionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "transactionId",
+          "intentId",
+          "artifactId",
+          "actorId",
+          "baseRevision",
+          "origin",
+          "commands"
+        ],
+        "type": "object"
+      },
+      "CommandRecord": {
+        "description": "Command 是用户意图；payload 由对应 Artifact capability 负责校验。",
+        "properties": {
+          "commandId": {
+            "type": "string"
+          },
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "commandId",
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "TransactionOrigin": {
+        "enum": [
+          "local",
+          "remote",
+          "undo",
+          "redo",
+          "import",
+          "system"
+        ],
+        "type": "string"
+      },
+      "ArtifactTransportCapability": {
+        "description": "The write/read boundary that every Artifact client can use after discovering\nthe capability catalog. Paths are URI templates rather than a second RPC\nsurface, so agents, SDKs and MCP adapters all speak the same REST contract.",
+        "properties": {
+          "idempotencyHeader": {
+            "type": "string"
+          },
+          "revisionHeader": {
+            "type": "string"
+          },
+          "snapshotEndpoint": {
+            "type": "string"
+          },
+          "transactionEndpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshotEndpoint",
+          "transactionEndpoint",
+          "revisionHeader",
+          "idempotencyHeader"
+        ],
+        "type": "object"
+      },
+      "CapabilityCatalog": {
+        "description": "Versioned discovery response for agent/SDK/MCP clients.",
+        "properties": {
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactCapability"
+            },
+            "type": "array"
+          },
+          "contractVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/ArtifactTransportCapability"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "contractVersion",
+          "transport",
+          "artifacts"
+        ],
+        "type": "object"
+      },
+      "CommitResult": {
+        "description": "所有 Artifact 写入的唯一提交返回值。",
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/DomainEventRecord"
+            },
+            "type": "array"
+          },
+          "invalidation": {
+            "$ref": "#/components/schemas/Invalidation"
+          },
+          "mutations": {
+            "items": {
+              "$ref": "#/components/schemas/MutationRecord"
+            },
+            "type": "array"
+          },
+          "protocolVersion": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transactionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "protocolVersion",
+          "artifactId",
+          "transactionId",
+          "revision",
+          "invalidation",
+          "mutations",
+          "events"
+        ],
+        "type": "object"
+      },
+      "DomainEventRecord": {
+        "description": "提交后的领域事实。事件只能在事务成功提交后产生。",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventId",
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "EntityRef": {
+        "properties": {
+          "entityId": {
+            "type": "string"
+          },
+          "entityType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entityType",
+          "entityId"
+        ],
+        "type": "object"
+      },
+      "Invalidation": {
+        "description": "只表达增量失效范围，不携带完整 snapshot。",
+        "properties": {
+          "changedContainers": {
+            "items": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "type": "array"
+          },
+          "changedEntities": {
+            "items": {
+              "$ref": "#/components/schemas/EntityRef"
+            },
+            "type": "array"
+          },
+          "structureChanged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changedEntities",
+          "changedContainers",
+          "structureChanged"
+        ],
+        "type": "object"
+      },
+      "MutationRecord": {
+        "description": "跨 Artifact 的最小持久化变更记录。具体 payload 由 Mutation registry 解释。",
+        "properties": {
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "OperationRecord": {
+        "description": "Operation 表示不进入 Artifact snapshot 的视图/协同状态，例如选区和滚动位置。\n它与 CommandRecord 有意使用不同的 ID 字段，避免把临时状态误当成持久化意图。",
+        "properties": {
+          "operationId": {
+            "type": "string"
+          },
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operationId",
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "CollaboratorList": {
+        "type": "object",
+        "required": [
+          "collaborators"
+        ],
+        "properties": {
+          "collaborators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Collaborator"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "Collaborator": {
+        "type": "object",
+        "required": [
+          "userId",
+          "role",
+          "createdAt"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "editor",
+              "viewer"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UpsertCollaboratorRequest": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "editor",
+              "viewer"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ArtifactMeta": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "title",
+          "ownerId",
+          "size",
+          "version",
+          "starred",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "document",
+              "spreadsheet",
+              "presentation",
+              "mindmap",
+              "whiteboard"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "starred": {
+            "type": "boolean"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ArtifactList": {
+        "type": "object",
+        "required": [
+          "artifacts"
+        ],
+        "properties": {
+          "artifacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactMeta"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SnapshotEnvelope": {
+        "type": "object",
+        "required": [
+          "protocolVersion",
+          "artifact"
+        ],
+        "properties": {
+          "protocolVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "artifact": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionEnvelope": {
+        "type": "object",
+        "required": [
+          "protocolVersion",
+          "contractVersion",
+          "artifactId",
+          "revision",
+          "projection",
+          "data",
+          "truncated"
+        ],
+        "properties": {
+          "protocolVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "contractVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "artifactId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "projection": {
+            "enum": [
+              "outline",
+              "block",
+              "presentation",
+              "presentationOutline",
+              "presentationSlide",
+              "presentationNode"
+            ]
+          },
+          "data": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectionList"
+              },
+              {
+                "$ref": "#/components/schemas/BlockProjectionItem"
+              },
+              {
+                "$ref": "#/components/schemas/PresentationDeckProjection"
+              },
+              {
+                "$ref": "#/components/schemas/PresentationOutline"
+              },
+              {
+                "$ref": "#/components/schemas/PresentationSlideProjection"
+              },
+              {
+                "$ref": "#/components/schemas/PresentationNodeProjection"
+              }
+            ]
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "nextCursor": {
+            "type": "string"
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectionItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionChild": {
+        "type": "object",
+        "required": [
+          "blockId",
+          "kind"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectionItem": {
+        "type": "object",
+        "required": [
+          "blockId",
+          "kind",
+          "parentId",
+          "order",
+          "children"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectionChild"
+            }
+          },
+          "content": {},
+          "payload": {},
+          "refs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CitationRef"
+            }
+          },
+          "headingPath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sourceRef": {
+            "type": "object",
+            "required": [
+              "artifactId",
+              "blockId"
+            ],
+            "properties": {
+              "artifactId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "blockId": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CitationRef": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "blockId",
+          "revision",
+          "textRange",
+          "headingPath"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "blockId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "textRange": {
+            "type": "object",
+            "required": [
+              "start",
+              "end"
+            ],
+            "properties": {
+              "start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          "headingPath": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sourceUrl": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BlockProjectionItem": {
+        "description": "A single block projection; payload and refs are optional and controlled by include.",
+        "$ref": "#/components/schemas/ProjectionItem"
+      },
+      "PresentationDeckProjection": {
+        "description": "Read-only v5 Presentation Deck summary; it never grants write capability.",
+        "type": "object",
+        "required": [
+          "pageSpec",
+          "themeId",
+          "themeName",
+          "slideCount",
+          "masterCount",
+          "layoutCount",
+          "assetCount"
+        ],
+        "properties": {
+          "pageSpec": {
+            "type": "object"
+          },
+          "themeId": {
+            "type": "string"
+          },
+          "themeName": {
+            "type": "string"
+          },
+          "slideCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "masterCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "layoutCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "assetCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "PresentationOutline": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "slideId",
+                "orderKey",
+                "name",
+                "layoutId",
+                "nodeCount",
+                "timelineEntryCount",
+                "hasNotes"
+              ],
+              "properties": {
+                "slideId": {
+                  "type": "string"
+                },
+                "orderKey": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "layoutId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "nodeCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "timelineEntryCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "hasNotes": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "PresentationSlideProjection": {
+        "description": "Read-only slide metadata. nodes, assetIds, notes and timeline are opt-in via include.",
+        "type": "object",
+        "required": [
+          "slideId",
+          "orderKey",
+          "name",
+          "layoutId",
+          "background"
+        ],
+        "properties": {
+          "slideId": {
+            "type": "string"
+          },
+          "orderKey": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "layoutId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "background": {
+            "type": "object"
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "assetIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "timeline": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PresentationNodeProjection": {
+        "description": "Read-only slide-scoped v5 node. assetIds and slideNodeIds permit strict SDK reference validation.",
+        "type": "object",
+        "required": [
+          "slideId",
+          "node",
+          "childNodeIds",
+          "assetIds",
+          "slideNodeIds"
+        ],
+        "properties": {
+          "slideId": {
+            "type": "string"
+          },
+          "node": {
+            "type": "object"
+          },
+          "childNodeIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assetIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "slideNodeIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "EventPage": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "revision",
+          "events"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "required": [
+          "error",
+          "code",
+          "requestId",
+          "retryable"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "details": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateArtifactRequest": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "document",
+              "spreadsheet",
+              "presentation",
+              "mindmap",
+              "whiteboard"
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PatchArtifactRequest": {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "starred": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ArtifactAsset": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "assetId",
+          "objectKey",
+          "contentType",
+          "fileName",
+          "checksum",
+          "size",
+          "refCount",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "assetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "objectKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contentType": {
+            "type": "string",
+            "minLength": 1
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "checksum": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "refCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AssetList": {
+        "type": "object",
+        "required": [
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArtifactAsset"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentReviewAnchor": {
+        "type": "object",
+        "required": [
+          "blockId",
+          "start",
+          "end",
+          "revision"
+        ],
+        "properties": {
+          "blockId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "rowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "cellId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentReviewPage": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "revision",
+          "threads"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "threads": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateDocumentReview": {
+        "type": "object",
+        "required": [
+          "threadId",
+          "messageId",
+          "anchor",
+          "body",
+          "mentions"
+        ],
+        "properties": {
+          "threadId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "anchor": {
+            "$ref": "#/components/schemas/DocumentReviewAnchor"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "mentions": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateDocumentSuggestion": {
+        "type": "object",
+        "required": [
+          "threadId",
+          "messageId",
+          "anchor",
+          "body",
+          "mentions",
+          "suggestion"
+        ],
+        "properties": {
+          "threadId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "anchor": {
+            "$ref": "#/components/schemas/DocumentReviewAnchor"
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "mentions": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "suggestion": {
+            "type": "object",
+            "required": [
+              "originalText",
+              "replacement"
+            ],
+            "properties": {
+              "originalText": {
+                "type": "string"
+              },
+              "replacement": {
+                "type": "string",
+                "maxLength": 10000
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateDocumentReviewMessage": {
+        "type": "object",
+        "required": [
+          "messageId",
+          "body",
+          "mentions"
+        ],
+        "properties": {
+          "messageId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "mentions": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentPresencePage": {
+        "type": "object",
+        "required": [
+          "artifactId",
+          "participants",
+          "ttlMs"
+        ],
+        "properties": {
+          "artifactId": {
+            "type": "string"
+          },
+          "participants": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "ttlMs": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "DocumentPresenceUpdate": {
+        "type": "object",
+        "required": [
+          "revision",
+          "selectedNodeIds"
+        ],
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blockId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "selectedNodeIds": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "selection": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

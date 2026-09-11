@@ -18,10 +18,31 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: node scripts/check-generated-api-contract.mjs
-      - run: node scripts/dependency-audit.mjs
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  audit:
+    name: Dependency, license and advisory audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      # Both scanners must be present in CI, so a missing one fails instead of warning.
+      - run: node scripts/dependency-audit.mjs
+        env:
+          OO_REQUIRE_DEPENDENCY_SCANNERS: "1"
 
   web:
     name: Web typecheck, tests and build
@@ -73,6 +94,15 @@ jobs:
       - uses: jetli/wasm-pack-action@v0.4.0
       - run: pnpm install --frozen-lockfile
         working-directory: web
+      # Font faces are not tracked (see .gitignore). Cache them keyed on the version
+      # lock so only the first run downloads, then acquire the rest.
+      - name: Cache font assets
+        uses: actions/cache@v4
+        with:
+          path: web/apps/editor/public/fonts
+          key: fonts-${{ hashFiles('web/scripts/fonts/catalog.lock.json') }}
+      - name: Acquire font assets
+        run: python3 web/scripts/fonts/acquire.py
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: web
       - run: pnpm test:e2e --project=chromium
