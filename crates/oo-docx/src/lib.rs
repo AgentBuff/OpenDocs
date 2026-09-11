@@ -144,9 +144,10 @@ pub fn parse_docx_with_assets(
             });
         }
     }
-    let model = document::parse_document(&document_xml, &sheet, doc_id, &media_relations)?;
+    let (model, losses) =
+        document::parse_document(&document_xml, &sheet, doc_id, &media_relations)?;
     model.validate()?;
-    let loss_report = collect_docx_import_losses(&part_names);
+    let loss_report = collect_docx_import_losses(&part_names, &losses);
     Ok(DocxImport {
         document: model,
         assets,
@@ -154,8 +155,36 @@ pub fn parse_docx_with_assets(
     })
 }
 
-fn collect_docx_import_losses(part_names: &HashSet<String>) -> DocxLossReport {
+fn collect_docx_import_losses(
+    part_names: &HashSet<String>,
+    body: &document::ImportLossCounters,
+) -> DocxLossReport {
     let mut unsupported = Vec::new();
+    // 正文解析阶段就已经降级的结构：文字还在，结构语义没了。这些以前完全不上报，
+    // 导入方只能靠肉眼发现「表格变成了一堆段落」。
+    if body.flattened_tables > 0 {
+        unsupported.push(DocxLoss {
+            capability: "tableStructure",
+            count: body.flattened_tables,
+            detail: "DOCX 表格尚未建模，单元格文字已按段落导入，表格结构丢失".into(),
+        });
+    }
+    if body.dropped_list_numbering > 0 {
+        unsupported.push(DocxLoss {
+            capability: "listNumbering",
+            count: body.dropped_list_numbering,
+            detail:
+                "DOCX 编号定义（numbering.xml）尚未解析，列表段落只保留缩进层级，项目符号与编号丢失"
+                    .into(),
+        });
+    }
+    if body.dropped_hyperlink_targets > 0 {
+        unsupported.push(DocxLoss {
+            capability: "linkTarget",
+            count: body.dropped_hyperlink_targets,
+            detail: "DOCX 超链接文字已导入，链接目标（外部关系或书签锚点）未捕获".into(),
+        });
+    }
     let header_footer_count = part_names
         .iter()
         .filter(|name| name.starts_with("word/header") || name.starts_with("word/footer"))
@@ -259,7 +288,8 @@ fn content_type_for_path(path: &str) -> &'static str {
 #[serde(rename_all = "camelCase")]
 pub struct DocxLoss {
     /// 稳定能力码，供 UI/SDK 直接消费：todoState | linkTarget | calloutStyle |
-    /// structuralContainer | unknownKind。
+    /// structuralContainer | unknownKind，以及导入侧的 tableStructure | listNumbering |
+    /// headerFooter | footnotes | endnotes。
     pub capability: &'static str,
     /// 受影响的 block 数量。
     pub count: usize,

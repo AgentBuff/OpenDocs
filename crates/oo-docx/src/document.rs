@@ -17,18 +17,34 @@ use crate::xml::{
 };
 use crate::DocxError;
 
+/// 导入时被压平或降级的结构计数。
+///
+/// 这些都是「已知但尚未建模」的内容：文字会保留，但结构语义只能降级表达。计数交给
+/// [`crate::collect_docx_import_losses`] 汇总进损失报告，让调用方明确知道发生了什么，
+/// 而不是静默丢失。
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImportLossCounters {
+    /// `w:tbl` 被压平成段落的表格数。
+    pub flattened_tables: usize,
+    /// 含 `w:numPr` 但未保留编号语义的段落数。
+    pub dropped_list_numbering: usize,
+    /// 指向外部目标（`r:id` 或 `w:anchor`）但目标未被捕获的超链接数。
+    pub dropped_hyperlink_targets: usize,
+}
+
 pub fn parse_document(
     xml: &str,
     sheet: &StyleSheet,
     doc_id: impl Into<String>,
     media_relations: &HashMap<String, String>,
-) -> Result<DocumentModel, DocxError> {
+) -> Result<(DocumentModel, ImportLossCounters), DocxError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
 
     // ArtifactEnvelope 单独持有 artifactId；DocumentModel 只负责 block 树和页面设置。
     let _ = doc_id.into();
     let mut doc = DocumentModel::default();
+    let mut losses = ImportLossCounters::default();
     let mut paragraph_seq = 0usize;
     let mut page_numbering = None;
 
@@ -37,10 +53,13 @@ pub fn parse_document(
             Event::Start(e) => match local_name(&e).as_slice() {
                 // 表格尚未建模。这里不跳过它的子树，而是让内部的 w:p
                 // 落到下面的段落分支里——宁可把表格拍平成段落，也不要静默丢文字。
-                b"document" | b"body" | b"tbl" | b"tr" | b"tc" => {}
+                // 代价是结构丢失，因此必须计数并进入损失报告。
+                b"tbl" => losses.flattened_tables += 1,
+                b"document" | b"body" | b"tr" | b"tc" => {}
                 b"p" => {
                     paragraph_seq += 1;
-                    let (para, media_ids) = read_paragraph(&mut reader, sheet, paragraph_seq)?;
+                    let (para, media_ids) =
+                        read_paragraph(&mut reader, sheet, paragraph_seq, &mut losses)?;
                     doc.root.push(para.id.clone());
                     doc.blocks.push(para);
                     append_image_blocks(&mut doc, paragraph_seq, media_ids, media_relations)?;
@@ -81,7 +100,7 @@ pub fn parse_document(
             });
         }
     }
-    Ok(doc)
+    Ok((doc, losses))
 }
 
 /// 读取一个 `w:p`，直到它的结束标签。
@@ -89,6 +108,7 @@ fn read_paragraph(
     reader: &mut Reader<&[u8]>,
     sheet: &StyleSheet,
     seq: usize,
+    losses: &mut ImportLossCounters,
 ) -> Result<(DocumentBlock, Vec<String>), DocxError> {
     let mut direct_para = ParaProps::default();
     // 段落标记自带的字符格式，作为本段所有 run 的基线之一。
@@ -112,7 +132,14 @@ fn read_paragraph(
                     read_run(reader, &base_text, &mut text, &mut runs, &mut media_ids)?;
                 }
                 // 超链接、书签等容器：不跳过子树，让内部的 w:r 照常被处理。
-                b"hyperlink" | b"smartTag" | b"sdtContent" | b"sdt" => {}
+                // 链接文字因此保留，但目标需要解析 rels 或 w:anchor，目前不捕获——
+                // 有目标就要计数，否则「文字还在、链接没了」会被误认为导入无损。
+                b"hyperlink" => {
+                    if attr(&e, "id").is_some() || attr(&e, "anchor").is_some() {
+                        losses.dropped_hyperlink_targets += 1;
+                    }
+                }
+                b"smartTag" | b"sdtContent" | b"sdt" => {}
                 _ => skip_subtree(reader, &e)?,
             },
             Event::End(e) if end_local_name(&e) == b"p" => break,
@@ -122,6 +149,10 @@ fn read_paragraph(
     }
 
     let style = resolve_para_props(sheet, &direct_para);
+    // 编号定义（numbering.xml）尚未解析，带 numPr 的段落只能保留层级。
+    if style.list_level.is_some() {
+        losses.dropped_list_numbering += 1;
+    }
     Ok((new_paragraph(seq, text, runs, &style), media_ids))
 }
 
@@ -388,4 +419,58 @@ fn read_section_properties(
         }
     }
     Ok((Some(page), page_numbering))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(xml: &str) -> (DocumentModel, ImportLossCounters) {
+        parse_document(xml, &StyleSheet::default(), "doc", &HashMap::new()).unwrap()
+    }
+
+    /// 表格被压平、列表编号被丢弃、超链接目标被丢弃——这三种降级以前完全不进损失
+    /// 报告，导入方只能靠肉眼发现「表格变成了一堆段落」。它们必须被计数。
+    #[test]
+    fn structural_downgrades_are_counted() {
+        let xml = r#"<w:document><w:body>
+            <w:tbl><w:tr><w:tc><w:p><w:r><w:t>单元格</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+            <w:p><w:pPr><w:numPr><w:ilvl w:val="2"/><w:numId w:val="1"/></w:numPr></w:pPr><w:r><w:t>列表项</w:t></w:r></w:p>
+            <w:p><w:hyperlink r:id="rId7"><w:r><w:t>外链文字</w:t></w:r></w:hyperlink></w:p>
+            <w:p><w:hyperlink w:anchor="section-2"><w:r><w:t>书签文字</w:t></w:r></w:hyperlink></w:p>
+        </w:body></w:document>"#;
+
+        let (model, losses) = parse(xml);
+
+        assert_eq!(losses.flattened_tables, 1);
+        assert_eq!(losses.dropped_list_numbering, 1);
+        assert_eq!(losses.dropped_hyperlink_targets, 2);
+
+        // 降级的是结构，不是内容：文字必须一个不少。
+        let text = model.plain_text();
+        for expected in ["单元格", "列表项", "外链文字", "书签文字"] {
+            assert!(text.contains(expected), "丢失了 {expected}：{text:?}");
+        }
+    }
+
+    /// 没有这些结构时不能凭空产生损失计数。
+    #[test]
+    fn plain_paragraphs_report_no_structural_losses() {
+        let xml = r#"<w:document><w:body><w:p><w:r><w:t>普通段落</w:t></w:r></w:p></w:body></w:document>"#;
+
+        let (model, losses) = parse(xml);
+
+        assert_eq!(losses, ImportLossCounters::default());
+        assert_eq!(model.plain_text().trim(), "普通段落");
+    }
+
+    /// 没有目标的超链接容器（例如仅作书签锚点占位）不该被算作链接丢失。
+    #[test]
+    fn hyperlink_without_a_target_is_not_reported() {
+        let xml = r#"<w:document><w:body><w:p><w:hyperlink><w:r><w:t>纯文字</w:t></w:r></w:hyperlink></w:p></w:body></w:document>"#;
+
+        let (_, losses) = parse(xml);
+
+        assert_eq!(losses.dropped_hyperlink_targets, 0);
+    }
 }

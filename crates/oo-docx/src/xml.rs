@@ -73,8 +73,11 @@ pub fn read_para_props(reader: &mut Reader<&[u8]>) -> Result<(ParaProps, TextPro
         match reader.read_event()? {
             Event::Empty(e) => apply_para_prop(&mut para, &e),
             Event::Start(e) => {
-                if local_name(&e) == b"rPr" {
+                let name = local_name(&e);
+                if name == b"rPr" {
                     text = read_text_props(reader)?;
+                } else if name == b"numPr" {
+                    read_numbering_props(reader, &mut para)?;
                 } else {
                     apply_para_prop(&mut para, &e);
                     skip_subtree(reader, &e)?;
@@ -86,6 +89,26 @@ pub fn read_para_props(reader: &mut Reader<&[u8]>) -> Result<(ParaProps, TextPro
         }
     }
     Ok((para, text))
+}
+
+/// 读取 `w:numPr`：列表层级在子元素 `w:ilvl` 上，`w:numPr` 自身只是容器。
+///
+/// 编号定义（`w:numId` 指向 `numbering.xml` 里的项目符号与编号格式）本模块不解析，
+/// 因此导入只能保留层级、无法还原实际编号，由损失报告向调用方披露。
+fn read_numbering_props(reader: &mut Reader<&[u8]>, para: &mut ParaProps) -> Result<(), DocxError> {
+    loop {
+        match reader.read_event()? {
+            Event::Start(e) => {
+                apply_para_prop(para, &e);
+                skip_subtree(reader, &e)?;
+            }
+            Event::Empty(e) => apply_para_prop(para, &e),
+            Event::End(_) => break,
+            Event::Eof => return Err(DocxError::UnexpectedEof("w:numPr")),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// 把 `w:rPr` 的一个子元素应用到 [`TextProps`] 上。
