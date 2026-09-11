@@ -17,7 +17,9 @@ use crate::artifact_routes::load_artifact;
 use crate::auth::CurrentUser;
 use crate::error::AppError;
 use crate::AppState;
-use oo_mindmap::{layout as mindmap_layout, route_edges, MindmapLayoutOptions, MindmapTheme};
+use oo_document::print_projection::document_print_projection;
+use oo_document::search::table_of_contents as document_table_of_contents;
+use oo_mindmap::{MindmapLayoutOptions, MindmapProjection, MindmapTheme};
 use oo_presentation::v5_projection::DeckProjection;
 use oo_protocol::{
     ArtifactProjectionKind, ProjectionEnvelope, CURRENT_PROTOCOL_VERSION,
@@ -27,6 +29,9 @@ use oo_schema::presentation_v5::{
     Deck, SceneNode, Slide, SlideLayout, SlideMaster, SlidePageSpec, Timeline,
 };
 use oo_schema::{ArtifactPayload, DocumentBlock, DocumentBlockKind, DocumentModel};
+use oo_spreadsheet::{
+    calculate_targets_with_errors, CellAddress, GridViewport, SparseGridViewport,
+};
 use oo_whiteboard::export_projection as export_whiteboard_projection;
 
 const DEFAULT_MAX_BYTES: usize = 256 * 1024;
@@ -54,6 +59,78 @@ pub struct ProjectionQuery {
 pub struct ArtifactProjectionQuery {
     /// Mindmap theme is renderer state and is deliberately not persisted.
     pub theme: Option<String>,
+    /// Spreadsheet grid window, flattened so the single axum `Query` extractor
+    /// serves both mindmap theme and the grid viewport.
+    #[serde(flatten)]
+    pub spreadsheet: SpreadsheetProjectionQuery,
+}
+
+const MIN_GRID_WINDOW_ROWS: u32 = 1;
+const MAX_GRID_WINDOW_ROWS: u32 = 1_000;
+const MAX_GRID_WINDOW_COLUMNS: u32 = 200;
+
+/// Bounded spreadsheet grid window. The viewport is a read-only request, never
+/// persisted; only materialized cells in the half-open range are returned so a
+/// million-row sheet does not materialize a million render nodes. Deliberately
+/// a standalone type: it owns its own deserialization and boundary validation.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpreadsheetProjectionQuery {
+    #[serde(default)]
+    pub sheet_id: Option<String>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub start_row: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub end_row: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub start_column: Option<u32>,
+    #[serde(default, deserialize_with = "de_u32_query")]
+    pub end_column: Option<u32>,
+}
+
+/// Query strings deserialize every value as a string; a `#[serde(flatten)]`
+/// struct does not inherit the coercion axum applies to top-level numeric
+/// fields, so accept both the numeric and string forms here. Missing (`null`)
+/// becomes `None` so the caller's default windowing kicks in.
+fn de_u32_query<'de, D>(deserializer: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum U32Value {
+        Number(u32),
+        String(String),
+    }
+    match Option::<U32Value>::deserialize(deserializer)? {
+        None => Ok(None),
+        Some(U32Value::Number(n)) => Ok(Some(n)),
+        Some(U32Value::String(text)) => text.parse().map(Some).map_err(serde::de::Error::custom),
+    }
+}
+
+impl SpreadsheetProjectionQuery {
+    fn viewport(&self) -> Result<GridViewport, AppError> {
+        let start_row = self.start_row.unwrap_or(0);
+        let end_row = self.end_row.unwrap_or_else(|| start_row + 30);
+        let start_column = self.start_column.unwrap_or(0);
+        let end_column = self.end_column.unwrap_or_else(|| start_column + 20);
+        if start_row >= end_row || start_column >= end_column {
+            return Err(AppError::BadRequest(
+                "网格窗口必须是半开区间 [start, end)".into(),
+            ));
+        }
+        if (end_row - start_row) > MAX_GRID_WINDOW_ROWS
+            || (end_column - start_column) > MAX_GRID_WINDOW_COLUMNS
+            || (end_row - start_row) < MIN_GRID_WINDOW_ROWS
+        {
+            return Err(AppError::BadRequest(format!(
+                "网格窗口过大：行数 ≤ {MAX_GRID_WINDOW_ROWS}，列数 ≤ {MAX_GRID_WINDOW_COLUMNS}"
+            )));
+        }
+        GridViewport::new(start_row, end_row, start_column, end_column)
+            .map_err(|error| AppError::BadRequest(format!("网格窗口无效：{error}")))
+    }
 }
 
 const DEFAULT_PRESENTATION_SLIDE_LIMIT: usize = 100;
@@ -91,6 +168,14 @@ pub async fn artifact_projection(
 ) -> Result<Response, AppError> {
     let (_meta, artifact) = load_artifact(&state, &user, &id).await?;
     let (projection, data) = match (kind.as_str(), &artifact.payload) {
+        ("documentPrint", ArtifactPayload::Document(model)) => (
+            ArtifactProjectionKind::DocumentPrint,
+            serde_json::to_value(document_print_projection(model, artifact.revision)).map_err(
+                |error| {
+                    AppError::Internal(format!("Document print projection 序列化失败：{error}"))
+                },
+            )?,
+        ),
         ("mindmap", oo_schema::ArtifactPayload::Mindmap(model)) => {
             let theme = match query.theme.as_deref().unwrap_or("light") {
                 "light" => MindmapTheme::Light,
@@ -98,20 +183,15 @@ pub async fn artifact_projection(
                 "highContrast" | "high-contrast" => MindmapTheme::HighContrast,
                 value => return Err(AppError::BadRequest(format!("mindmap theme 无效：{value}"))),
             };
-            let layout =
-                mindmap_layout(model, MindmapLayoutOptions::default()).map_err(|error| {
-                    AppError::BadRequest(format!("mindmap projection 失败：{error}"))
-                })?;
-            let edges = route_edges(model, &layout).map_err(|error| {
-                AppError::BadRequest(format!("mindmap projection 失败：{error}"))
-            })?;
+            let projection =
+                MindmapProjection::build(model, MindmapLayoutOptions::default(), theme).map_err(
+                    |error| AppError::BadRequest(format!("mindmap projection 失败：{error}")),
+                )?;
             (
                 ArtifactProjectionKind::Mindmap,
-                serde_json::json!({
-                    "theme": theme,
-                    "layout": layout,
-                    "edges": edges,
-                }),
+                serde_json::to_value(projection).map_err(|error| {
+                    AppError::Internal(format!("mindmap projection 序列化失败：{error}"))
+                })?,
             )
         }
         ("whiteboard", oo_schema::ArtifactPayload::Whiteboard(model)) => {
@@ -139,7 +219,108 @@ pub async fn artifact_projection(
                 )?,
             )
         }
-        ("mindmap" | "whiteboard" | "presentation", _) => {
+        ("documentPrint" | "mindmap" | "whiteboard" | "presentation", _) => {
+            return Err(AppError::UnsupportedCapability(format!(
+                "artifact kind 与 projection 不匹配：{kind}"
+            )))
+        }
+        ("spreadsheet", ArtifactPayload::Spreadsheet(model)) => {
+            let sheet_id = query
+                .spreadsheet
+                .sheet_id
+                .as_deref()
+                .filter(|s| !s.is_empty());
+            if sheet_id.is_none()
+                && query.spreadsheet.start_row.is_none()
+                && query.spreadsheet.end_row.is_none()
+                && query.spreadsheet.start_column.is_none()
+                && query.spreadsheet.end_column.is_none()
+            {
+                let sheets = model
+                    .sheets
+                    .iter()
+                    .map(|sheet| {
+                        serde_json::json!({
+                            "id": sheet.id,
+                            "name": sheet.name,
+                            "cells": [],
+                            "metadata": sheet.metadata,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                return Ok(projection_response(
+                    id,
+                    artifact.revision,
+                    ArtifactProjectionKind::Spreadsheet,
+                    serde_json::json!({"metadata": model.metadata, "sheets": sheets}),
+                    None,
+                    None,
+                    &headers,
+                ));
+            }
+            let Some(sheet_id) = sheet_id else {
+                return Err(AppError::BadRequest(
+                    "spreadsheet projection 需要 sheetId".into(),
+                ));
+            };
+            let viewport = query.spreadsheet.viewport()?;
+            let projection =
+                SparseGridViewport::project(model, sheet_id, viewport).map_err(|error| {
+                    AppError::BadRequest(format!("spreadsheet projection 失败：{error}"))
+                })?;
+            // Formula results are computed by the canonical Rust calculator, never
+            // reconstructed in the browser. Evaluation is target-bounded: only the
+            // materialized cells in this window (plus the formulas they transitively
+            // read) are evaluated, so a 100k-cell sheet stays a bounded request
+            // instead of a whole-model recalculation per scroll.
+            let targets: Vec<CellAddress> = projection
+                .cells
+                .iter()
+                .map(|cell| cell.address.clone())
+                .collect();
+            let calculated = calculate_targets_with_errors(model, &targets).map_err(|error| {
+                AppError::Internal(format!("spreadsheet 公式计算失败：{error}"))
+            })?;
+            let mut values = std::collections::BTreeMap::new();
+            for cell_value in &calculated.values {
+                let (address, value) = cell_value;
+                if address.sheet_id != sheet_id || !viewport.contains(address.row, address.column) {
+                    continue;
+                }
+                values.insert(
+                    format!("{}:{}", address.row, address.column),
+                    serde_json::to_value(value).map_err(|error| {
+                        AppError::Internal(format!("spreadsheet 计算结果序列化失败：{error}"))
+                    })?,
+                );
+            }
+            // Conditional formats are evaluated server-side as read-only hit
+            // markers: the renderer consumes `{"r:c": [ruleId]}` and applies
+            // the rule styles, without re-deriving predicates in the browser.
+            let conditional_styles =
+                conditional_format_hits(model, sheet_id, &viewport, &calculated.values);
+            // Filter predicates are evaluated server-side too: the renderer
+            // hides the reported rows but the row numbering itself is never
+            // rewritten, so a window stays a pure coordinate window.
+            let filtered_out_rows = filtered_out_rows(model, sheet_id, &viewport);
+            (
+                ArtifactProjectionKind::Spreadsheet,
+                serde_json::json!({
+                    "sheetId": sheet_id,
+                    "startRow": viewport.start_row,
+                    "endRow": viewport.end_row,
+                    "startColumn": viewport.start_column,
+                    "endColumn": viewport.end_column,
+                    "cells": projection.cells,
+                    "cellCount": projection.materialized_cell_count,
+                    "sparse": projection.is_sparse(),
+                    "values": values,
+                    "conditionalStyles": conditional_styles,
+                    "filteredOutRows": filtered_out_rows,
+                }),
+            )
+        }
+        ("spreadsheet", _) => {
             return Err(AppError::UnsupportedCapability(format!(
                 "artifact kind 与 projection 不匹配：{kind}"
             )))
@@ -611,6 +792,74 @@ pub async fn outline(
     Ok(Json(envelope).into_response())
 }
 
+/// `GET /api/artifacts/{id}/toc` — a bounded, heading-only navigation
+/// projection. It is derived from the immutable snapshot and never stores
+/// renderer coordinates or collapsed state.
+pub async fn table_of_contents(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Query(query): Query<ProjectionQuery>,
+) -> Result<Response, AppError> {
+    let max_bytes = max_bytes(query.max_bytes)?;
+    let limit = query.limit.unwrap_or(DEFAULT_BLOCK_LIMIT);
+    if !(1..=MAX_BLOCK_LIMIT).contains(&limit) {
+        return Err(AppError::BadRequest(format!(
+            "toc limit 必须在 1 到 {MAX_BLOCK_LIMIT} 之间"
+        )));
+    }
+    let (_meta, artifact) = load_artifact(&state, &user, &id).await?;
+    let revision = artifact.revision;
+    let model = match artifact.payload {
+        ArtifactPayload::Document(model) => model,
+        _ => {
+            return Err(AppError::UnsupportedCapability(
+                "只有 Document 支持目录投影".into(),
+            ))
+        }
+    };
+    let all_items = document_table_of_contents(&model);
+    let start = parse_cursor(query.cursor.as_deref(), revision)?;
+    if start > all_items.len() {
+        return Err(AppError::BadRequest("toc cursor 超出范围".into()));
+    }
+    let mut items = Vec::new();
+    let mut next_index = None;
+    for (index, item) in all_items.iter().enumerate().skip(start).take(limit) {
+        items.push(item.clone());
+        let candidate_next = (index + 1 < all_items.len()).then_some(index + 1);
+        let envelope = projection_envelope(
+            id.clone(),
+            revision,
+            ArtifactProjectionKind::TableOfContents,
+            json!({"items": items}),
+            query.cursor.clone(),
+            candidate_next.map(|next| make_cursor(revision, next)),
+        );
+        let bytes = serde_json::to_vec(&envelope)
+            .map_err(|error| AppError::Internal(format!("目录投影序列化失败：{error}")))?;
+        if bytes.len() > max_bytes {
+            items.pop();
+            if items.is_empty() {
+                return Ok(budget_error(max_bytes, bytes.len(), query.cursor.clone()));
+            }
+            next_index = Some(index);
+            break;
+        }
+        next_index = candidate_next;
+    }
+    let next_cursor = next_index.map(|index| make_cursor(revision, index));
+    Ok(Json(projection_envelope(
+        id,
+        revision,
+        ArtifactProjectionKind::TableOfContents,
+        json!({"items": items}),
+        query.cursor,
+        next_cursor,
+    ))
+    .into_response())
+}
+
 /// `GET /api/artifacts/{id}/blocks`.
 ///
 /// This is the bounded block-reference projection used by indexers and other
@@ -848,6 +1097,133 @@ fn presentation_includes(raw: Option<&str>, allowed: &[&str]) -> Result<HashSet<
 fn reject_presentation_include(raw: Option<&str>, allowed: &[&str]) -> Result<(), AppError> {
     let _ = presentation_includes(raw, allowed)?;
     Ok(())
+}
+
+/// Evaluates `CellIs` conditional format rules against the calculated values
+/// of one viewport. `Formula` and `ColorScale` predicates are skipped: they
+/// need the calculator's full grammar and a color interpolation contract that
+/// the projection does not own yet; a skipped rule never reports a false hit.
+fn conditional_format_hits(
+    model: &oo_schema::SpreadsheetModel,
+    sheet_id: &str,
+    viewport: &GridViewport,
+    calculated: &std::collections::BTreeMap<
+        oo_spreadsheet::CellAddress,
+        oo_spreadsheet::CalculatedValue,
+    >,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let Some(sheet) = model.sheets.iter().find(|sheet| sheet.id == sheet_id) else {
+        return Default::default();
+    };
+    if sheet.metadata.conditional_formats.is_empty() {
+        return Default::default();
+    }
+    let mut hits: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (address, value) in calculated {
+        if address.sheet_id != sheet_id || !viewport.contains(address.row, address.column) {
+            continue;
+        }
+        let oo_spreadsheet::CalculatedValue::Number(number) = *value else {
+            continue;
+        };
+        for rule in &sheet.metadata.conditional_formats {
+            if !(address.row >= rule.range.start_row
+                && address.row <= rule.range.end_row
+                && address.column >= rule.range.start_column
+                && address.column <= rule.range.end_column)
+            {
+                continue;
+            }
+            let oo_schema::ConditionalPredicate::CellIs {
+                operator,
+                value: operand,
+            } = &rule.predicate
+            else {
+                continue;
+            };
+            let Some(operand) = operand.as_f64() else {
+                continue;
+            };
+            let hit = match operator {
+                oo_schema::ComparisonOperator::Equal => number == operand,
+                oo_schema::ComparisonOperator::NotEqual => number != operand,
+                oo_schema::ComparisonOperator::GreaterThan => number > operand,
+                oo_schema::ComparisonOperator::GreaterThanOrEqual => number >= operand,
+                oo_schema::ComparisonOperator::LessThan => number < operand,
+                oo_schema::ComparisonOperator::LessThanOrEqual => number <= operand,
+            };
+            if hit {
+                hits.entry(format!("{}:{}", address.row, address.column))
+                    .or_default()
+                    .push(rule.id.clone());
+            }
+        }
+    }
+    hits
+}
+
+/// Rows inside the viewport whose filter predicate evaluates to false. Only
+/// `Equals`/`Contains`/numeric predicates over materialized cells are judged;
+/// rows without a cell in a filtered column count as not matching, so an
+/// empty sheet reports every row as filtered out only when a predicate exists.
+fn filtered_out_rows(
+    model: &oo_schema::SpreadsheetModel,
+    sheet_id: &str,
+    viewport: &GridViewport,
+) -> Vec<u32> {
+    let Some(sheet) = model.sheets.iter().find(|sheet| sheet.id == sheet_id) else {
+        return Vec::new();
+    };
+    let Some(filter) = sheet.metadata.auto_filter.as_ref() else {
+        return Vec::new();
+    };
+    if filter.columns.is_empty() {
+        return Vec::new();
+    }
+    let cell_value = |row: u32, column: u32| -> Option<&serde_json::Value> {
+        sheet
+            .cells
+            .iter()
+            .find(|cell| cell.row == row && cell.column == column)
+            .and_then(|cell| cell.value.as_ref())
+    };
+    let mut rows = Vec::new();
+    for row in viewport.start_row..viewport.end_row {
+        if row < filter.range.start_row || row > filter.range.end_row {
+            continue;
+        }
+        let excluded = filter
+            .columns
+            .iter()
+            .any(|column| match cell_value(row, column.column) {
+                None => true,
+                Some(value) => !filter_predicate_matches(&column.predicate, value),
+            });
+        if excluded {
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+fn filter_predicate_matches(
+    predicate: &oo_schema::FilterPredicate,
+    value: &serde_json::Value,
+) -> bool {
+    use oo_schema::FilterPredicate;
+    match predicate {
+        FilterPredicate::Values(allowed) => allowed.contains(value),
+        FilterPredicate::Equals(expected) => value == expected,
+        FilterPredicate::Contains(needle) => value
+            .as_str()
+            .is_some_and(|text| text.contains(needle.as_str())),
+        FilterPredicate::GreaterThan(threshold) => {
+            value.as_f64().is_some_and(|number| number > *threshold)
+        }
+        FilterPredicate::LessThan(threshold) => {
+            value.as_f64().is_some_and(|number| number < *threshold)
+        }
+    }
 }
 
 fn projection_response(

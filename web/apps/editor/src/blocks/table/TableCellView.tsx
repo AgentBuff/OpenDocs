@@ -12,6 +12,8 @@ export interface TableCellViewProps {
   rowSpan?: number;
   colSpan?: number;
   cellId: string;
+  rowIndex: number;
+  columnIndex: number;
   content: RichText;
   style?: TableCellStyle;
   session: BlockSessionApi;
@@ -34,6 +36,8 @@ export function TableCellView({
   rowSpan,
   colSpan,
   cellId,
+  rowIndex,
+  columnIndex,
   content,
   style,
   session,
@@ -45,6 +49,7 @@ export function TableCellView({
   onKeyDown,
 }: TableCellViewProps) {
   const ref = useRef<HTMLTableCellElement>(null);
+  const composingRef = useRef(false);
   useEffect(() => {
     const element = ref.current;
     if (!element || document.activeElement === element) return;
@@ -72,6 +77,7 @@ export function TableCellView({
       rowSpan={rowSpan}
       colSpan={colSpan}
       data-table-row-id={rowId}
+      aria-label={`第 ${rowIndex + 1} 行第 ${columnIndex + 1} 列`}
       style={{
         backgroundColor: style?.fillColor,
         textAlign: style?.horizontalAlign,
@@ -87,8 +93,13 @@ export function TableCellView({
       onPointerEnter={(event) => onPointerEnter?.(event)}
       onFocus={() => { session.setActiveBlock(blockId); onFocus?.(); }}
       onContextMenu={onContextMenu}
-      onInput={() => {
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
         if (ref.current) session.updateTableCell(blockId, rowId, cellId, richTextFromHtml(ref.current));
+      }}
+      onInput={() => {
+        if (!composingRef.current && ref.current) session.updateTableCell(blockId, rowId, cellId, richTextFromHtml(ref.current));
       }}
       onKeyDown={(event) => {
         onKeyDown?.(event);

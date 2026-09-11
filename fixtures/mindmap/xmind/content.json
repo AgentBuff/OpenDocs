@@ -1,0 +1,50 @@
+[
+  {
+    "id": "sheet-1",
+    "class": "sheet",
+    "title": "Roadmap",
+    "rootTopic": {
+      "id": "root",
+      "class": "topic",
+      "title": "产品路线图",
+      "notes": {
+        "plain": {
+          "content": "共享说明"
+        }
+      },
+      "markers": [
+        {
+          "markerId": "priority-1"
+        }
+      ],
+      "image": {
+        "src": "xap:resources/topic.png",
+        "width": 120,
+        "height": 80
+      },
+      "children": {
+        "attached": [
+          {
+            "id": "a",
+            "class": "topic",
+            "title": "里程碑一",
+            "branch": "folded"
+          },
+          {
+            "id": "b",
+            "class": "topic",
+            "title": "里程碑二"
+          }
+        ]
+      }
+    },
+    "relationships": [
+      {
+        "id": "rel-1",
+        "end1Id": "a",
+        "end2Id": "b",
+        "title": "依赖"
+      }
+    ]
+  }
+]

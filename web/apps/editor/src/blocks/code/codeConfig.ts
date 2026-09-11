@@ -1,4 +1,4 @@
-import type { CodeBlockConfig, CodeLanguage, CodeTheme } from "@open-office/schema/artifact";
+import type { CodeBlockConfig, CodeLanguage } from "@open-office/schema/artifact";
 
 export const CODE_LANGUAGES: ReadonlyArray<{ id: CodeLanguage; label: string }> = [
   { id: "plainText", label: "Plain Text" },
@@ -13,11 +13,6 @@ export const CODE_LANGUAGES: ReadonlyArray<{ id: CodeLanguage; label: string }> 
   { id: "sql", label: "SQL" },
   { id: "bash", label: "Bash" },
   { id: "markdown", label: "Markdown" },
-];
-
-export const CODE_THEMES: ReadonlyArray<{ id: CodeTheme; label: string }> = [
-  { id: "light", label: "Open Office Light" },
-  { id: "dark", label: "Open Office Dark" },
 ];
 
 /** Persisted viewport bounds for a code block. Content beyond the viewport scrolls. */

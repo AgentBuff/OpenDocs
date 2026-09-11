@@ -747,11 +747,32 @@ pub struct PresentationRichText {
     pub text: String,
     #[serde(default)]
     pub runs: Vec<PresentationTextRun>,
+    pub paragraphs: Vec<PresentationParagraph>,
 }
 impl PresentationRichText {
+    pub fn plain(text: impl Into<String>) -> Self {
+        let text = text.into();
+        let paragraphs = paragraph_ranges(&text)
+            .into_iter()
+            .map(|(start, end)| PresentationParagraph {
+                start,
+                end,
+                alignment: TextHorizontalAlign::Left,
+                list: None,
+                indent_level: 0,
+            })
+            .collect();
+        Self {
+            text,
+            runs: Vec::new(),
+            paragraphs,
+        }
+    }
+
     fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
         let text_len = self.text.chars().count();
         if self.runs.is_empty() {
+            self.validate_paragraphs(owner, text_len)?;
             return Ok(());
         }
         let mut expected_start = 0;
@@ -768,8 +789,99 @@ impl PresentationRichText {
         if expected_start != text_len {
             return invalid(format!("presentation text {owner} runs 未覆盖全文"));
         }
+        self.validate_paragraphs(owner, text_len)?;
         Ok(())
     }
+
+    fn validate_paragraphs(
+        &self,
+        owner: &str,
+        text_len: usize,
+    ) -> Result<(), SchemaValidationError> {
+        if text_len == 0 {
+            return if self.paragraphs.is_empty() {
+                Ok(())
+            } else {
+                invalid(format!(
+                    "presentation text {owner} 空文本不能包含 paragraph"
+                ))
+            };
+        }
+        let mut expected_start = 0;
+        for (index, paragraph) in self.paragraphs.iter().enumerate() {
+            if paragraph.start != expected_start
+                || paragraph.start >= paragraph.end
+                || paragraph.end > text_len
+            {
+                return invalid(format!("presentation text {owner} paragraph[{index}] 区间无效：{}..{}，文本长度 {text_len}", paragraph.start, paragraph.end));
+            }
+            if paragraph.indent_level > 8 {
+                return invalid(format!(
+                    "presentation text {owner} paragraph[{index}] indentLevel 必须在 0 到 8 之间"
+                ));
+            }
+            if matches!(
+                paragraph.list,
+                Some(PresentationListStyle::Ordered { start_at: 0 })
+            ) {
+                return invalid(format!(
+                    "presentation text {owner} paragraph[{index}] ordered startAt 必须大于 0"
+                ));
+            }
+            expected_start = paragraph.end;
+        }
+        if expected_start != text_len {
+            return invalid(format!("presentation text {owner} paragraphs 未覆盖全文"));
+        }
+        Ok(())
+    }
+}
+
+fn paragraph_ranges(text: &str) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    for (index, character) in text.chars().enumerate() {
+        if character == '\n' {
+            ranges.push((start, index + 1));
+            start = index + 1;
+        }
+    }
+    let len = text.chars().count();
+    if start < len {
+        ranges.push((start, len));
+    }
+    ranges
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PresentationParagraph {
+    pub start: usize,
+    pub end: usize,
+    pub alignment: TextHorizontalAlign,
+    pub list: Option<PresentationListStyle>,
+    pub indent_level: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TextHorizontalAlign {
+    Left,
+    Center,
+    Right,
+    Justify,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum PresentationListStyle {
+    Bullet,
+    Ordered { start_at: u32 },
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1424,15 +1536,13 @@ fn migrate_legacy_node_kind(
                 report_unmapped_attrs(legacy_node, &["name", "text"], report);
                 SceneNodeKind::Text(TextNode {
                     frame: TextFrame {
-                        body: PresentationRichText {
-                            text: legacy_node
+                        body: PresentationRichText::plain(
+                            legacy_node
                                 .attrs
                                 .get("text")
                                 .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                            runs: Vec::new(),
-                        },
+                                .unwrap_or_default(),
+                        ),
                         vertical_align: TextVerticalAlign::Middle,
                         padding: Insets::default(),
                         auto_fit: TextAutoFit::None,
@@ -1775,6 +1885,13 @@ mod tests {
                         start: 1,
                         end: 5,
                         style: PresentationTextStyle::default(),
+                    }],
+                    paragraphs: vec![PresentationParagraph {
+                        start: 0,
+                        end: 5,
+                        alignment: TextHorizontalAlign::Left,
+                        list: None,
+                        indent_level: 0,
                     }],
                 },
                 vertical_align: TextVerticalAlign::Middle,

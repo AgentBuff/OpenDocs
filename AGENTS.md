@@ -45,12 +45,23 @@ GET    /api/artifacts/{id}
 PATCH  /api/artifacts/{id}
 DELETE /api/artifacts/{id}
 GET    /api/artifacts/{id}/snapshot
-PUT    /api/artifacts/{id}/snapshot  If-Match + x-transaction-id
 POST   /api/artifacts/{id}/transactions  If-Match + x-transaction-id
 GET    /api/artifacts/{id}/outline
+GET    /api/artifacts/{id}/toc
+GET    /api/artifacts/{id}/projection/documentPrint
 GET    /api/artifacts/{id}/blocks?parentId=&cursor=&limit=&include=&maxBytes=
 GET    /api/artifacts/{id}/blocks/{blockId}
 GET    /api/artifacts/{id}/events?sinceRevision=&cursor=&limit=
+GET    /api/artifacts/{id}/reviews
+POST   /api/artifacts/{id}/reviews
+POST   /api/artifacts/{id}/suggestions
+PATCH  /api/artifacts/{id}/reviews/{threadId}
+POST   /api/artifacts/{id}/reviews/{threadId}/messages
+GET    /api/artifacts/{id}/presence
+PUT    /api/artifacts/{id}/presence/{sessionId}
+GET    /api/artifacts/{id}/collaborators
+PUT    /api/artifacts/{id}/collaborators/{userId}
+DELETE /api/artifacts/{id}/collaborators/{userId}
 GET    /api/artifacts/{id}/source
 GET    /api/artifacts/{id}/export/{format}
 ```
@@ -74,7 +85,7 @@ cd web && pnpm build:document-engine-wasm && pnpm typecheck && pnpm test && pnpm
 
 - 修改 `oo-schema` 后同步 `web/packages/schema/src/artifact.ts`，并补充边界校验测试；
 - 新增 Document 能力时增加 semantic command、typed mutation 与 engine 单测，不在 React 中直接改模型；
-- 所有持久化写入必须通过 Artifact snapshot，revision 与 transactionId 必须保持一致；
+- 所有领域模型写入必须通过 Artifact snapshot，revision 与 transactionId 必须保持一致；评论/建议是独立协作元数据，presence 只允许短期驻留内存，二者均不得写入 snapshot；
 - block id、root/children 关系必须由 schema 校验，未知 block 应保留原始数据；
 - 新增 Spreadsheet/PPT/脑图/白板能力时使用各自模型和 typeId，不污染 Document engine；
 - 兼容迁移只允许存在于数据库 schema 演进或离线导入脚本，不得成为在线编辑路径。

@@ -1,0 +1,748 @@
+{
+  "ArtifactCapability": {
+    "$defs": {
+      "ArtifactCapabilityStatus": {
+        "enum": [
+          "stable",
+          "preview",
+          "planned",
+          "unsupported"
+        ],
+        "type": "string"
+      },
+      "ArtifactCommandCapability": {
+        "description": "A semantic command accepted by an Artifact engine. `scope` allows a client\nto discover table-specific commands without pretending that tables are a\nsecond Artifact model (their namespace remains `document.table`).",
+        "properties": {
+          "requiresRevision": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "supportsIdempotency": {
+            "type": "boolean"
+          },
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typeId",
+          "scope",
+          "requiresRevision",
+          "supportsIdempotency"
+        ],
+        "type": "object"
+      },
+      "ArtifactFeatureCapabilities": {
+        "description": "Independent product maturity signals. A client must inspect the feature it\nintends to use instead of treating one implemented command as proof that\nimport, history, assets or collaboration are equally mature.",
+        "properties": {
+          "assets": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "edit": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "export": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "history": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "import": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "presence": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "projection": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          }
+        },
+        "required": [
+          "edit",
+          "history",
+          "projection",
+          "import",
+          "export",
+          "assets",
+          "presence"
+        ],
+        "type": "object"
+      },
+      "ArtifactKind": {
+        "enum": [
+          "document",
+          "spreadsheet",
+          "presentation",
+          "mindmap",
+          "whiteboard"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "commands": {
+        "description": "Empty when editing is planned or unsupported. An empty list is\nintentional: it is not a promise that an unimplemented command exists.",
+        "items": {
+          "$ref": "#/$defs/ArtifactCommandCapability"
+        },
+        "type": "array"
+      },
+      "features": {
+        "$ref": "#/$defs/ArtifactFeatureCapabilities"
+      },
+      "kind": {
+        "$ref": "#/$defs/ArtifactKind"
+      },
+      "namespace": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "kind",
+      "namespace",
+      "features",
+      "commands"
+    ],
+    "title": "ArtifactCapability",
+    "type": "object"
+  },
+  "ArtifactCapabilityStatus": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "enum": [
+      "stable",
+      "preview",
+      "planned",
+      "unsupported"
+    ],
+    "title": "ArtifactCapabilityStatus",
+    "type": "string"
+  },
+  "ArtifactCommandCapability": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A semantic command accepted by an Artifact engine. `scope` allows a client\nto discover table-specific commands without pretending that tables are a\nsecond Artifact model (their namespace remains `document.table`).",
+    "properties": {
+      "requiresRevision": {
+        "type": "boolean"
+      },
+      "scope": {
+        "type": "string"
+      },
+      "supportsIdempotency": {
+        "type": "boolean"
+      },
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "typeId",
+      "scope",
+      "requiresRevision",
+      "supportsIdempotency"
+    ],
+    "title": "ArtifactCommandCapability",
+    "type": "object"
+  },
+  "ArtifactCommandEnvelope": {
+    "$defs": {
+      "CommandRecord": {
+        "description": "Command 是用户意图；payload 由对应 Artifact capability 负责校验。",
+        "properties": {
+          "commandId": {
+            "type": "string"
+          },
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "commandId",
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "TransactionOrigin": {
+        "enum": [
+          "local",
+          "remote",
+          "undo",
+          "redo",
+          "import",
+          "system"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "一次用户意图或协同更新的网络边界。\n\n这里表达的是语义 command，不是 Document engine 的内部 operation。不同 Artifact\n通过 `type_id` 扩展能力，服务端必须在进入领域 engine 前做对应的 command 校验。",
+    "properties": {
+      "actorId": {
+        "description": "Client-local device/session identity for correlation only. Servers must\nderive authorization, audit author and event actor from authentication.",
+        "type": "string"
+      },
+      "artifactId": {
+        "type": "string"
+      },
+      "baseRevision": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "commands": {
+        "items": {
+          "$ref": "#/$defs/CommandRecord"
+        },
+        "type": "array"
+      },
+      "intentId": {
+        "type": "string"
+      },
+      "origin": {
+        "$ref": "#/$defs/TransactionOrigin"
+      },
+      "protocolVersion": {
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "transactionId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "protocolVersion",
+      "transactionId",
+      "intentId",
+      "artifactId",
+      "actorId",
+      "baseRevision",
+      "origin",
+      "commands"
+    ],
+    "title": "ArtifactCommandEnvelope",
+    "type": "object"
+  },
+  "ArtifactFeatureCapabilities": {
+    "$defs": {
+      "ArtifactCapabilityStatus": {
+        "enum": [
+          "stable",
+          "preview",
+          "planned",
+          "unsupported"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Independent product maturity signals. A client must inspect the feature it\nintends to use instead of treating one implemented command as proof that\nimport, history, assets or collaboration are equally mature.",
+    "properties": {
+      "assets": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "edit": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "export": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "history": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "import": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "presence": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      },
+      "projection": {
+        "$ref": "#/$defs/ArtifactCapabilityStatus"
+      }
+    },
+    "required": [
+      "edit",
+      "history",
+      "projection",
+      "import",
+      "export",
+      "assets",
+      "presence"
+    ],
+    "title": "ArtifactFeatureCapabilities",
+    "type": "object"
+  },
+  "ArtifactTransportCapability": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The write/read boundary that every Artifact client can use after discovering\nthe capability catalog. Paths are URI templates rather than a second RPC\nsurface, so agents, SDKs and MCP adapters all speak the same REST contract.",
+    "properties": {
+      "idempotencyHeader": {
+        "type": "string"
+      },
+      "revisionHeader": {
+        "type": "string"
+      },
+      "snapshotEndpoint": {
+        "type": "string"
+      },
+      "transactionEndpoint": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "snapshotEndpoint",
+      "transactionEndpoint",
+      "revisionHeader",
+      "idempotencyHeader"
+    ],
+    "title": "ArtifactTransportCapability",
+    "type": "object"
+  },
+  "CapabilityCatalog": {
+    "$defs": {
+      "ArtifactCapability": {
+        "properties": {
+          "commands": {
+            "description": "Empty when editing is planned or unsupported. An empty list is\nintentional: it is not a promise that an unimplemented command exists.",
+            "items": {
+              "$ref": "#/$defs/ArtifactCommandCapability"
+            },
+            "type": "array"
+          },
+          "features": {
+            "$ref": "#/$defs/ArtifactFeatureCapabilities"
+          },
+          "kind": {
+            "$ref": "#/$defs/ArtifactKind"
+          },
+          "namespace": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "namespace",
+          "features",
+          "commands"
+        ],
+        "type": "object"
+      },
+      "ArtifactCapabilityStatus": {
+        "enum": [
+          "stable",
+          "preview",
+          "planned",
+          "unsupported"
+        ],
+        "type": "string"
+      },
+      "ArtifactCommandCapability": {
+        "description": "A semantic command accepted by an Artifact engine. `scope` allows a client\nto discover table-specific commands without pretending that tables are a\nsecond Artifact model (their namespace remains `document.table`).",
+        "properties": {
+          "requiresRevision": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "supportsIdempotency": {
+            "type": "boolean"
+          },
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typeId",
+          "scope",
+          "requiresRevision",
+          "supportsIdempotency"
+        ],
+        "type": "object"
+      },
+      "ArtifactFeatureCapabilities": {
+        "description": "Independent product maturity signals. A client must inspect the feature it\nintends to use instead of treating one implemented command as proof that\nimport, history, assets or collaboration are equally mature.",
+        "properties": {
+          "assets": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "edit": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "export": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "history": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "import": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "presence": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          },
+          "projection": {
+            "$ref": "#/$defs/ArtifactCapabilityStatus"
+          }
+        },
+        "required": [
+          "edit",
+          "history",
+          "projection",
+          "import",
+          "export",
+          "assets",
+          "presence"
+        ],
+        "type": "object"
+      },
+      "ArtifactKind": {
+        "enum": [
+          "document",
+          "spreadsheet",
+          "presentation",
+          "mindmap",
+          "whiteboard"
+        ],
+        "type": "string"
+      },
+      "ArtifactTransportCapability": {
+        "description": "The write/read boundary that every Artifact client can use after discovering\nthe capability catalog. Paths are URI templates rather than a second RPC\nsurface, so agents, SDKs and MCP adapters all speak the same REST contract.",
+        "properties": {
+          "idempotencyHeader": {
+            "type": "string"
+          },
+          "revisionHeader": {
+            "type": "string"
+          },
+          "snapshotEndpoint": {
+            "type": "string"
+          },
+          "transactionEndpoint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshotEndpoint",
+          "transactionEndpoint",
+          "revisionHeader",
+          "idempotencyHeader"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Versioned discovery response for agent/SDK/MCP clients.",
+    "properties": {
+      "artifacts": {
+        "items": {
+          "$ref": "#/$defs/ArtifactCapability"
+        },
+        "type": "array"
+      },
+      "contractVersion": {
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "protocolVersion": {
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "transport": {
+        "$ref": "#/$defs/ArtifactTransportCapability"
+      }
+    },
+    "required": [
+      "protocolVersion",
+      "contractVersion",
+      "transport",
+      "artifacts"
+    ],
+    "title": "CapabilityCatalog",
+    "type": "object"
+  },
+  "CommandRecord": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Command 是用户意图；payload 由对应 Artifact capability 负责校验。",
+    "properties": {
+      "commandId": {
+        "type": "string"
+      },
+      "payload": true,
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "commandId",
+      "typeId",
+      "payload"
+    ],
+    "title": "CommandRecord",
+    "type": "object"
+  },
+  "CommitResult": {
+    "$defs": {
+      "DomainEventRecord": {
+        "description": "提交后的领域事实。事件只能在事务成功提交后产生。",
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "eventId",
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "EntityRef": {
+        "properties": {
+          "entityId": {
+            "type": "string"
+          },
+          "entityType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entityType",
+          "entityId"
+        ],
+        "type": "object"
+      },
+      "Invalidation": {
+        "description": "只表达增量失效范围，不携带完整 snapshot。",
+        "properties": {
+          "changedContainers": {
+            "items": {
+              "$ref": "#/$defs/EntityRef"
+            },
+            "type": "array"
+          },
+          "changedEntities": {
+            "items": {
+              "$ref": "#/$defs/EntityRef"
+            },
+            "type": "array"
+          },
+          "structureChanged": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "changedEntities",
+          "changedContainers",
+          "structureChanged"
+        ],
+        "type": "object"
+      },
+      "MutationRecord": {
+        "description": "跨 Artifact 的最小持久化变更记录。具体 payload 由 Mutation registry 解释。",
+        "properties": {
+          "payload": true,
+          "typeId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "typeId",
+          "payload"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "所有 Artifact 写入的唯一提交返回值。",
+    "properties": {
+      "artifactId": {
+        "type": "string"
+      },
+      "events": {
+        "items": {
+          "$ref": "#/$defs/DomainEventRecord"
+        },
+        "type": "array"
+      },
+      "invalidation": {
+        "$ref": "#/$defs/Invalidation"
+      },
+      "mutations": {
+        "items": {
+          "$ref": "#/$defs/MutationRecord"
+        },
+        "type": "array"
+      },
+      "protocolVersion": {
+        "format": "uint16",
+        "maximum": 65535,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "revision": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "transactionId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "protocolVersion",
+      "artifactId",
+      "transactionId",
+      "revision",
+      "invalidation",
+      "mutations",
+      "events"
+    ],
+    "title": "CommitResult",
+    "type": "object"
+  },
+  "DomainEventRecord": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "提交后的领域事实。事件只能在事务成功提交后产生。",
+    "properties": {
+      "eventId": {
+        "type": "string"
+      },
+      "payload": true,
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "eventId",
+      "typeId",
+      "payload"
+    ],
+    "title": "DomainEventRecord",
+    "type": "object"
+  },
+  "EntityRef": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "entityId": {
+        "type": "string"
+      },
+      "entityType": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "entityType",
+      "entityId"
+    ],
+    "title": "EntityRef",
+    "type": "object"
+  },
+  "Invalidation": {
+    "$defs": {
+      "EntityRef": {
+        "properties": {
+          "entityId": {
+            "type": "string"
+          },
+          "entityType": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "entityType",
+          "entityId"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "只表达增量失效范围，不携带完整 snapshot。",
+    "properties": {
+      "changedContainers": {
+        "items": {
+          "$ref": "#/$defs/EntityRef"
+        },
+        "type": "array"
+      },
+      "changedEntities": {
+        "items": {
+          "$ref": "#/$defs/EntityRef"
+        },
+        "type": "array"
+      },
+      "structureChanged": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "changedEntities",
+      "changedContainers",
+      "structureChanged"
+    ],
+    "title": "Invalidation",
+    "type": "object"
+  },
+  "MutationRecord": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "跨 Artifact 的最小持久化变更记录。具体 payload 由 Mutation registry 解释。",
+    "properties": {
+      "payload": true,
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "typeId",
+      "payload"
+    ],
+    "title": "MutationRecord",
+    "type": "object"
+  },
+  "OperationRecord": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Operation 表示不进入 Artifact snapshot 的视图/协同状态，例如选区和滚动位置。\n它与 CommandRecord 有意使用不同的 ID 字段，避免把临时状态误当成持久化意图。",
+    "properties": {
+      "operationId": {
+        "type": "string"
+      },
+      "payload": true,
+      "typeId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "operationId",
+      "typeId",
+      "payload"
+    ],
+    "title": "OperationRecord",
+    "type": "object"
+  },
+  "TransactionOrigin": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "enum": [
+      "local",
+      "remote",
+      "undo",
+      "redo",
+      "import",
+      "system"
+    ],
+    "title": "TransactionOrigin",
+    "type": "string"
+  }
+}

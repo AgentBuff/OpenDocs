@@ -8,29 +8,47 @@ import {
   parseArtifactTransactionResult,
   parseCapabilityCatalog,
   parseEventPage,
+  parseDocumentPrintProjection,
   parseProjectionEnvelope,
   parseProjectionItem,
   parseProjectionItems,
   parsePresentationDeckProjection,
   parsePresentationNodeProjection,
   parsePresentationSlideProjection,
+  parseMindmapProjection,
+  parseDocumentPresencePage,
+  parseDocumentReviewPage,
 } from "../src/api.js";
 
 const capabilities = {
   protocolVersion: 1,
-  contractVersion: 1,
+  contractVersion: 2,
   transport: {
     snapshotEndpoint: "/api/artifacts/{artifactId}/snapshot",
     transactionEndpoint: "/api/artifacts/{artifactId}/transactions",
     revisionHeader: "If-Match",
     idempotencyHeader: "x-transaction-id",
   },
-  artifacts: [{ kind: "document", namespace: "document", status: "stable", commands: [] }],
+  artifacts: [{
+    kind: "document",
+    namespace: "document",
+    features: {
+      edit: "stable",
+      history: "stable",
+      projection: "stable",
+      import: "stable",
+      export: "preview",
+      assets: "stable",
+      presence: "preview",
+    },
+    commands: [],
+  }],
 };
 
 describe("framework-free Artifact API boundary", () => {
   it("parses capability, projection and event contracts without UI dependencies", () => {
     expect(parseCapabilityCatalog(capabilities).artifacts[0]?.kind).toBe("document");
+    expect(parseCapabilityCatalog(capabilities).artifacts[0]?.features.export).toBe("preview");
     expect(parseProjectionEnvelope({
       protocolVersion: 1,
       contractVersion: 1,
@@ -40,6 +58,21 @@ describe("framework-free Artifact API boundary", () => {
       data: { items: [] },
       truncated: false,
     }, "block").data).toEqual({ items: [] });
+    expect(parseProjectionEnvelope({
+      protocolVersion: 1,
+      contractVersion: 1,
+      artifactId: "a-1",
+      revision: 4,
+      projection: "tableOfContents",
+      data: { items: [] },
+      truncated: false,
+    }, "tableOfContents").projection).toBe("tableOfContents");
+    expect(parseDocumentPrintProjection({
+      revision: 4,
+      sections: [{ sectionId: "s-1", rootBlockIds: ["b-1"], pageSetup: null, header: null, footer: null, pageNumbering: null }],
+      footnotes: [],
+      endnotes: [],
+    }).sections[0]?.rootBlockIds).toEqual(["b-1"]);
     expect(parseProjectionItems({ items: [{ blockId: "b-1", kind: "paragraph", parentId: null, order: 0, children: [] }] }).items[0]?.blockId).toBe("b-1");
     expect(parseProjectionItem({ blockId: "b-1", kind: "paragraph", parentId: null, order: 0, children: [], refs: [{
       artifactId: "a-1", blockId: "b-1", revision: 4, textRange: { start: 0, end: 3 }, headingPath: [],
@@ -49,12 +82,59 @@ describe("framework-free Artifact API boundary", () => {
 
   it("rejects malformed machine contracts", () => {
     expect(() => parseCapabilityCatalog({ ...capabilities, contractVersion: 0 })).toThrow("正整数");
+    expect(() => parseCapabilityCatalog({ ...capabilities, artifacts: [{ ...capabilities.artifacts[0], features: { ...capabilities.artifacts[0].features, import: "maybe" } }] })).toThrow("features.import");
     expect(() => parseProjectionEnvelope({ projection: "unknown" })).toThrow("无效");
     expect(() => parseProjectionItems({ items: [{ blockId: "b-1", kind: "paragraph", parentId: null, order: -1, children: [] }] })).toThrow("非负整数");
     expect(() => parseProjectionItem({ blockId: "b-1", kind: "paragraph", parentId: null, order: 0, children: [], refs: [{
       artifactId: "a-1", blockId: "b-1", revision: 1, textRange: { start: 3, end: 1 }, headingPath: [],
     }] })).toThrow("不小于");
     expect(() => parseApiError({ error: "bad", code: "bad_request" })).toThrow("requestId");
+    expect(() => parseApiError({ error: "bad", code: "bad_request", requestId: "err-1" })).toThrow("retryable");
+  });
+
+  it("parses Document review and ephemeral selection references strictly", () => {
+    expect(parseDocumentPresencePage({
+      artifactId: "doc-1",
+      ttlMs: 30_000,
+      participants: [{
+        sessionId: "browser-1", actorId: "user-1", displayName: "User", revision: 4,
+        blockId: "b-1", selectedNodeIds: [],
+        selection: { anchor: { blockId: "b-1", offset: 1 }, focus: { blockId: "b-1", offset: 3 } },
+      }],
+    }).participants[0]?.selection?.focus.offset).toBe(3);
+    const reviews = parseDocumentReviewPage({
+      artifactId: "doc-1",
+      revision: 4,
+      threads: [{
+        threadId: "thread-1", artifactId: "doc-1", kind: "suggestion", state: "open",
+        authorId: "user-1", anchorState: "stale", baseRevision: 3,
+        anchor: { blockId: "b-1", start: 1, end: 3, revision: 3 },
+        suggestion: { originalText: "中🙂", replacement: "text" },
+        messages: [{ messageId: "m-1", authorId: "user-1", body: "change", mentions: ["reviewer"], createdAt: "2026-09-10T00:00:00Z" }],
+        createdAt: "2026-09-10T00:00:00Z", updatedAt: "2026-09-10T00:00:00Z",
+      }],
+    });
+    expect(reviews.threads[0]?.suggestion?.replacement).toBe("text");
+    expect(() => parseDocumentReviewPage({ ...reviews, threads: [{ ...reviews.threads[0], anchorState: "live" }] })).toThrow("anchorState");
+  });
+
+  it("parses the derived Mindmap layout without treating it as editable graph state", () => {
+    const projection = parseMindmapProjection({
+      theme: "light",
+      layout: { width: 400, height: 136, nodes: [{ id: "root", depth: 0, x: 0, y: 0, width: 160, height: 40 }] },
+      edges: { routes: [{ edgeId: null, parentId: "root", childId: "child", points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] }] },
+      advanced: {
+        summaries: [{ summaryId: "summary-1", nodeIds: ["a", "b"], points: [{ x: 10, y: 20 }], labelAnchor: { x: 30, y: 40 } }],
+        boundaries: [{ boundaryId: "boundary-1", nodeIds: ["a"], rect: { x: 1, y: 2, width: 100, height: 80 }, labelAnchor: { x: 4, y: 5 } }],
+        formulas: [{ formulaId: "formula-1", nodeId: "a", anchor: { x: 6, y: 7 } }],
+      },
+    });
+    expect(projection.layout.nodes[0]?.id).toBe("root");
+    expect(projection.edges.routes[0]?.edgeId).toBeNull();
+    expect(projection.advanced.summaries[0]?.nodeIds).toEqual(["a", "b"]);
+    expect(projection.advanced.boundaries[0]?.rect.width).toBe(100);
+    expect(projection.advanced.formulas[0]?.anchor).toEqual({ x: 6, y: 7 });
+    expect(() => parseMindmapProjection({ ...projection, theme: "sepia" })).toThrow("theme");
   });
 
   it("uploads binary assets through the typed Artifact boundary", async () => {
@@ -108,12 +188,12 @@ describe("framework-free Artifact API boundary", () => {
     expect(calls[0]?.init?.cache).toBe("no-store");
 
     const failing = new ArtifactApiClient({
-      fetcher: async () => new Response(JSON.stringify({ error: "冲突", code: "version_conflict", requestId: "err-1" }), { status: 409 }),
+      fetcher: async () => new Response(JSON.stringify({ error: "冲突", code: "version_conflict", requestId: "err-1", retryable: true }), { status: 409 }),
     });
     await expect(failing.capabilities()).rejects.toMatchObject({
       name: "ArtifactApiError",
       status: 409,
-      envelope: { code: "version_conflict", requestId: "err-1" },
+      envelope: { code: "version_conflict", requestId: "err-1", retryable: true },
     });
   });
 

@@ -6,24 +6,37 @@
 //! the persisted `ArtifactKind`; it never infers a kind from a legacy path or
 //! silently downgrades a spreadsheet/presentation to a document.
 
-use axum::extract::{Multipart, Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind, ArtifactMeta, NewArtifact};
 use crate::document_support;
 use crate::error::AppError;
 use crate::AppState;
+use oo_document::document_command_registry;
+use oo_mindmap::{
+    export_pdf, export_svg, mindmap_command_registry, parse_mindmap_exchange,
+    write_mindmap_exchange, MindmapExchangeAsset, MindmapExchangeEnvelope, MindmapPdfMode,
+    MindmapPdfOptions, MindmapPdfOrientation, MindmapPdfPaper,
+};
+use oo_presentation::presentation_command_registry;
 use oo_protocol::{
     ArtifactCapability, ArtifactCapabilityStatus, ArtifactCommandCapability,
-    ArtifactTransportCapability, CapabilityCatalog, DomainEventRecord, SnapshotEnvelope,
-    CAPABILITY_CONTRACT_VERSION, CURRENT_PROTOCOL_VERSION,
+    ArtifactFeatureCapabilities, ArtifactTransportCapability, CapabilityCatalog, DomainEventRecord,
+    SnapshotEnvelope, CAPABILITY_CONTRACT_VERSION, CURRENT_PROTOCOL_VERSION,
 };
-use oo_schema::{ArtifactEnvelope, ArtifactPayload, BlockData, DocumentModel};
+use oo_schema::{
+    ArtifactEnvelope, ArtifactPayload, AssetReference, AssetReferenceSource, BlockData,
+    DocumentModel, SheetMetadata, SheetModel, SpreadsheetMetadata, SpreadsheetModel,
+};
+use oo_spreadsheet::spreadsheet_command_registry;
+use oo_whiteboard::whiteboard_command_registry;
 
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
 
@@ -51,6 +64,8 @@ pub const ARTIFACT_HISTORY_PATH: &str = "/api/artifacts/{id}/history";
 pub const ARTIFACT_TRANSACTIONS_PATH: &str = "/api/artifacts/{id}/transactions";
 pub const ARTIFACT_SOURCE_PATH: &str = "/api/artifacts/{id}/source";
 pub const ARTIFACT_EXPORT_PATH: &str = "/api/artifacts/{id}/export/{format}";
+pub const ARTIFACT_COLLABORATORS_PATH: &str = "/api/artifacts/{id}/collaborators";
+pub const ARTIFACT_COLLABORATOR_PATH: &str = "/api/artifacts/{id}/collaborators/{userId}";
 pub const ARTIFACT_ASSETS_PATH: &str = "/api/artifacts/{id}/assets";
 pub const ARTIFACT_ASSET_PATH: &str = "/api/artifacts/{id}/assets/{asset_id}";
 
@@ -72,157 +87,185 @@ pub async fn capabilities() -> Json<CapabilityCatalog> {
             ArtifactCapability {
                 kind: ArtifactKind::Document,
                 namespace: "document".into(),
-                status: ArtifactCapabilityStatus::Stable,
+                features: ArtifactFeatureCapabilities {
+                    edit: ArtifactCapabilityStatus::Stable,
+                    history: ArtifactCapabilityStatus::Stable,
+                    projection: ArtifactCapabilityStatus::Stable,
+                    import: ArtifactCapabilityStatus::Stable,
+                    export: ArtifactCapabilityStatus::Preview,
+                    assets: ArtifactCapabilityStatus::Stable,
+                    presence: ArtifactCapabilityStatus::Preview,
+                },
                 commands: document_command_capabilities(),
             },
-            planned_capability(ArtifactKind::Spreadsheet, "spreadsheet"),
+            ArtifactCapability {
+                kind: ArtifactKind::Spreadsheet,
+                namespace: "spreadsheet".into(),
+                features: ArtifactFeatureCapabilities {
+                    edit: ArtifactCapabilityStatus::Stable,
+                    history: ArtifactCapabilityStatus::Stable,
+                    projection: ArtifactCapabilityStatus::Stable,
+                    import: ArtifactCapabilityStatus::Preview,
+                    export: ArtifactCapabilityStatus::Preview,
+                    assets: ArtifactCapabilityStatus::Planned,
+                    presence: ArtifactCapabilityStatus::Planned,
+                },
+                commands: spreadsheet_command_capabilities(),
+            },
             ArtifactCapability {
                 kind: ArtifactKind::Presentation,
                 namespace: "presentation".into(),
-                status: ArtifactCapabilityStatus::Stable,
+                features: ArtifactFeatureCapabilities {
+                    edit: ArtifactCapabilityStatus::Stable,
+                    history: ArtifactCapabilityStatus::Stable,
+                    projection: ArtifactCapabilityStatus::Stable,
+                    import: ArtifactCapabilityStatus::Preview,
+                    export: ArtifactCapabilityStatus::Preview,
+                    assets: ArtifactCapabilityStatus::Stable,
+                    presence: ArtifactCapabilityStatus::Preview,
+                },
                 commands: presentation_command_capabilities(),
             },
-            planned_capability(ArtifactKind::Mindmap, "mindmap"),
-            planned_capability(ArtifactKind::Whiteboard, "whiteboard"),
+            ArtifactCapability {
+                kind: ArtifactKind::Mindmap,
+                namespace: "mindmap".into(),
+                features: ArtifactFeatureCapabilities {
+                    edit: ArtifactCapabilityStatus::Stable,
+                    history: ArtifactCapabilityStatus::Stable,
+                    projection: ArtifactCapabilityStatus::Stable,
+                    import: ArtifactCapabilityStatus::Preview,
+                    export: ArtifactCapabilityStatus::Preview,
+                    assets: ArtifactCapabilityStatus::Stable,
+                    presence: ArtifactCapabilityStatus::Preview,
+                },
+                commands: mindmap_command_capabilities(),
+            },
+            ArtifactCapability {
+                kind: ArtifactKind::Whiteboard,
+                namespace: "whiteboard".into(),
+                features: ArtifactFeatureCapabilities {
+                    edit: ArtifactCapabilityStatus::Preview,
+                    history: ArtifactCapabilityStatus::Planned,
+                    projection: ArtifactCapabilityStatus::Stable,
+                    import: ArtifactCapabilityStatus::Unsupported,
+                    export: ArtifactCapabilityStatus::Unsupported,
+                    assets: ArtifactCapabilityStatus::Planned,
+                    presence: ArtifactCapabilityStatus::Planned,
+                },
+                commands: whiteboard_command_capabilities(),
+            },
         ],
     })
 }
 
-fn planned_capability(kind: ArtifactKind, namespace: &str) -> ArtifactCapability {
-    ArtifactCapability {
-        kind,
-        namespace: namespace.into(),
-        status: ArtifactCapabilityStatus::Planned,
-        commands: Vec::new(),
-    }
+fn spreadsheet_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    // M0 单一事实源：目录由引擎的 spreadsheet_command_registry 派生，
+    // 注册表测试保证每个条目都能反序列化为真实命令，杜绝 catalog 与
+    // engine 命令面漂移。
+    let mut commands = spreadsheet_command_registry()
+        .into_iter()
+        .map(|descriptor| ArtifactCommandCapability {
+            type_id: descriptor.type_id.into(),
+            scope: descriptor.scope.into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect::<Vec<_>>();
+    // history 是 intent-only 命令（由 durable 命令日志重放实现），不属于
+    // 引擎变体，但客户端必须能从 catalog 发现撤销/重做入口。
+    commands.push(ArtifactCommandCapability {
+        type_id: "spreadsheet.history".into(),
+        scope: "spreadsheet.sheet".into(),
+        requires_revision: true,
+        supports_idempotency: true,
+    });
+    commands
 }
 
-fn document_command_capabilities() -> Vec<ArtifactCommandCapability> {
-    const COMMANDS: &[(&str, &str)] = &[
-        ("document.insertBlock", "document"),
-        ("document.insertQuote", "document"),
-        ("document.insertTodo", "document"),
-        ("document.insertLink", "document"),
-        ("document.insertDivider", "document"),
-        ("document.setBlockPresentation", "document"),
-        ("document.patchInlineRange", "document"),
-        ("document.deleteBlock", "document"),
-        ("document.resetBlock", "document"),
-        ("document.moveBlock", "document"),
-        ("document.setPageSetup", "document"),
-        ("document.formatTableCells", "document.table"),
-        ("document.setTableBorders", "document.table"),
-        ("document.applyTableBorderPreset", "document.table"),
-        ("document.setTodoChecked", "document"),
-        ("document.convertToLink", "document"),
-        ("document.setLinkTarget", "document"),
-        ("document.setCodeConfig", "document"),
-        ("document.setImageConfig", "document.image"),
-        ("document.replaceBlockText", "document"),
-        ("document.convertBlock", "document"),
-        ("document.replaceTableCellText", "document.table"),
-        ("document.patchTableCellInlineRange", "document.table"),
-        ("document.insertTableRow", "document.table"),
-        ("document.insertTableColumn", "document.table"),
-        ("document.deleteTableRow", "document.table"),
-        ("document.deleteTableColumn", "document.table"),
-        ("document.setTableColumnWidth", "document.table"),
-        ("document.setTableRowHeight", "document.table"),
-        ("document.mergeTableCells", "document.table"),
-        ("document.splitTableCells", "document.table"),
-        ("document.history", "document.history"),
-    ];
-    COMMANDS
+fn whiteboard_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    whiteboard_command_registry()
         .iter()
-        .map(|(type_id, scope)| ArtifactCommandCapability {
-            type_id: (*type_id).into(),
-            scope: (*scope).into(),
+        .map(|descriptor| ArtifactCommandCapability {
+            type_id: descriptor.type_id.into(),
+            scope: descriptor.scope.into(),
             requires_revision: true,
             supports_idempotency: true,
         })
         .collect()
+}
+
+fn mindmap_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    let mut commands = mindmap_command_registry()
+        .into_iter()
+        .map(|descriptor| ArtifactCommandCapability {
+            type_id: descriptor.type_id.into(),
+            scope: descriptor.scope.into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect::<Vec<_>>();
+    // History is an intent resolved from the durable transaction journal,
+    // rather than an editable graph command.
+    commands.push(ArtifactCommandCapability {
+        type_id: "mindmap.history".into(),
+        scope: "mindmap.graph".into(),
+        requires_revision: true,
+        supports_idempotency: true,
+    });
+    commands
+}
+
+fn document_command_capabilities() -> Vec<ArtifactCommandCapability> {
+    let mut commands = document_command_registry()
+        .iter()
+        .map(|descriptor| ArtifactCommandCapability {
+            type_id: descriptor.type_id.into(),
+            scope: descriptor.scope.into(),
+            requires_revision: true,
+            supports_idempotency: true,
+        })
+        .collect::<Vec<_>>();
+    commands.push(ArtifactCommandCapability {
+        type_id: "document.history".into(),
+        scope: "document.history".into(),
+        requires_revision: true,
+        supports_idempotency: true,
+    });
+    commands
 }
 
 /// The capability catalog intentionally mirrors only concrete variants in
 /// `PresentationCommand` plus the server-authoritative history intent. In
 /// particular it does not advertise renderer gestures or generic patches.
 fn presentation_command_capabilities() -> Vec<ArtifactCommandCapability> {
-    const COMMANDS: &[(&str, &str)] = &[
-        ("presentation.registerAsset", "presentation.asset"),
-        ("presentation.setPageSpec", "presentation.deck"),
-        ("presentation.createMaster", "presentation.master"),
-        ("presentation.updateMaster", "presentation.master"),
-        ("presentation.deleteMaster", "presentation.master"),
-        ("presentation.createLayout", "presentation.layout"),
-        ("presentation.updateLayout", "presentation.layout"),
-        ("presentation.deleteLayout", "presentation.layout"),
-        ("presentation.createSlide", "presentation.slide"),
-        ("presentation.deleteSlide", "presentation.slide"),
-        ("presentation.moveSlide", "presentation.slide"),
-        ("presentation.duplicateSlide", "presentation.slide"),
-        ("presentation.insertNode", "presentation.node"),
-        ("presentation.deleteNode", "presentation.node"),
-        ("presentation.moveNode", "presentation.node"),
-        ("presentation.reorderNode", "presentation.node"),
-        ("presentation.groupNodes", "presentation.node"),
-        ("presentation.ungroupNodes", "presentation.node"),
-        ("presentation.setNodeTransform", "presentation.node"),
-        ("presentation.setNodeLocked", "presentation.node"),
-        ("presentation.alignNodes", "presentation.node"),
-        ("presentation.distributeNodes", "presentation.node"),
-        ("presentation.setShapeStyle", "presentation.node.shape"),
-        ("presentation.setShapeGeometry", "presentation.node.shape"),
-        ("presentation.setChartSpec", "presentation.node.chart"),
-        (
-            "presentation.setConnectorEndpoints",
-            "presentation.node.connector",
-        ),
-        (
-            "presentation.setTableCellContent",
-            "presentation.node.table",
-        ),
-        ("presentation.setTableCellStyle", "presentation.node.table"),
-        ("presentation.insertTableRows", "presentation.node.table"),
-        ("presentation.insertTableColumns", "presentation.node.table"),
-        ("presentation.deleteTableRow", "presentation.node.table"),
-        ("presentation.deleteTableColumn", "presentation.node.table"),
-        ("presentation.mergeTableCells", "presentation.node.table"),
-        ("presentation.splitTableCell", "presentation.node.table"),
-        ("presentation.setTextContent", "presentation.node.text"),
-        ("presentation.setTextFrame", "presentation.node.text"),
-        ("presentation.setImageConfig", "presentation.node.image"),
-        ("presentation.setMediaConfig", "presentation.node.media"),
-        ("presentation.setSlideNotes", "presentation.slide"),
-        ("presentation.setSlideBackground", "presentation.slide"),
-        ("presentation.setSlideLayout", "presentation.slide"),
-        ("presentation.setTheme", "presentation.deck"),
-        ("presentation.setSlideTransition", "presentation.slide"),
-        (
-            "presentation.upsertAnimation",
-            "presentation.slide.timeline",
-        ),
-        (
-            "presentation.deleteAnimation",
-            "presentation.slide.timeline",
-        ),
-        ("presentation.moveAnimation", "presentation.slide.timeline"),
-        ("presentation.history", "presentation.history"),
-    ];
-    COMMANDS
+    let mut commands = presentation_command_registry()
         .iter()
-        .map(|(type_id, scope)| ArtifactCommandCapability {
-            type_id: (*type_id).into(),
-            scope: (*scope).into(),
+        .map(|descriptor| ArtifactCommandCapability {
+            type_id: descriptor.type_id.into(),
+            scope: descriptor.scope.into(),
             requires_revision: true,
             supports_idempotency: true,
         })
-        .collect()
+        .collect::<Vec<_>>();
+    commands.push(ArtifactCommandCapability {
+        type_id: "presentation.history".into(),
+        scope: "presentation.history".into(),
+        requires_revision: true,
+        supports_idempotency: true,
+    });
+    commands
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactList {
     pub artifacts: Vec<ArtifactMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpsertCollaboratorRequest {
+    pub role: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -263,7 +306,7 @@ pub async fn create(
     let snapshot_key = document_support::artifact_snapshot_key(&id, 1);
     state.store.put(&source_key, &[]).await?;
     state.store.put(&snapshot_key, &snapshot).await?;
-    let events = [created_event(&id, request.kind)];
+    let events = [created_event(&id, request.kind, &user.id)];
     let meta = db::insert_artifact(
         &state.pool,
         NewArtifact {
@@ -283,7 +326,7 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(meta)).into_response())
 }
 
-/// `POST /api/artifacts/import` imports DOCX, XLSX or PPTX by explicit filename extension.
+/// `POST /api/artifacts/import` imports Office files plus Mindmap exchange formats.
 pub async fn import(
     State(state): State<AppState>,
     user: CurrentUser,
@@ -291,6 +334,7 @@ pub async fn import(
 ) -> Result<Response, AppError> {
     let mut file_name = None;
     let mut bytes = None;
+    let mut import_mode = ImportMode::Audit;
     while let Some(field) = multipart
         .next_field()
         .await
@@ -309,6 +353,20 @@ pub async fn import(
                 )));
             }
             bytes = Some(data);
+        } else if field.name() == Some("mode") {
+            let value = field
+                .text()
+                .await
+                .map_err(|error| AppError::BadRequest(format!("读取导入模式失败：{error}")))?;
+            import_mode = match value.as_str() {
+                "audit" => ImportMode::Audit,
+                "strict" => ImportMode::Strict,
+                _ => {
+                    return Err(AppError::BadRequest(
+                        "导入 mode 必须是 audit 或 strict".into(),
+                    ))
+                }
+            };
         }
     }
     let bytes = bytes.ok_or_else(|| AppError::BadRequest("缺少 file 字段".into()))?;
@@ -322,6 +380,12 @@ pub async fn import(
     let (payload, warnings) = match kind {
         ArtifactKind::Document => {
             let imported = oo_docx::parse_docx_with_assets(&bytes, &id)?;
+            let warnings = imported
+                .loss_report
+                .unsupported
+                .iter()
+                .map(|loss| format!("{}:{} — {}", loss.capability, loss.count, loss.detail))
+                .collect();
             imported_assets = imported
                 .assets
                 .into_iter()
@@ -332,15 +396,17 @@ pub async fn import(
                     bytes: asset.bytes,
                 })
                 .collect();
-            (ArtifactPayload::Document(imported.document), Vec::new())
+            (ArtifactPayload::Document(imported.document), warnings)
         }
         ArtifactKind::Spreadsheet => {
             let result = oo_xlsx::read_xlsx_with_report(&bytes)
                 .map_err(|error| AppError::BadRequest(format!("XLSX 解析失败：{error}")))?;
-            (
-                ArtifactPayload::Spreadsheet(result.model),
-                result.ignored_parts,
-            )
+            let warnings = result
+                .unsupported_parts
+                .iter()
+                .map(|loss| format!("{} — {}", loss.part, loss.reason))
+                .collect();
+            (ArtifactPayload::Spreadsheet(result.model), warnings)
         }
         ArtifactKind::Presentation => {
             let imported = oo_pptx::parse_pptx_with_report(&bytes)
@@ -361,21 +427,32 @@ pub async fn import(
                 .collect();
             (ArtifactPayload::Presentation(imported.deck), Vec::new())
         }
-        ArtifactKind::Mindmap | ArtifactKind::Whiteboard => {
+        ArtifactKind::Mindmap => {
+            let imported = import_mindmap(&file_name, &bytes)?;
+            imported_assets = imported.assets;
+            (ArtifactPayload::Mindmap(imported.model), imported.warnings)
+        }
+        ArtifactKind::Whiteboard => {
             return Err(AppError::UnsupportedCapability(format!(
                 "暂不支持导入 {kind:?} 文件"
             )))
         }
     };
     let artifact = artifact_for(&id, 1, payload)?;
+    if import_mode == ImportMode::Strict && !warnings.is_empty() {
+        return Err(AppError::UnsupportedCapability(format!(
+            "strict 导入拒绝有损内容：{}",
+            warnings.join("；")
+        )));
+    }
     let snapshot = serde_json::to_vec(&artifact)
         .map_err(|error| AppError::Internal(format!("序列化 Artifact 失败：{error}")))?;
-    let source_key = format!("{id}/source.{}", source_extension(kind));
+    let source_key = format!("{id}/source.{}", import_source_extension(&file_name, kind));
     let snapshot_key = document_support::artifact_snapshot_key(&id, 1);
     state.store.put(&source_key, &bytes).await?;
     state.store.put(&snapshot_key, &snapshot).await?;
     let title = title_from_file_name(&file_name, kind);
-    let events = [created_event(&id, kind)];
+    let events = [created_event(&id, kind, &user.id)];
     let meta = db::insert_artifact(
         &state.pool,
         NewArtifact {
@@ -397,7 +474,7 @@ pub async fn import(
             &state,
             &id,
             &imported_assets,
-            &asset_references(&artifact.payload),
+            &artifact.payload.asset_references(),
         )
         .await
         {
@@ -425,6 +502,12 @@ pub async fn import(
         .into_response())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportMode {
+    Audit,
+    Strict,
+}
+
 /// Online imports must never materialize a partial Presentation as if it were
 /// a faithful editable deck.  The original upload is only persisted after the
 /// complete canonical payload (including binary assets) has passed this gate.
@@ -445,54 +528,6 @@ fn require_lossless_pptx_import(report: &oo_pptx::PptxLossReport) -> Result<(), 
     Err(AppError::UnsupportedCapability(format!(
         "PPTX 导入包含尚不支持的内容，拒绝创建不完整的 Presentation：{details}"
     )))
-}
-
-fn asset_references(payload: &ArtifactPayload) -> Vec<String> {
-    match payload {
-        ArtifactPayload::Document(document) => document_image_asset_references(document),
-        ArtifactPayload::Presentation(deck) => deck
-            .assets
-            .iter()
-            .map(|asset| asset.asset_id.clone())
-            .collect(),
-        ArtifactPayload::Spreadsheet(_)
-        | ArtifactPayload::Mindmap(_)
-        | ArtifactPayload::Whiteboard(_) => Vec::new(),
-    }
-}
-
-/// Asset references keep both the active rendition and its original source alive.
-/// The latter is intentionally not exported to DOCX, but must survive compression
-/// so that the image toolbar can restore the original without a second upload.
-fn document_image_asset_references(document: &DocumentModel) -> Vec<String> {
-    let blocks = document
-        .blocks
-        .iter()
-        .map(|block| (block.id.as_str(), block))
-        .collect::<std::collections::HashMap<_, _>>();
-    let mut references = Vec::new();
-    fn visit(
-        id: &str,
-        blocks: &std::collections::HashMap<&str, &oo_schema::DocumentBlock>,
-        references: &mut Vec<String>,
-    ) {
-        let Some(block) = blocks.get(id) else {
-            return;
-        };
-        if let BlockData::Image(image) = &block.data {
-            references.push(image.asset_id.clone());
-            if let Some(original_asset_id) = &image.original_asset_id {
-                references.push(original_asset_id.clone());
-            }
-        }
-        for child in &block.children {
-            visit(child, blocks, references);
-        }
-    }
-    for root in &document.root {
-        visit(root, &blocks, &mut references);
-    }
-    references
 }
 
 /// DOCX receives only the currently rendered image, never a hidden recovery copy.
@@ -558,6 +593,68 @@ async fn docx_assets_for_export(
     Ok(assets)
 }
 
+/// Canonical Mindmap JSON is a portable exchange package rather than a copy
+/// of the persisted Artifact envelope. It embeds only the verified image
+/// closure and deliberately excludes artifact id, revision and view state.
+async fn mindmap_exchange_for_export(
+    state: &AppState,
+    artifact_id: &str,
+    model: &oo_schema::MindmapModel,
+) -> Result<Vec<u8>, AppError> {
+    let assets = mindmap_assets_for_export(state, artifact_id, model).await?;
+    write_mindmap_exchange(&MindmapExchangeEnvelope::new(model.clone(), assets)).map_err(|error| {
+        AppError::UnsupportedCapability(format!("生成 Mindmap JSON 失败：{error}"))
+    })
+}
+
+async fn mindmap_assets_for_export(
+    state: &AppState,
+    artifact_id: &str,
+    model: &oo_schema::MindmapModel,
+) -> Result<Vec<MindmapExchangeAsset>, AppError> {
+    let mut assets = Vec::new();
+    for reference in model.asset_references() {
+        let stored = db::get_artifact_asset(&state.pool, artifact_id, &reference.asset_id)
+            .await?
+            .ok_or_else(|| {
+                AppError::Internal(format!(
+                    "Mindmap 引用了不存在的图片资产 {artifact_id}/{}",
+                    reference.asset_id
+                ))
+            })?;
+        let bytes =
+            crate::store::get_verified(state.store.as_ref(), &stored.object_key, &stored.checksum)
+                .await
+                .map_err(|error| {
+                    AppError::Internal(format!(
+                        "读取 Mindmap 图片资产 {} 失败：{error}",
+                        reference.asset_id
+                    ))
+                })?;
+        assets.push(MindmapExchangeAsset {
+            asset_id: stored.asset_id,
+            file_name: safe_mindmap_asset_file_name(&stored.file_name, &reference.asset_id),
+            content_type: stored.content_type,
+            checksum: stored.checksum,
+            data_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        });
+    }
+    Ok(assets)
+}
+
+fn safe_mindmap_asset_file_name(file_name: &str, asset_id: &str) -> String {
+    let candidate = file_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .trim();
+    if candidate.is_empty() || candidate == "." || candidate == ".." || candidate.len() > 255 {
+        format!("{asset_id}.bin")
+    } else {
+        candidate.to_string()
+    }
+}
+
 /// Presentation export resolves image bytes through the Artifact asset store.
 /// Deck only contains immutable asset metadata, never a data URI or renderer
 /// cache, so missing bytes are a server integrity error rather than a lossy
@@ -619,7 +716,7 @@ async fn register_imported_assets(
     state: &AppState,
     artifact_id: &str,
     assets: &[ImportedBinaryAsset],
-    references: &[String],
+    references: &[AssetReference],
 ) -> Result<(), AppError> {
     for asset in assets {
         let object_key = format!("{artifact_id}/assets/{}", asset.asset_id);
@@ -682,7 +779,7 @@ pub async fn upload_asset(
     Path(id): Path<String>,
     mut multipart: Multipart,
 ) -> Result<Response, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Editor).await?;
     let mut file_name = None;
     let mut content_type = None;
     let mut bytes = None;
@@ -754,7 +851,7 @@ pub async fn list_assets(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Json<AssetList>, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Viewer).await?;
     Ok(Json(AssetList {
         assets: db::list_artifact_assets(&state.pool, &id).await?,
     }))
@@ -765,7 +862,7 @@ pub async fn get_asset(
     user: CurrentUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Viewer).await?;
     let asset = db::get_artifact_asset(&state.pool, &id, &asset_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("资产 {asset_id} 不存在")))?;
@@ -791,7 +888,7 @@ pub async fn delete_asset(
     user: CurrentUser,
     Path((id, asset_id)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
-    owned_meta(&state, &user, &id).await?;
+    authorize(&state, &user, &id, Role::Editor).await?;
     let asset = db::get_artifact_asset(&state.pool, &id, &asset_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("资产 {asset_id} 不存在")))?;
@@ -882,19 +979,6 @@ pub async fn snapshot(
     }))
 }
 
-/// Document engine writes are deliberately restricted by kind. Other engines
-/// must expose their own command interpreter before this route accepts writes.
-pub async fn put_snapshot(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: String,
-) -> Result<Json<document_support::TransactionCommit>, AppError> {
-    ensure_document(&state, &user, &id).await?;
-    document_support::put_artifact(State(state), user, Path(id), headers, body).await
-}
-
 /// `GET /api/artifacts/{id}/revisions`.
 pub async fn revisions(
     State(state): State<AppState>,
@@ -941,7 +1025,8 @@ pub async fn transactions(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<document_support::TransactionCommit>, AppError> {
-    let meta = owned_meta(&state, &user, &id).await?;
+    // 事务是写路径：editor 及以上（C4 授权分层）；owner 之外由协作者角色决定。
+    let meta = authorize(&state, &user, &id, Role::Editor).await?;
     match meta.kind {
         ArtifactKind::Document => {
             document_support::submit_transaction(State(state), user, Path(id), headers, body).await
@@ -956,7 +1041,30 @@ pub async fn transactions(
             )
             .await
         }
-        kind => Err(AppError::UnsupportedArtifact(kind)),
+        ArtifactKind::Mindmap => {
+            crate::mindmap_support::submit_transaction(State(state), user, Path(id), headers, body)
+                .await
+        }
+        ArtifactKind::Spreadsheet => {
+            crate::spreadsheet_support::submit_transaction(
+                State(state),
+                user,
+                Path(id),
+                headers,
+                body,
+            )
+            .await
+        }
+        ArtifactKind::Whiteboard => {
+            crate::whiteboard_support::submit_transaction(
+                State(state),
+                user,
+                Path(id),
+                headers,
+                body,
+            )
+            .await
+        }
     }
 }
 
@@ -966,23 +1074,21 @@ pub async fn source(
     user: CurrentUser,
     Path(id): Path<String>,
 ) -> Result<Response, AppError> {
-    let meta = owned_meta(&state, &user, &id).await?;
+    let meta = authorize(&state, &user, &id, Role::Viewer).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
     let bytes = state.store.get(&blobs.source_key).await?;
+    let source_extension = source_extension_from_key(&blobs.source_key, meta.kind);
     Ok((
         [
             (
                 header::CONTENT_TYPE,
-                source_content_type(meta.kind).to_string(),
+                source_content_type_for_extension(source_extension, meta.kind).to_string(),
             ),
             (
                 header::CONTENT_DISPOSITION,
-                document_support::download_content_disposition(
-                    &meta.title,
-                    source_extension(meta.kind),
-                ),
+                document_support::download_content_disposition(&meta.title, source_extension),
             ),
         ],
         bytes,
@@ -991,59 +1097,181 @@ pub async fn source(
 }
 
 /// `GET /api/artifacts/{id}/export/{format}` dispatches to the matching adapter.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArtifactExportQuery {
+    paper: Option<String>,
+    orientation: Option<String>,
+    mode: Option<String>,
+    margin: Option<f32>,
+}
+
 pub async fn export(
     State(state): State<AppState>,
     user: CurrentUser,
     Path((id, format)): Path<(String, String)>,
+    Query(query): Query<ArtifactExportQuery>,
 ) -> Result<Response, AppError> {
     let (meta, artifact) = load_artifact(&state, &user, &id).await?;
     let expected = export_format(meta.kind);
-    if format != expected {
+    let allowed = format == expected
+        || (meta.kind == ArtifactKind::Mindmap && matches!(format.as_str(), "md" | "svg" | "pdf"));
+    if !allowed {
         return Err(AppError::BadRequest(format!(
-            "Artifact 类型 {:?} 只能导出为 .{}",
-            meta.kind, expected
+            "Artifact 类型 {:?} 不支持导出为 .{}",
+            meta.kind, format
         )));
     }
-    let bytes = match artifact.payload {
+    let mut loss_header: Option<(&'static str, String)> = None;
+    let bytes = match &artifact.payload {
         ArtifactPayload::Document(model) => {
-            let assets = docx_assets_for_export(&state, &id, &model).await?;
-            oo_docx::write_docx_with_assets(&model, &assets)
-                .map_err(|error| AppError::Internal(format!("生成 DOCX 失败：{error}")))?
-        }
-        ArtifactPayload::Spreadsheet(model) => oo_xlsx::write_xlsx(&model)
-            .map_err(|error| AppError::UnsupportedCapability(format!("XLSX 导出失败：{error}")))?,
-        ArtifactPayload::Presentation(model) => {
-            let assets = pptx_assets_for_export(&state, &id, &model).await?;
-            let exported = oo_pptx::write_pptx_with_assets(&model, &assets).map_err(|error| {
-                AppError::UnsupportedCapability(format!("PPTX 导出失败：{error}"))
-            })?;
-            if !exported.loss_report.unsupported.is_empty() {
-                return Err(AppError::UnsupportedCapability(
-                    "PPTX 导出包含尚不支持的内容，拒绝静默丢失数据".into(),
-                ));
+            let assets = docx_assets_for_export(&state, &id, model).await?;
+            // DOCX keeps all text content; the report enumerates semantic
+            // approximations (todo state, link targets, containers) so clients
+            // can surface them instead of discovering silent data loss.
+            let exported = oo_docx::write_docx_with_report(model, &assets)
+                .map_err(|error| AppError::Internal(format!("生成 DOCX 失败：{error}")))?;
+            if let Some(summary) = exported.loss_report.header_summary() {
+                loss_header = Some(("x-docx-losses", summary));
             }
             exported.bytes
         }
-        ArtifactPayload::Mindmap(_) | ArtifactPayload::Whiteboard(_) => {
+        ArtifactPayload::Spreadsheet(model) => oo_xlsx::write_xlsx(model)
+            .map_err(|error| AppError::UnsupportedCapability(format!("XLSX 导出失败：{error}")))?,
+        ArtifactPayload::Presentation(model) => {
+            let assets = pptx_assets_for_export(&state, &id, model).await?;
+            let exported = oo_pptx::write_pptx_with_assets(model, &assets).map_err(|error| {
+                AppError::UnsupportedCapability(format!("PPTX 导出失败：{error}"))
+            })?;
+            if !exported.loss_report.unsupported.is_empty() {
+                let details = exported
+                    .loss_report
+                    .unsupported
+                    .iter()
+                    .take(4)
+                    .map(|item| format!("{}（{}）：{}", item.capability, item.part, item.detail))
+                    .collect::<Vec<_>>()
+                    .join("；");
+                return Err(AppError::UnsupportedCapability(format!(
+                    "PPTX 导出包含尚不支持的内容，拒绝静默丢失数据：{details}"
+                )));
+            }
+            exported.bytes
+        }
+        ArtifactPayload::Mindmap(model) => match format.as_str() {
+            "json" => mindmap_exchange_for_export(&state, &id, model).await?,
+            "md" => {
+                let exported = oo_mindmap::export_markdown_with_report(model).map_err(|error| {
+                    AppError::Internal(format!("生成 Mindmap Markdown 失败：{error}"))
+                })?;
+                if let Some(summary) = exported.loss_report.header_summary() {
+                    loss_header = Some(("x-mindmap-losses", summary));
+                }
+                exported.text.into_bytes()
+            }
+            "svg" => {
+                let assets = mindmap_assets_for_export(&state, &id, model).await?;
+                let exported = export_svg(model, &assets).map_err(|error| {
+                    AppError::Internal(format!("生成 Mindmap SVG 失败：{error}"))
+                })?;
+                if let Some(summary) = exported.loss_report.header_summary() {
+                    loss_header = Some(("x-mindmap-losses", summary));
+                }
+                exported.text.into_bytes()
+            }
+            "pdf" => {
+                let assets = mindmap_assets_for_export(&state, &id, model).await?;
+                let svg = export_svg(model, &assets).map_err(|error| {
+                    AppError::Internal(format!("生成 Mindmap PDF 投影失败：{error}"))
+                })?;
+                let exported =
+                    export_pdf(&svg.text, mindmap_pdf_options(&query)?).map_err(|error| {
+                        AppError::UnsupportedCapability(format!("生成 Mindmap PDF 失败：{error}"))
+                    })?;
+                let mut losses = svg.loss_report.unsupported;
+                losses.extend(exported.loss_report.unsupported);
+                let report = oo_mindmap::MindmapExchangeLossReport {
+                    unsupported: losses,
+                };
+                if let Some(summary) = report.header_summary() {
+                    loss_header = Some(("x-mindmap-losses", summary));
+                }
+                exported.bytes
+            }
+            _ => unreachable!("format was validated above"),
+        },
+        ArtifactPayload::Whiteboard(_) => {
             return Err(AppError::UnsupportedCapability(
                 "该 Artifact 尚未定义可交换文件格式".into(),
             ))
         }
     };
-    Ok((
-        [
-            (
-                header::CONTENT_TYPE,
-                export_content_type(meta.kind).to_string(),
-            ),
-            (
-                header::CONTENT_DISPOSITION,
-                document_support::download_content_disposition(&meta.title, expected),
-            ),
-        ],
-        bytes,
-    )
-        .into_response())
+    let mut headers = vec![
+        (
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(match (meta.kind, format.as_str()) {
+                (ArtifactKind::Mindmap, "md") => "text/markdown; charset=utf-8",
+                (ArtifactKind::Mindmap, "json") => "application/vnd.open-office.mindmap+json",
+                (ArtifactKind::Mindmap, "svg") => "image/svg+xml; charset=utf-8",
+                (ArtifactKind::Mindmap, "pdf") => "application/pdf",
+                _ => export_content_type(meta.kind),
+            })
+            .expect("export content type is valid header value"),
+        ),
+        (
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&document_support::download_content_disposition(
+                &meta.title,
+                if meta.kind == ArtifactKind::Mindmap && format == "json" {
+                    "mindmap.json"
+                } else {
+                    &format
+                },
+            ))
+            .expect("content disposition is valid header value"),
+        ),
+    ];
+    if let Some((name, value)) = loss_header {
+        headers.push((
+            axum::http::HeaderName::from_static(name),
+            HeaderValue::from_str(&value).expect("loss summary is ASCII"),
+        ));
+    }
+    let mut builder = Response::builder().status(StatusCode::OK);
+    for (name, value) in headers {
+        builder = builder.header(name, value);
+    }
+    builder
+        .body(axum::body::Body::from(bytes))
+        .map_err(|error| AppError::Internal(format!("导出响应构建失败：{error}")))
+}
+
+fn mindmap_pdf_options(query: &ArtifactExportQuery) -> Result<MindmapPdfOptions, AppError> {
+    let paper = match query.paper.as_deref().unwrap_or("a4") {
+        "a4" => MindmapPdfPaper::A4,
+        "a3" => MindmapPdfPaper::A3,
+        value => return Err(AppError::BadRequest(format!("PDF paper 不受支持：{value}"))),
+    };
+    let orientation = match query.orientation.as_deref().unwrap_or("landscape") {
+        "portrait" => MindmapPdfOrientation::Portrait,
+        "landscape" => MindmapPdfOrientation::Landscape,
+        value => {
+            return Err(AppError::BadRequest(format!(
+                "PDF orientation 不受支持：{value}"
+            )))
+        }
+    };
+    let mode = match query.mode.as_deref().unwrap_or("fit") {
+        "fit" => MindmapPdfMode::Fit,
+        "tile" => MindmapPdfMode::Tile,
+        value => return Err(AppError::BadRequest(format!("PDF mode 不受支持：{value}"))),
+    };
+    Ok(MindmapPdfOptions {
+        paper,
+        orientation,
+        mode,
+        margin_points: query.margin.unwrap_or(28.0),
+    })
 }
 
 async fn ensure_document(state: &AppState, user: &CurrentUser, id: &str) -> Result<(), AppError> {
@@ -1059,13 +1287,92 @@ pub(crate) async fn owned_meta(
     user: &CurrentUser,
     id: &str,
 ) -> Result<ArtifactMeta, AppError> {
+    authorize(state, user, id, Role::Owner).await
+}
+
+/// 委派角色层级。owner 即 `artifacts.owner_id`，editor/viewer 来自
+/// `artifact_collaborators`；owner 拥有全部能力，不需要出现在表里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Role {
+    Viewer,
+    Editor,
+    Owner,
+}
+
+impl Role {
+    fn from_str(role: &str) -> Option<Self> {
+        match role {
+            "viewer" => Some(Self::Viewer),
+            "editor" => Some(Self::Editor),
+            _ => None,
+        }
+    }
+}
+
+/// 统一授权入口：解析 artifact 元数据并断言调用者至少拥有 [`Role::min`]。
+pub(crate) async fn authorize(
+    state: &AppState,
+    user: &CurrentUser,
+    id: &str,
+    min: Role,
+) -> Result<ArtifactMeta, AppError> {
     let meta = db::get_artifact(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
-    if meta.owner_id != user.id {
-        return Err(AppError::Forbidden);
+    let granted = if meta.owner_id == user.id {
+        Some(Role::Owner)
+    } else {
+        db::list_collaborators(&state.pool, id)
+            .await?
+            .into_iter()
+            .find(|collaborator| collaborator.user_id == user.id)
+            .and_then(|collaborator| Role::from_str(&collaborator.role))
+    };
+    match granted {
+        Some(role) if role >= min => Ok(meta),
+        _ => Err(AppError::Forbidden),
     }
-    Ok(meta)
+}
+
+/// `GET /api/artifacts/{id}/collaborators`（editor 及以上）：viewer 不应能枚举
+/// 同一 artifact 上的其他 Principal。
+pub async fn list_collaborators(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+) -> Result<Json<db::CollaboratorList>, AppError> {
+    authorize(&state, &user, &id, Role::Editor).await?;
+    let collaborators = db::list_collaborators(&state.pool, &id).await?;
+    Ok(Json(db::CollaboratorList { collaborators }))
+}
+
+/// `PUT /api/artifacts/{id}/collaborators/{userId}`（仅 owner）。
+pub async fn upsert_collaborator(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, target_user)): Path<(String, String)>,
+    Json(request): Json<UpsertCollaboratorRequest>,
+) -> Result<StatusCode, AppError> {
+    authorize(&state, &user, &id, Role::Owner).await?;
+    if !db::COLLABORATOR_ROLES.contains(&request.role.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "角色必须是 {:?} 之一",
+            db::COLLABORATOR_ROLES
+        )));
+    }
+    db::upsert_collaborator(&state.pool, &id, &target_user, &request.role).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// `DELETE /api/artifacts/{id}/collaborators/{userId}`（仅 owner）。
+pub async fn delete_collaborator(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path((id, target_user)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    authorize(&state, &user, &id, Role::Owner).await?;
+    db::delete_collaborator(&state.pool, &id, &target_user).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub(crate) async fn load_artifact(
@@ -1073,7 +1380,9 @@ pub(crate) async fn load_artifact(
     user: &CurrentUser,
     id: &str,
 ) -> Result<(ArtifactMeta, ArtifactEnvelope), AppError> {
-    let meta = owned_meta(state, user, id).await?;
+    // 读路径（snapshot/events/export/source 与事务装载前的元数据检查）降至
+    // viewer+；写与管理面在各自入口再收紧到 editor/owner。
+    let meta = authorize(state, user, id, Role::Viewer).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
@@ -1094,7 +1403,18 @@ pub(crate) async fn load_artifact(
 fn empty_payload(kind: ArtifactKind) -> ArtifactPayload {
     match kind {
         ArtifactKind::Document => ArtifactPayload::Document(DocumentModel::empty()),
-        ArtifactKind::Spreadsheet => ArtifactPayload::Spreadsheet(Default::default()),
+        ArtifactKind::Spreadsheet => ArtifactPayload::Spreadsheet(SpreadsheetModel {
+            metadata: SpreadsheetMetadata {
+                active_sheet_id: Some("sheet-1".into()),
+                ..SpreadsheetMetadata::default()
+            },
+            sheets: vec![SheetModel {
+                id: "sheet-1".into(),
+                name: "Sheet 1".into(),
+                cells: Vec::new(),
+                metadata: SheetMetadata::default(),
+            }],
+        }),
         ArtifactKind::Presentation => ArtifactPayload::Presentation(Default::default()),
         ArtifactKind::Mindmap => ArtifactPayload::Mindmap(Default::default()),
         ArtifactKind::Whiteboard => ArtifactPayload::Whiteboard(Default::default()),
@@ -1115,6 +1435,15 @@ pub(crate) fn artifact_for(
 }
 
 fn import_kind(file_name: &str) -> Result<ArtifactKind, AppError> {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".mindmap.json")
+        || lower.ends_with(".opmm")
+        || lower.ends_with(".md")
+        || lower.ends_with(".mm")
+        || lower.ends_with(".xmind")
+    {
+        return Ok(ArtifactKind::Mindmap);
+    }
     match file_name
         .rsplit('.')
         .next()
@@ -1125,10 +1454,183 @@ fn import_kind(file_name: &str) -> Result<ArtifactKind, AppError> {
         "docx" => Ok(ArtifactKind::Document),
         "xlsx" => Ok(ArtifactKind::Spreadsheet),
         "pptx" => Ok(ArtifactKind::Presentation),
+        "json" => Ok(ArtifactKind::Mindmap),
         extension => Err(AppError::BadRequest(format!(
-            "不支持的导入格式：.{extension}，仅支持 .docx、.xlsx、.pptx"
+            "不支持的导入格式：.{extension}，仅支持 .docx、.xlsx、.pptx、.mindmap.json、.md、.mm、.xmind"
         ))),
     }
+}
+
+struct ImportedMindmap {
+    model: oo_schema::MindmapModel,
+    assets: Vec<ImportedBinaryAsset>,
+    warnings: Vec<String>,
+}
+
+fn import_mindmap(file_name: &str, bytes: &[u8]) -> Result<ImportedMindmap, AppError> {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".xmind") {
+        let imported = oo_mindmap::import_xmind(bytes)
+            .map_err(|error| AppError::BadRequest(format!("XMind 解析失败：{error}")))?;
+        let mut model = imported.model;
+        let assets = remap_external_mindmap_assets(&mut model, imported.assets)?;
+        ArtifactEnvelope::new("xmind-import", ArtifactPayload::Mindmap(model.clone()))
+            .validate()
+            .map_err(|error| AppError::BadRequest(format!("XMind 导入结果无效：{error}")))?;
+        return Ok(ImportedMindmap {
+            model,
+            assets,
+            warnings: imported
+                .loss_report
+                .unsupported
+                .into_iter()
+                .map(|loss| format!("{}:{} — {}", loss.capability, loss.count, loss.detail))
+                .collect(),
+        });
+    }
+    if lower.ends_with(".mm") {
+        let imported = oo_mindmap::import_freemind(bytes)
+            .map_err(|error| AppError::BadRequest(format!("FreeMind 解析失败：{error}")))?;
+        return Ok(ImportedMindmap {
+            model: imported.model,
+            assets: Vec::new(),
+            warnings: imported
+                .loss_report
+                .unsupported
+                .into_iter()
+                .map(|loss| format!("{}:{} — {}", loss.capability, loss.count, loss.detail))
+                .collect(),
+        });
+    }
+    if lower.ends_with(".md") {
+        let text = std::str::from_utf8(bytes).map_err(|error| {
+            AppError::BadRequest(format!("Mindmap Markdown 不是 UTF-8：{error}"))
+        })?;
+        let model = oo_mindmap::import_markdown(text)
+            .map_err(|error| AppError::BadRequest(format!("Mindmap Markdown 解析失败：{error}")))?;
+        return Ok(ImportedMindmap {
+            model,
+            assets: Vec::new(),
+            warnings: Vec::new(),
+        });
+    }
+    let package = parse_mindmap_exchange(bytes)
+        .map_err(|error| AppError::BadRequest(format!("Mindmap JSON 解析失败：{error}")))?;
+    let mut model = package.model;
+    let mut remap = HashMap::<String, String>::new();
+    let mut assets = Vec::with_capacity(package.assets.len());
+    let mut decoded_total = 0usize;
+    for embedded in package.assets {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&embedded.data_base64)
+            .map_err(|error| {
+                AppError::BadRequest(format!(
+                    "Mindmap asset {} 的 dataBase64 无效：{error}",
+                    embedded.asset_id
+                ))
+            })?;
+        if decoded.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap asset {} 内容为空",
+                embedded.asset_id
+            )));
+        }
+        decoded_total = decoded_total
+            .checked_add(decoded.len())
+            .ok_or_else(|| AppError::BadRequest("Mindmap embedded asset 总量溢出".into()))?;
+        if decoded_total > MAX_UPLOAD_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap embedded assets 超过 {} MB 的上限",
+                MAX_UPLOAD_BYTES / 1024 / 1024
+            )));
+        }
+        let actual_checksum = crate::store::checksum(&decoded);
+        if actual_checksum != embedded.checksum {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap asset {} checksum 不匹配",
+                embedded.asset_id
+            )));
+        }
+        let new_id = uuid::Uuid::new_v4().to_string();
+        remap.insert(embedded.asset_id, new_id.clone());
+        assets.push(ImportedBinaryAsset {
+            asset_id: new_id,
+            content_type: embedded.content_type,
+            file_name: embedded.file_name,
+            bytes: decoded,
+        });
+    }
+    for node in &mut model.nodes {
+        if let Some(image) = &mut node.supplement.image {
+            image.asset_id = remap.get(&image.asset_id).cloned().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Mindmap 图片 {} 缺少 embedded asset",
+                    image.asset_id
+                ))
+            })?;
+        }
+    }
+    ArtifactEnvelope::new("mindmap-import", ArtifactPayload::Mindmap(model.clone()))
+        .validate()
+        .map_err(|error| AppError::BadRequest(format!("Mindmap JSON 无效：{error}")))?;
+    Ok(ImportedMindmap {
+        model,
+        assets,
+        warnings: Vec::new(),
+    })
+}
+
+fn remap_external_mindmap_assets(
+    model: &mut oo_schema::MindmapModel,
+    external_assets: Vec<oo_mindmap::MindmapExternalAsset>,
+) -> Result<Vec<ImportedBinaryAsset>, AppError> {
+    let mut remap = HashMap::<String, String>::new();
+    let mut assets = Vec::with_capacity(external_assets.len());
+    let mut decoded_total = 0usize;
+    for asset in external_assets {
+        if asset.bytes.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap asset {} 内容为空",
+                asset.asset_id
+            )));
+        }
+        decoded_total = decoded_total
+            .checked_add(asset.bytes.len())
+            .ok_or_else(|| AppError::BadRequest("Mindmap embedded asset 总量溢出".into()))?;
+        if decoded_total > MAX_UPLOAD_BYTES {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap embedded assets 超过 {} MB 的上限",
+                MAX_UPLOAD_BYTES / 1024 / 1024
+            )));
+        }
+        let new_id = uuid::Uuid::new_v4().to_string();
+        if remap
+            .insert(asset.asset_id.clone(), new_id.clone())
+            .is_some()
+        {
+            return Err(AppError::BadRequest(format!(
+                "Mindmap asset id 重复：{}",
+                asset.asset_id
+            )));
+        }
+        assets.push(ImportedBinaryAsset {
+            asset_id: new_id,
+            content_type: asset.content_type,
+            file_name: asset.file_name,
+            bytes: asset.bytes,
+        });
+    }
+    for node in &mut model.nodes {
+        if let Some(image) = &mut node.supplement.image {
+            image.asset_id = remap.get(&image.asset_id).cloned().ok_or_else(|| {
+                AppError::BadRequest(format!(
+                    "Mindmap 图片 {} 缺少 embedded asset",
+                    image.asset_id
+                ))
+            })?;
+        }
+    }
+    Ok(assets)
 }
 
 fn title_from_file_name(file_name: &str, kind: ArtifactKind) -> String {
@@ -1158,6 +1660,49 @@ fn source_extension(kind: ArtifactKind) -> &'static str {
         ArtifactKind::Presentation => "pptx",
         ArtifactKind::Mindmap => "json",
         ArtifactKind::Whiteboard => "json",
+    }
+}
+
+fn import_source_extension(file_name: &str, kind: ArtifactKind) -> &'static str {
+    let lower = file_name.to_ascii_lowercase();
+    if kind == ArtifactKind::Mindmap {
+        if lower.ends_with(".mindmap.json") {
+            return "mindmap.json";
+        }
+        if lower.ends_with(".md") {
+            return "md";
+        }
+        if lower.ends_with(".mm") {
+            return "mm";
+        }
+        if lower.ends_with(".xmind") {
+            return "xmind";
+        }
+    }
+    source_extension(kind)
+}
+
+fn source_extension_from_key(key: &str, kind: ArtifactKind) -> &'static str {
+    if key.ends_with(".mindmap.json") {
+        "mindmap.json"
+    } else if key.ends_with(".md") {
+        "md"
+    } else if key.ends_with(".mm") {
+        "mm"
+    } else if key.ends_with(".xmind") {
+        "xmind"
+    } else {
+        source_extension(kind)
+    }
+}
+
+fn source_content_type_for_extension(extension: &str, kind: ArtifactKind) -> &'static str {
+    match extension {
+        "mindmap.json" => "application/vnd.open-office.mindmap+json",
+        "md" => "text/markdown; charset=utf-8",
+        "mm" => "application/x-freemind; charset=utf-8",
+        "xmind" => "application/vnd.xmind.workbook",
+        _ => source_content_type(kind),
     }
 }
 
@@ -1209,7 +1754,7 @@ async fn register_blob_integrity(
     .map_err(AppError::from)
 }
 
-fn created_event(id: &str, kind: ArtifactKind) -> DomainEventRecord {
+fn created_event(id: &str, kind: ArtifactKind, actor_id: &str) -> DomainEventRecord {
     DomainEventRecord {
         event_id: format!("artifact:create:{id}:1:0"),
         type_id: "artifact.created".into(),
@@ -1217,6 +1762,7 @@ fn created_event(id: &str, kind: ArtifactKind) -> DomainEventRecord {
             "artifactId": id,
             "artifactKind": serde_json::to_value(kind).unwrap_or_default(),
             "revision": 1,
+            "actorId": actor_id,
         }),
     }
 }
@@ -1224,15 +1770,15 @@ fn created_event(id: &str, kind: ArtifactKind) -> DomainEventRecord {
 #[cfg(test)]
 mod tests {
     use super::{
-        document_image_asset_references, document_image_render_asset_ids,
-        require_lossless_pptx_import, require_presentation_asset_matches_store,
+        document_image_render_asset_ids, require_lossless_pptx_import,
+        require_presentation_asset_matches_store,
     };
     use crate::{db, error::AppError};
     use oo_pptx::{PptxLossReport, PptxReportKind, PptxUnsupported};
     use oo_schema::presentation_v5::AssetRef;
     use oo_schema::{
-        BlockData, BlockPresentation, DocumentBlock, DocumentBlockKind, DocumentModel, ImageBlock,
-        ImageTransform,
+        AssetReferenceSource, BlockData, BlockPresentation, DocumentBlock, DocumentBlockKind,
+        DocumentModel, ImageBlock, ImageTransform,
     };
 
     #[test]
@@ -1256,10 +1802,15 @@ mod tests {
                 }),
             }],
             page_setup: None,
+            page_semantics: Default::default(),
         };
 
         assert_eq!(
-            document_image_asset_references(&document),
+            document
+                .asset_references()
+                .into_iter()
+                .map(|reference| reference.asset_id)
+                .collect::<Vec<_>>(),
             ["asset-compressed", "asset-original"]
         );
         assert_eq!(

@@ -1,6 +1,8 @@
 //! 针对真实 .docx 包的 canonical Block Tree 集成测试。
 
-use oo_schema::{DocumentBlock, DocumentBlockKind, DocumentModel};
+use oo_schema::{
+    DocumentBlock, DocumentBlockKind, DocumentModel, DocumentPageNumbering, PageNumberFormat,
+};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
@@ -30,6 +32,29 @@ fn text(block: &DocumentBlock) -> &str {
         .unwrap_or("")
 }
 
+#[test]
+fn font_stack_exports_as_a_real_office_family() {
+    let mut original = parse("sample.docx");
+    for block in &mut original.blocks {
+        if let Some(content) = &mut block.content {
+            for run in &mut content.runs {
+                run.style.font_family = Some("\"Noto Serif SC\", serif".into());
+            }
+        }
+    }
+    let bytes = oo_docx::write_docx(&original).unwrap();
+    let imported = oo_docx::parse_docx(&bytes, "font-roundtrip").unwrap();
+    let families: Vec<_> = imported
+        .blocks
+        .iter()
+        .filter_map(|block| block.content.as_ref())
+        .flat_map(|content| &content.runs)
+        .filter_map(|run| run.style.font_family.as_deref())
+        .collect();
+    assert!(!families.is_empty());
+    assert!(families.iter().all(|family| *family == "Noto Serif SC"));
+}
+
 fn image_docx_fixture() -> (Vec<u8>, Vec<u8>) {
     let image = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     let document = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -50,6 +75,33 @@ fn image_docx_fixture() -> (Vec<u8>, Vec<u8>) {
         archive.write_all(content).unwrap();
     }
     (archive.finish().unwrap().into_inner(), image)
+}
+
+#[test]
+fn import_reports_unmapped_header_and_note_parts() {
+    let document = br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p></w:body></w:document>"#;
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, content) in [
+        ("word/document.xml", document.as_slice()),
+        ("word/header1.xml", b"<w:hdr/>".as_slice()),
+        ("word/footnotes.xml", b"<w:footnotes/>".as_slice()),
+        ("word/endnotes.xml", b"<w:endnotes/>".as_slice()),
+    ] {
+        archive
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(content).unwrap();
+    }
+    let bytes = archive.finish().unwrap().into_inner();
+    let imported = oo_docx::parse_docx_with_assets(&bytes, "loss-report").unwrap();
+    let capabilities = imported
+        .loss_report
+        .unsupported
+        .iter()
+        .map(|loss| loss.capability)
+        .collect::<Vec<_>>();
+    assert_eq!(capabilities, ["headerFooter", "footnotes", "endnotes"]);
 }
 
 #[test]
@@ -151,11 +203,34 @@ fn soft_break_stays_inside_rich_text() {
 #[test]
 fn section_properties_define_page_setup() {
     let doc = parse("sample.docx");
-    let page = doc.page_setup.unwrap();
+    let page = doc.page_setup.clone().unwrap();
     assert!((page.width - 595.3).abs() < 0.1);
     assert!((page.height - 841.9).abs() < 0.1);
     assert_eq!(page.margin_left, 72.0);
     assert_eq!(page.margin_top, 72.0);
+    assert_eq!(doc.page_semantics.sections.len(), 1);
+    assert_eq!(
+        doc.page_semantics.sections[0].page_setup.as_ref(),
+        Some(&page)
+    );
+}
+
+#[test]
+fn page_numbering_round_trips_through_section_properties() {
+    let mut doc = parse("sample.docx");
+    let section = doc.page_semantics.sections.first_mut().expect("section");
+    section.page_numbering = Some(DocumentPageNumbering {
+        start_at: 3,
+        format: PageNumberFormat::LowerRoman,
+    });
+    let bytes = oo_docx::write_docx(&doc).unwrap();
+    let roundtrip = oo_docx::parse_docx(&bytes, "page-numbering").unwrap();
+    let numbering = roundtrip.page_semantics.sections[0]
+        .page_numbering
+        .as_ref()
+        .expect("page numbering");
+    assert_eq!(numbering.start_at, 3);
+    assert_eq!(numbering.format, PageNumberFormat::LowerRoman);
 }
 
 #[test]
@@ -279,4 +354,97 @@ fn zip_without_document_part_is_reported() {
         matches!(err, oo_docx::DocxError::MissingPart(_)),
         "实际错误：{err}"
     );
+}
+
+#[test]
+fn export_reports_semantic_losses_instead_of_dropping_them_silently() {
+    let mut document = parse("minimal.docx");
+    let text = |text: &str| {
+        Some(oo_schema::RichText {
+            text: text.to_string(),
+            runs: Vec::new(),
+        })
+    };
+    let make_block = |id: &str,
+                      kind: &oo_schema::DocumentBlockKind,
+                      content: &str|
+     -> oo_schema::DocumentBlock {
+        let kind = kind.clone();
+        oo_schema::DocumentBlock {
+            id: id.to_string(),
+            kind: kind.clone(),
+            presentation: Default::default(),
+            content: text(content),
+            children: Vec::new(),
+            data: match kind {
+                oo_schema::DocumentBlockKind::Todo => {
+                    oo_schema::BlockData::Todo(oo_schema::TodoBlock { checked: true })
+                }
+                oo_schema::DocumentBlockKind::Link => {
+                    oo_schema::BlockData::Link(oo_schema::LinkBlock {
+                        url: "https://example.com".into(),
+                    })
+                }
+                _ => oo_schema::BlockData::None,
+            },
+        }
+    };
+    let kinds: Vec<(&str, oo_schema::DocumentBlockKind, &str)> = vec![
+        ("todo-1", oo_schema::DocumentBlockKind::Todo, "买牛奶"),
+        ("link-1", oo_schema::DocumentBlockKind::Link, "示例链接"),
+        ("callout-1", oo_schema::DocumentBlockKind::Callout, "注意"),
+        ("page-1", oo_schema::DocumentBlockKind::Page, ""),
+        ("cols-1", oo_schema::DocumentBlockKind::Columns, ""),
+    ];
+    for (id, kind, content) in &kinds {
+        document.blocks.push(make_block(id, kind, content));
+        document.root.push(id.to_string());
+    }
+    document.validate().expect("测试模型应通过 schema 校验");
+
+    let exported = oo_docx::write_docx_with_report(&document, &[]).expect("导出失败");
+    assert!(!exported.loss_report.is_empty());
+    assert_eq!(
+        exported.loss_report.header_summary().as_deref(),
+        Some("todoState:1,linkTarget:1,calloutStyle:1,structuralContainer:2")
+    );
+    // Text content survives every approximation.
+    let roundtrip = oo_docx::parse_docx(&exported.bytes, "loss-roundtrip").unwrap();
+    assert!(roundtrip.plain_text().contains("买牛奶"));
+    assert!(roundtrip.plain_text().contains("示例链接"));
+
+    // Tables keep the hard-error discipline and never enter the report.
+    let mut with_table = parse("minimal.docx");
+    with_table
+        .blocks
+        .push(make_block("tbl", &oo_schema::DocumentBlockKind::Table, ""));
+    with_table.root.push("tbl".into());
+    // A table block requires table data; reuse the parser's own model instead of
+    // hand-building it: flip an existing paragraph's data would fail validate(),
+    // so assert via the dedicated error path using a synthetic table payload.
+    with_table.blocks.last_mut().unwrap().data = {
+        use oo_schema::TableRange;
+        use oo_schema::{TableBlock, TableCell, TableColumn, TableRow};
+        oo_schema::BlockData::Table(TableBlock {
+            columns: vec![TableColumn {
+                id: "c1".into(),
+                width: None,
+            }],
+            rows: vec![TableRow {
+                id: "r1".into(),
+                height: None,
+                cells: vec![TableCell {
+                    id: "cell-1".into(),
+                    content: text("cell").unwrap(),
+                    style: Default::default(),
+                }],
+            }],
+            merged_ranges: Vec::<TableRange>::new(),
+        })
+    };
+    let error = oo_docx::write_docx_with_assets(&with_table, &[]).unwrap_err();
+    assert!(matches!(
+        error,
+        oo_docx::DocxError::UnsupportedBlock("table")
+    ));
 }

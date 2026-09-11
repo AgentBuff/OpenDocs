@@ -4,7 +4,8 @@
 //! - `word/document.xml`：正文内容与页面设置
 //! - `word/styles.xml`：文档默认值与具名段落样式
 //!
-//! 尚未支持：表格结构（当前会被拍平成段落）、列表编号、页眉页脚、批注。
+//! 尚未支持的页眉页脚、脚注和尾注部件会进入结构化 loss report；它们不会被静默丢弃。
+//! 表格结构当前会被拍平成段落，列表编号和批注仍属于后续交换能力。
 //! 图片会从 `document.xml.rels` 提取为稳定 assetId；写出端通过显式资产参数恢复
 //! `word/media` 与关系部件，避免把二进制内容塞回 Document schema。
 
@@ -25,6 +26,7 @@ use oo_schema::{
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 
@@ -87,6 +89,7 @@ pub struct DocxAsset {
 pub struct DocxImport {
     pub document: DocumentModel,
     pub assets: Vec<DocxAsset>,
+    pub loss_report: DocxLossReport,
 }
 
 /// 解析一份 .docx 的字节内容，直接产出 canonical `DocumentModel`。
@@ -102,6 +105,10 @@ pub fn parse_docx_with_assets(
     doc_id: impl Into<String>,
 ) -> Result<DocxImport, DocxError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
+    let part_names = archive
+        .file_names()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
     let document_xml =
         read_part(&mut archive, DOCUMENT_PART)?.ok_or(DocxError::MissingPart(DOCUMENT_PART))?;
     let sheet = match read_part(&mut archive, STYLES_PART)? {
@@ -139,10 +146,42 @@ pub fn parse_docx_with_assets(
     }
     let model = document::parse_document(&document_xml, &sheet, doc_id, &media_relations)?;
     model.validate()?;
+    let loss_report = collect_docx_import_losses(&part_names);
     Ok(DocxImport {
         document: model,
         assets,
+        loss_report,
     })
+}
+
+fn collect_docx_import_losses(part_names: &HashSet<String>) -> DocxLossReport {
+    let mut unsupported = Vec::new();
+    let header_footer_count = part_names
+        .iter()
+        .filter(|name| name.starts_with("word/header") || name.starts_with("word/footer"))
+        .count();
+    if header_footer_count > 0 {
+        unsupported.push(DocxLoss {
+            capability: "headerFooter",
+            count: header_footer_count,
+            detail: "DOCX 页眉/页脚部件尚未导入，正文与节页面设置已保留".into(),
+        });
+    }
+    if part_names.contains("word/footnotes.xml") {
+        unsupported.push(DocxLoss {
+            capability: "footnotes",
+            count: 1,
+            detail: "DOCX 脚注部件尚未导入".into(),
+        });
+    }
+    if part_names.contains("word/endnotes.xml") {
+        unsupported.push(DocxLoss {
+            capability: "endnotes",
+            count: 1,
+            detail: "DOCX 尾注部件尚未导入".into(),
+        });
+    }
+    DocxLossReport { unsupported }
 }
 
 fn parse_media_relationships(xml: &[u8]) -> Result<Vec<(String, String)>, DocxError> {
@@ -214,6 +253,151 @@ fn content_type_for_path(path: &str) -> &'static str {
 }
 
 /// 将不含媒体的 canonical DocumentModel 导出为可被 Word/WPS 打开的最小 DOCX 包。
+/// 一类被导出器近似或丢弃的文档能力。文本内容总是保留；这里列出的是
+/// 无法在 DOCX 中保真的语义（如 todo 勾选态、链接目标）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxLoss {
+    /// 稳定能力码，供 UI/SDK 直接消费：todoState | linkTarget | calloutStyle |
+    /// structuralContainer | unknownKind。
+    pub capability: &'static str,
+    /// 受影响的 block 数量。
+    pub count: usize,
+    /// 面向用户的中文说明。
+    pub detail: String,
+}
+
+/// DOCX 导出的能力损失报告。与 PPTX 的 `PptxLossReport` 同构：调用方可以
+/// 把它展示给用户，而不是让导出器静默近似。表格、extension block 与缺失
+/// 图片资产仍然是硬错误，不会进入报告。
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocxLossReport {
+    pub unsupported: Vec<DocxLoss>,
+}
+
+impl DocxLossReport {
+    pub fn is_empty(&self) -> bool {
+        self.unsupported.is_empty()
+    }
+
+    /// 适合放进 HTTP 响应头的紧凑 ASCII 摘要：`capability:count` 对。
+    pub fn header_summary(&self) -> Option<String> {
+        if self.unsupported.is_empty() {
+            return None;
+        }
+        let summary = self
+            .unsupported
+            .iter()
+            .map(|loss| format!("{}:{}", loss.capability, loss.count))
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(summary)
+    }
+}
+
+fn collect_docx_losses(document: &DocumentModel) -> DocxLossReport {
+    fn push(entries: &mut Vec<DocxLoss>, capability: &'static str, detail: &str) {
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|entry| entry.capability == capability)
+        {
+            existing.count += 1;
+        } else {
+            entries.push(DocxLoss {
+                capability,
+                count: 1,
+                detail: detail.to_string(),
+            });
+        }
+    }
+    let mut unsupported = Vec::new();
+    for block in &document.blocks {
+        match (&block.kind, &block.data) {
+            (_, BlockData::Todo { .. }) => {
+                push(
+                    &mut unsupported,
+                    "todoState",
+                    "todo 的勾选状态无法写入 DOCX，仅保留文本",
+                );
+            }
+            (DocumentBlockKind::Link, _) => push(
+                &mut unsupported,
+                "linkTarget",
+                "link block 的目标 URL 无法写回 DOCX，仅保留可见文本",
+            ),
+            (DocumentBlockKind::Callout, _) => push(
+                &mut unsupported,
+                "calloutStyle",
+                "callout 的容器样式被导出为普通段落",
+            ),
+            (
+                DocumentBlockKind::Page | DocumentBlockKind::Columns | DocumentBlockKind::Column,
+                _,
+            ) => push(
+                &mut unsupported,
+                "structuralContainer",
+                "分页/多栏容器结构在 DOCX 中被展平为顺序段落",
+            ),
+            (DocumentBlockKind::Unknown { type_id, .. }, _) => push(
+                &mut unsupported,
+                "unknownKind",
+                &format!("未知块 {type_id} 仅保留原始文本"),
+            ),
+            _ => {}
+        }
+    }
+    if document.page_semantics.sections.len() > 1 {
+        unsupported.push(DocxLoss {
+            capability: "sectionBreaks",
+            count: document.page_semantics.sections.len() - 1,
+            detail: "当前 DOCX writer 只写出最终节属性，其余节边界会被展平".into(),
+        });
+    }
+    for section in &document.page_semantics.sections {
+        if section.header.is_some() || section.footer.is_some() {
+            push(
+                &mut unsupported,
+                "headerFooter",
+                "页眉/页脚已保留在 Artifact，但当前 DOCX writer 尚不写出关联部件",
+            );
+        }
+    }
+    if !document.page_semantics.footnotes.is_empty() {
+        unsupported.push(DocxLoss {
+            capability: "footnotes",
+            count: document.page_semantics.footnotes.len(),
+            detail: "脚注已保留在 Artifact，但当前 DOCX writer 尚不写出 footnotes 部件".into(),
+        });
+    }
+    if !document.page_semantics.endnotes.is_empty() {
+        unsupported.push(DocxLoss {
+            capability: "endnotes",
+            count: document.page_semantics.endnotes.len(),
+            detail: "尾注已保留在 Artifact，但当前 DOCX writer 尚不写出 endnotes 部件".into(),
+        });
+    }
+    DocxLossReport { unsupported }
+}
+
+/// 导出 DOCX 并返回能力损失报告。字节与 [`write_docx`] 完全一致；表格、
+/// extension 与资产错误仍按原样硬失败，不会出现在报告中。
+pub fn write_docx_with_report(
+    document: &DocumentModel,
+    assets: &[DocxAsset],
+) -> Result<DocxExport, DocxError> {
+    let loss_report = collect_docx_losses(document);
+    let bytes = write_docx_with_assets(document, assets)?;
+    Ok(DocxExport { bytes, loss_report })
+}
+
+/// [`write_docx_with_report`] 的返回值。
+#[derive(Debug)]
+pub struct DocxExport {
+    pub bytes: Vec<u8>,
+    pub loss_report: DocxLossReport,
+}
+
 pub fn write_docx(document: &DocumentModel) -> Result<Vec<u8>, DocxError> {
     write_docx_internal(document, &[])
 }
@@ -347,7 +531,14 @@ fn build_document_xml<T: MediaExport>(document: &DocumentModel, media: &[T]) -> 
     for id in &document.root {
         append_block(&mut xml, &block_map, id, media);
     }
-    append_section_properties(&mut xml, document.page_setup.as_ref());
+    let final_section = document.page_semantics.sections.last();
+    append_section_properties(
+        &mut xml,
+        final_section
+            .and_then(|section| section.page_setup.as_ref())
+            .or(document.page_setup.as_ref()),
+        final_section.and_then(|section| section.page_numbering.as_ref()),
+    );
     xml.push_str("</w:body></w:document>");
     xml
 }
@@ -557,10 +748,10 @@ fn append_run_properties(xml: &mut String, style: &InlineStyle) {
         properties.push_str("<w:strike/>");
     }
     if let Some(font) = style.font_family.as_deref() {
-        let font = xml_escape(font);
+        let font = xml_escape(&oo_schema::font_family::primary_font_family(font));
         let _ = write!(
             properties,
-            "<w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:eastAsia=\"{font}\"/>"
+            "<w:rFonts w:ascii=\"{font}\" w:hAnsi=\"{font}\" w:eastAsia=\"{font}\" w:cs=\"{font}\"/>"
         );
     }
     if let Some(size) = style.font_size {
@@ -620,7 +811,11 @@ fn append_text_node(xml: &mut String, text: &str) {
     }
 }
 
-fn append_section_properties(xml: &mut String, page_setup: Option<&oo_schema::PageSetup>) {
+fn append_section_properties(
+    xml: &mut String,
+    page_setup: Option<&oo_schema::PageSetup>,
+    page_numbering: Option<&oo_schema::DocumentPageNumbering>,
+) {
     let page = page_setup.cloned().unwrap_or(oo_schema::PageSetup {
         width: 612.0,
         height: 792.0,
@@ -631,7 +826,7 @@ fn append_section_properties(xml: &mut String, page_setup: Option<&oo_schema::Pa
     });
     let _ = write!(
         xml,
-        "<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\"/></w:sectPr>",
+        "<w:sectPr><w:pgSz w:w=\"{}\" w:h=\"{}\"/><w:pgMar w:top=\"{}\" w:right=\"{}\" w:bottom=\"{}\" w:left=\"{}\"/>",
         twips(page.width as f64),
         twips(page.height as f64),
         twips(page.margin_top as f64),
@@ -639,6 +834,21 @@ fn append_section_properties(xml: &mut String, page_setup: Option<&oo_schema::Pa
         twips(page.margin_bottom as f64),
         twips(page.margin_left as f64)
     );
+    if let Some(numbering) = page_numbering {
+        let format = match numbering.format {
+            oo_schema::PageNumberFormat::Decimal => "decimal",
+            oo_schema::PageNumberFormat::UpperRoman => "upperRoman",
+            oo_schema::PageNumberFormat::LowerRoman => "lowerRoman",
+            oo_schema::PageNumberFormat::UpperLetter => "upperLetter",
+            oo_schema::PageNumberFormat::LowerLetter => "lowerLetter",
+        };
+        let _ = write!(
+            xml,
+            "<w:pgNumType w:start=\"{}\" w:fmt=\"{}\"/>",
+            numbering.start_at, format
+        );
+    }
+    xml.push_str("</w:sectPr>");
 }
 
 fn twips(points: f64) -> i64 {

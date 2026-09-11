@@ -20,7 +20,7 @@
             "type": "text",
             "data": {
               "frame": {
-                "body": { "text": "Hello", "runs": [] },
+                "body": { "text": "Hello", "runs": [], "paragraphs": [{ "start": 0, "end": 5, "alignment": "left", "list": null, "indentLevel": 0 }] },
                 "verticalAlign": "middle",
                 "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
                 "autoFit": "none"

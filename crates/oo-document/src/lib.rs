@@ -8,16 +8,22 @@ use std::collections::HashSet;
 
 use oo_schema::{
     BlockAlignment, BlockData, BlockId, BlockPresentation, CodeBlockConfig, Color, DocumentBlock,
-    DocumentBlockKind, DocumentModel, ImageBlock, ImageTransform, InlineRun, InlineStyle,
-    LinkBlock, ListPresentation, PageSetup, ParagraphStyleRef, RichText, SchemaValidationError,
-    TableBlock, TableBorder, TableCell, TableColumn, TableRange, TableRow, TodoBlock,
-    VerticalAlign,
+    DocumentBlockKind, DocumentModel, DocumentNote, DocumentPageSemantics, DocumentSection,
+    ImageBlock, ImageTransform, InlineRun, InlineStyle, LinkBlock, ListPresentation, PageSetup,
+    ParagraphStyleRef, RichText, SchemaValidationError, TableBlock, TableBorder, TableCell,
+    TableColumn, TableRange, TableRow, TodoBlock, VerticalAlign,
 };
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 
+use crate::search::{
+    find_text, replace_rich_text_matches, DocumentSearchOptions, DocumentTextTarget,
+};
+
 mod change;
 mod mutation;
+pub mod print_projection;
+pub mod search;
 mod store;
 pub mod table_grid;
 
@@ -53,6 +59,169 @@ where
 pub struct DocumentCommandBatch {
     pub base_revision: u64,
     pub commands: Vec<DocumentCommand>,
+}
+
+/// Machine-readable description of one semantic command owned by the
+/// canonical Document engine. Transport-only intents such as history remain
+/// server-owned and are deliberately absent from this registry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DocumentCommandDescriptor {
+    pub type_id: &'static str,
+    pub scope: &'static str,
+}
+
+pub fn document_command_registry() -> &'static [DocumentCommandDescriptor] {
+    const COMMANDS: &[DocumentCommandDescriptor] = &[
+        DocumentCommandDescriptor {
+            type_id: "document.insertBlock",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertQuote",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertTodo",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertLink",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertDivider",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setBlockPresentation",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.patchInlineRange",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.deleteBlock",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.resetBlock",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.moveBlock",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setPageSetup",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.upsertSection",
+            scope: "document.page",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.deleteSection",
+            scope: "document.page",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.upsertNote",
+            scope: "document.page",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.deleteNote",
+            scope: "document.page",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.formatTableCells",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setTableBorders",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.applyTableBorderPreset",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setTodoChecked",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.convertToLink",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setLinkTarget",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setCodeConfig",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setImageConfig",
+            scope: "document.image",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.replaceBlockText",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.replaceAllText",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.replaceTextMatch",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.convertBlock",
+            scope: "document",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.replaceTableCellText",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.patchTableCellInlineRange",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertTableRow",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.insertTableColumn",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.deleteTableRow",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.deleteTableColumn",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setTableColumnWidth",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.setTableRowHeight",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.mergeTableCells",
+            scope: "document.table",
+        },
+        DocumentCommandDescriptor {
+            type_id: "document.splitTableCells",
+            scope: "document.table",
+        },
+    ];
+    COMMANDS
 }
 
 /// 结构命令与样式/内容命令分开，避免用一个「万能 update」绕过 Block Tree 不变量。
@@ -136,6 +305,21 @@ pub enum DocumentCommand {
     SetPageSetup {
         page_setup: Option<PageSetup>,
     },
+    UpsertSection {
+        section: DocumentSection,
+        index: usize,
+    },
+    DeleteSection {
+        section_id: String,
+    },
+    UpsertNote {
+        note_kind: DocumentNoteKind,
+        note: DocumentNote,
+    },
+    DeleteNote {
+        note_kind: DocumentNoteKind,
+        note_id: String,
+    },
     FormatTableCells {
         block_id: BlockId,
         selection: TableCellSelection,
@@ -181,6 +365,25 @@ pub enum DocumentCommand {
     ReplaceBlockText {
         block_id: BlockId,
         content: RichText,
+    },
+    /// Replace every current non-overlapping match as one atomic, undoable
+    /// transaction. The query is evaluated by the canonical engine so DOM
+    /// ranges and stale client-side offsets never become write authority.
+    ReplaceAllText {
+        query: String,
+        replacement: String,
+        #[serde(default)]
+        options: DocumentSearchOptions,
+    },
+    /// Replace one search projection item after re-validating it against the
+    /// current engine revision. A stale target/range is rejected atomically.
+    ReplaceTextMatch {
+        target: DocumentTextTarget,
+        range: TextRange,
+        query: String,
+        replacement: String,
+        #[serde(default)]
+        options: DocumentSearchOptions,
     },
     ConvertBlock {
         block_id: BlockId,
@@ -241,6 +444,13 @@ pub enum DocumentCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DocumentNoteKind {
+    Footnote,
+    Endnote,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageBlockPatch {
@@ -255,6 +465,8 @@ pub struct ImageBlockPatch {
     pub size: Option<oo_schema::ImageSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement: Option<oo_schema::ImagePlacement>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
 }
@@ -458,11 +670,18 @@ impl InlineStylePatch {
                 "至少设置或清除一个行内样式字段".into(),
             ));
         }
-        for (name, value) in [
-            ("fontFamily", &self.font_family),
-            ("color", &self.color),
-            ("highlight", &self.highlight),
-        ] {
+        // fontFamily 是自由 CSS 栈字符串，不参与颜色校验。
+        if self
+            .font_family
+            .as_ref()
+            .and_then(|item| item.as_ref())
+            .is_some_and(|text| text.trim().is_empty())
+        {
+            return Err(DocumentEngineError::InvalidInlinePatch(
+                "fontFamily 不能是空字符串".into(),
+            ));
+        }
+        for (name, value) in [("color", &self.color), ("highlight", &self.highlight)] {
             if value
                 .as_ref()
                 .and_then(|item| item.as_ref())
@@ -693,6 +912,16 @@ impl DocumentEngine {
         let mut applied = Vec::new();
         let mut changes = ChangeTracker::default();
         for mutation in &entry {
+            if let Mutation::SetPageSemantics { after, .. } = mutation {
+                let before = self.store.model.page_semantics.clone();
+                self.store.model.page_semantics = (**after).clone();
+                applied.push(Mutation::SetPageSemantics {
+                    before: Box::new(before),
+                    after: after.clone(),
+                });
+                changes.structure_changed = true;
+                continue;
+            }
             if let Mutation::Update {
                 block_id, after, ..
             } = mutation
@@ -871,6 +1100,18 @@ impl DocumentEngine {
                 changes.structure_changed = true;
                 Ok(())
             }
+            DocumentCommand::UpsertSection { section, index } => {
+                self.upsert_section(section, index, journal, changes)
+            }
+            DocumentCommand::DeleteSection { section_id } => {
+                self.delete_section(&section_id, journal, changes)
+            }
+            DocumentCommand::UpsertNote { note_kind, note } => {
+                self.upsert_note(note_kind, note, journal, changes)
+            }
+            DocumentCommand::DeleteNote { note_kind, note_id } => {
+                self.delete_note(note_kind, &note_id, journal, changes)
+            }
             DocumentCommand::FormatTableCells {
                 block_id,
                 selection,
@@ -906,6 +1147,26 @@ impl DocumentEngine {
             DocumentCommand::ReplaceBlockText { block_id, content } => {
                 self.replace_block_text(block_id, content, journal, changes)
             }
+            DocumentCommand::ReplaceAllText {
+                query,
+                replacement,
+                options,
+            } => self.replace_all_text(query, replacement, options, journal, changes),
+            DocumentCommand::ReplaceTextMatch {
+                target,
+                range,
+                query,
+                replacement,
+                options,
+            } => self.replace_text_match(
+                target,
+                range,
+                query,
+                replacement,
+                options,
+                journal,
+                changes,
+            ),
             DocumentCommand::ConvertBlock { block_id, kind } => {
                 self.convert_block(block_id, kind, journal, changes)
             }
@@ -967,6 +1228,101 @@ impl DocumentEngine {
                 self.split_table_cells(block_id, range, journal, changes)
             }
         }
+    }
+
+    fn record_page_semantics(
+        &mut self,
+        before: DocumentPageSemantics,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) {
+        journal.push(Mutation::SetPageSemantics {
+            before: Box::new(before),
+            after: Box::new(self.store.model.page_semantics.clone()),
+        });
+        changes.structure_changed = true;
+    }
+
+    fn upsert_section(
+        &mut self,
+        section: DocumentSection,
+        index: usize,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        let before = self.store.model.page_semantics.clone();
+        let sections = &mut self.store.model.page_semantics.sections;
+        let existing = sections.iter().position(|item| item.id == section.id);
+        let target_len = sections.len() - usize::from(existing.is_some());
+        if index > target_len {
+            return Err(DocumentEngineError::InvalidIndex {
+                index,
+                len: target_len,
+            });
+        }
+        if let Some(position) = existing {
+            sections.remove(position);
+        }
+        sections.insert(index, section);
+        self.record_page_semantics(before, journal, changes);
+        Ok(())
+    }
+
+    fn delete_section(
+        &mut self,
+        section_id: &str,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        let before = self.store.model.page_semantics.clone();
+        let sections = &mut self.store.model.page_semantics.sections;
+        let Some(position) = sections.iter().position(|item| item.id == section_id) else {
+            return Err(DocumentEngineError::MissingSection(section_id.to_owned()));
+        };
+        sections.remove(position);
+        self.record_page_semantics(before, journal, changes);
+        Ok(())
+    }
+
+    fn upsert_note(
+        &mut self,
+        note_kind: DocumentNoteKind,
+        note: DocumentNote,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        let before = self.store.model.page_semantics.clone();
+        let notes = match note_kind {
+            DocumentNoteKind::Footnote => &mut self.store.model.page_semantics.footnotes,
+            DocumentNoteKind::Endnote => &mut self.store.model.page_semantics.endnotes,
+        };
+        if let Some(current) = notes.iter_mut().find(|item| item.id == note.id) {
+            *current = note;
+        } else {
+            notes.push(note);
+        }
+        self.record_page_semantics(before, journal, changes);
+        Ok(())
+    }
+
+    fn delete_note(
+        &mut self,
+        note_kind: DocumentNoteKind,
+        note_id: &str,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        let before = self.store.model.page_semantics.clone();
+        let notes = match note_kind {
+            DocumentNoteKind::Footnote => &mut self.store.model.page_semantics.footnotes,
+            DocumentNoteKind::Endnote => &mut self.store.model.page_semantics.endnotes,
+        };
+        let Some(position) = notes.iter().position(|item| item.id == note_id) else {
+            return Err(DocumentEngineError::MissingNote(note_id.to_owned()));
+        };
+        notes.remove(position);
+        self.record_page_semantics(before, journal, changes);
+        Ok(())
     }
 
     fn set_todo_checked(
@@ -1181,6 +1537,104 @@ impl DocumentEngine {
             after: Box::new(after),
         });
         changes.changed_blocks.insert(block_id);
+        Ok(())
+    }
+
+    fn replace_all_text(
+        &mut self,
+        query: String,
+        replacement: String,
+        options: DocumentSearchOptions,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        if query.is_empty() {
+            return Err(DocumentEngineError::EmptySearchQuery);
+        }
+        let matches = find_text(self.model(), &query, options);
+        if matches.is_empty() {
+            return Err(DocumentEngineError::NoSearchMatches);
+        }
+        self.replace_search_matches(&matches, &replacement, journal, changes)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replace_text_match(
+        &mut self,
+        target: DocumentTextTarget,
+        range: TextRange,
+        query: String,
+        replacement: String,
+        options: DocumentSearchOptions,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        if query.is_empty() {
+            return Err(DocumentEngineError::EmptySearchQuery);
+        }
+        let matched = find_text(self.model(), &query, options)
+            .into_iter()
+            .find(|matched| {
+                matched.target == target && matched.start == range.start && matched.end == range.end
+            })
+            .ok_or(DocumentEngineError::StaleSearchMatch)?;
+        self.replace_search_matches(&[matched], &replacement, journal, changes)
+    }
+
+    fn replace_search_matches(
+        &mut self,
+        matches: &[search::DocumentSearchMatch],
+        replacement: &str,
+        journal: &mut Vec<Mutation>,
+        changes: &mut ChangeTracker,
+    ) -> Result<(), DocumentEngineError> {
+        let mut index = 0;
+        while index < matches.len() {
+            let target = matches[index].target.clone();
+            let end = matches[index..]
+                .iter()
+                .position(|matched| matched.target != target)
+                .map_or(matches.len(), |offset| index + offset);
+            let target_matches = &matches[index..end];
+            match target {
+                DocumentTextTarget::Block { block_id } => {
+                    let content = self
+                        .store
+                        .block(&block_id)?
+                        .content
+                        .as_ref()
+                        .ok_or_else(|| DocumentEngineError::NotTextBlock(block_id.clone()))?;
+                    let content = replace_rich_text_matches(content, target_matches, replacement);
+                    self.replace_block_text(block_id, content, journal, changes)?;
+                }
+                DocumentTextTarget::TableCell {
+                    block_id,
+                    row_id,
+                    cell_id,
+                } => {
+                    let block = self.store.block(&block_id)?;
+                    let BlockData::Table(table) = &block.data else {
+                        return Err(DocumentEngineError::NotTableBlock(block_id));
+                    };
+                    let content = table
+                        .rows
+                        .iter()
+                        .find(|row| row.id == row_id)
+                        .and_then(|row| row.cells.iter().find(|cell| cell.id == cell_id))
+                        .map(|cell| &cell.content)
+                        .ok_or_else(|| {
+                            DocumentEngineError::InvalidTableSelection(format!(
+                                "不存在单元格 {cell_id}"
+                            ))
+                        })?;
+                    let content = replace_rich_text_matches(content, target_matches, replacement);
+                    self.replace_table_cell_text(
+                        block_id, row_id, cell_id, content, journal, changes,
+                    )?;
+                }
+            }
+            index = end;
+        }
         Ok(())
     }
 
@@ -1984,6 +2438,9 @@ impl DocumentEngine {
             Mutation::SetPageSetup { before, .. } => {
                 self.store.model.page_setup = before.clone();
             }
+            Mutation::SetPageSemantics { before, .. } => {
+                self.store.model.page_semantics = (**before).clone();
+            }
         }
         self.reindex_positions_only();
     }
@@ -1996,6 +2453,11 @@ impl DocumentEngine {
             if let Ok(block) = self.store.block_mut(block_id) {
                 *block = (**after).clone();
             }
+            self.reindex_positions_only();
+            return;
+        }
+        if let Mutation::SetPageSemantics { after, .. } = mutation {
+            self.store.model.page_semantics = (**after).clone();
             self.reindex_positions_only();
             return;
         }
@@ -2068,6 +2530,12 @@ impl DocumentEngine {
 pub enum DocumentEngineError {
     #[error("command batch 不能为空")]
     EmptyTransaction,
+    #[error("搜索文本不能为空")]
+    EmptySearchQuery,
+    #[error("没有可替换的搜索结果")]
+    NoSearchMatches,
+    #[error("搜索结果已过期，请刷新后重试")]
+    StaleSearchMatch,
     #[error("revision 冲突：服务端是 {expected}，事务基于 {actual}")]
     RevisionConflict { expected: u64, actual: u64 },
     #[error("block id 不能为空")]
@@ -2076,6 +2544,10 @@ pub enum DocumentEngineError {
     DuplicateBlock(BlockId),
     #[error("找不到 block {0}")]
     MissingBlock(BlockId),
+    #[error("找不到 section {0}")]
+    MissingSection(String),
+    #[error("找不到 note {0}")]
+    MissingNote(String),
     #[error("block {0} 不是表格")]
     NotTableBlock(BlockId),
     #[error("block {0} 不是待办事项")]
@@ -2297,6 +2769,14 @@ fn apply_image_patch(
             .validate(block_id)
             .map_err(|error| DocumentEngineError::InvalidImageConfig(error.to_string()))?;
         image.placement = placement;
+    }
+    if let Some(alt) = patch.alt {
+        if alt.chars().count() > 2_048 {
+            return Err(DocumentEngineError::InvalidImageConfig(
+                "图片替代文本不能超过 2048 个字符".into(),
+            ));
+        }
+        image.alt = alt;
     }
     if let Some(caption) = patch.caption {
         if caption.chars().count() > 512 {
@@ -2705,9 +3185,10 @@ fn mutation_to_command(mutation: &Mutation) -> Option<DocumentCommand> {
         Mutation::SetPageSetup { after, .. } => Some(DocumentCommand::SetPageSetup {
             page_setup: after.clone(),
         }),
-        Mutation::RemoveInserted { .. } | Mutation::Restore { .. } | Mutation::Update { .. } => {
-            None
-        }
+        Mutation::RemoveInserted { .. }
+        | Mutation::Restore { .. }
+        | Mutation::Update { .. }
+        | Mutation::SetPageSemantics { .. } => None,
     }
 }
 
@@ -2768,6 +3249,9 @@ fn summarize_mutations(changes: &mut ChangeTracker, mutations: &[Mutation]) {
             Mutation::SetPageSetup { .. } => {
                 changes.structure_changed = true;
             }
+            Mutation::SetPageSemantics { .. } => {
+                changes.structure_changed = true;
+            }
         }
     }
 }
@@ -2780,6 +3264,22 @@ mod tests {
         ListPresentation, TableBorder, TableBorderStyle, TableCellStyle, TableColumn, TableRange,
         TableRow, TodoBlock,
     };
+
+    #[test]
+    fn command_registry_is_unique_and_engine_owned() {
+        let registry = document_command_registry();
+        assert_eq!(registry.len(), 37);
+        let unique = registry
+            .iter()
+            .map(|descriptor| descriptor.type_id)
+            .collect::<HashSet<_>>();
+        assert_eq!(unique.len(), registry.len());
+        assert!(registry.iter().all(|descriptor| {
+            descriptor.type_id.starts_with("document.")
+                && descriptor.scope.starts_with("document")
+                && descriptor.type_id != "document.history"
+        }));
+    }
 
     fn paragraph(id: &str, text: &str) -> DocumentBlock {
         DocumentBlock {
@@ -2800,11 +3300,126 @@ mod tests {
     }
 
     #[test]
+    fn replace_all_is_one_atomic_undoable_batch() {
+        let model = DocumentModel {
+            root: vec!["first".into(), "second".into()],
+            blocks: vec![
+                paragraph("first", "路线图和路线图"),
+                paragraph("second", "路线图 😀"),
+            ],
+            page_setup: None,
+            page_semantics: Default::default(),
+        };
+        let mut engine = DocumentEngine::new(model.clone(), 9).unwrap();
+        let change = engine
+            .execute(DocumentCommandBatch {
+                base_revision: 9,
+                commands: vec![DocumentCommand::ReplaceAllText {
+                    query: "路线图".into(),
+                    replacement: "Roadmap".into(),
+                    options: DocumentSearchOptions::default(),
+                }],
+            })
+            .unwrap();
+        assert_eq!(change.changed_blocks, vec!["first", "second"]);
+        assert_eq!(engine.journal().len(), 1);
+        assert_eq!(
+            engine
+                .read_block("first")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .text,
+            "Roadmap和Roadmap"
+        );
+        assert_eq!(
+            engine
+                .read_block("second")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .text,
+            "Roadmap 😀"
+        );
+
+        let undone = engine.undo().unwrap();
+        assert_eq!(undone.changed_blocks, vec!["first", "second"]);
+        assert_eq!(engine.model(), &model);
+        engine.redo().unwrap();
+        assert_eq!(
+            engine
+                .read_block("first")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .text,
+            "Roadmap和Roadmap"
+        );
+    }
+
+    #[test]
+    fn replace_one_revalidates_the_stable_target_and_scalar_range() {
+        let model = DocumentModel {
+            root: vec!["first".into()],
+            blocks: vec![paragraph("first", "路线图和路线图")],
+            page_setup: None,
+            page_semantics: Default::default(),
+        };
+        let mut engine = DocumentEngine::new(model, 3).unwrap();
+        let target = DocumentTextTarget::Block {
+            block_id: "first".into(),
+        };
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 3,
+                commands: vec![DocumentCommand::ReplaceTextMatch {
+                    target: target.clone(),
+                    range: TextRange { start: 4, end: 7 },
+                    query: "路线图".into(),
+                    replacement: "计划".into(),
+                    options: DocumentSearchOptions::default(),
+                }],
+            })
+            .unwrap();
+        assert_eq!(
+            engine
+                .read_block("first")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .text,
+            "路线图和计划"
+        );
+
+        let before = engine.model().clone();
+        let error = engine
+            .execute(DocumentCommandBatch {
+                base_revision: 4,
+                commands: vec![DocumentCommand::ReplaceTextMatch {
+                    target,
+                    range: TextRange { start: 4, end: 7 },
+                    query: "路线图".into(),
+                    replacement: "旧位置".into(),
+                    options: DocumentSearchOptions::default(),
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(error, DocumentEngineError::StaleSearchMatch));
+        assert_eq!(engine.model(), &before);
+        assert_eq!(engine.revision(), 4);
+    }
+
+    #[test]
     fn read_blocks_uses_stable_ids_and_preserves_requested_order() {
         let model = DocumentModel {
             root: vec!["first".into(), "second".into()],
             blocks: vec![paragraph("first", "one"), paragraph("second", "two")],
             page_setup: None,
+            page_semantics: Default::default(),
         };
         let engine = DocumentEngine::new(model, 4).unwrap();
 
@@ -2937,6 +3552,7 @@ mod tests {
                             offset_x: 16.0,
                             offset_y: 8.0,
                         }),
+                        alt: Some("蓝色数据图表".into()),
                         caption: Some("图 1：裁剪后的示例".into()),
                     },
                 }],
@@ -2954,6 +3570,7 @@ mod tests {
         assert!(updated.size.lock_aspect_ratio);
         assert_eq!(updated.placement.offset_x, 16.0);
         assert_eq!(updated.placement.offset_y, 8.0);
+        assert_eq!(updated.alt, "蓝色数据图表");
         assert_eq!(updated.caption, "图 1：裁剪后的示例");
 
         engine.undo().unwrap();
@@ -2961,6 +3578,7 @@ mod tests {
             panic!("image data expected");
         };
         assert_eq!(reverted.asset_id, "asset-original");
+        assert_eq!(reverted.alt, "示例图片");
         assert!(reverted.caption.is_empty());
     }
 
@@ -3004,6 +3622,21 @@ mod tests {
         });
         assert!(matches!(
             invalid,
+            Err(DocumentEngineError::InvalidImageConfig(_))
+        ));
+
+        let oversized_alt = engine.execute(DocumentCommandBatch {
+            base_revision: 5,
+            commands: vec![DocumentCommand::SetImageConfig {
+                block_id: "image-1".into(),
+                patch: ImageBlockPatch {
+                    alt: Some("图".repeat(2_049)),
+                    ..ImageBlockPatch::default()
+                },
+            }],
+        });
+        assert!(matches!(
+            oversized_alt,
             Err(DocumentEngineError::InvalidImageConfig(_))
         ));
 
@@ -4060,6 +4693,69 @@ mod tests {
     }
 
     #[test]
+    fn font_family_is_a_free_css_stack_not_a_color() {
+        let mut engine = engine();
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 4,
+                commands: vec![DocumentCommand::InsertBlock {
+                    block: paragraph("font-1", "styled"),
+                    parent_id: None,
+                    index: 0,
+                }],
+            })
+            .unwrap();
+        // A full CSS font stack must pass the patch validator; it is not a color.
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 5,
+                commands: vec![DocumentCommand::PatchInlineRange {
+                    block_id: "font-1".into(),
+                    range: TextRange { start: 0, end: 6 },
+                    patch: InlineStylePatch {
+                        font_family: Some(Some(
+                            "\"Noto Sans SC\", \"PingFang SC\", sans-serif".into(),
+                        )),
+                        ..Default::default()
+                    },
+                }],
+            })
+            .unwrap();
+        assert_eq!(
+            engine
+                .read_block("font-1")
+                .unwrap()
+                .content
+                .as_ref()
+                .unwrap()
+                .runs[0]
+                .style
+                .font_family
+                .as_deref(),
+            Some("\"Noto Sans SC\", \"PingFang SC\", sans-serif")
+        );
+        // color still enforces the hex/rgb contract.
+        let error = engine
+            .execute(DocumentCommandBatch {
+                base_revision: 6,
+                commands: vec![DocumentCommand::PatchInlineRange {
+                    block_id: "font-1".into(),
+                    range: TextRange { start: 0, end: 1 },
+                    patch: InlineStylePatch {
+                        color: Some(Some("not-a-color".into())),
+                        ..Default::default()
+                    },
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DocumentEngineError::InvalidInlinePatch(message)
+                if message.contains("颜色")
+        ));
+    }
+
+    #[test]
     fn link_target_is_owned_by_typed_semantic_commands() {
         let mut engine = engine();
         engine
@@ -4331,6 +5027,7 @@ mod tests {
                 root: vec!["p-1".into()],
                 blocks: vec![paragraph("p-1", "only")],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             9,
         )
@@ -4368,6 +5065,7 @@ mod tests {
                     paragraph("tail", "tail"),
                 ],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             0,
         )
@@ -4415,6 +5113,7 @@ mod tests {
                     paragraph("tail", "tail"),
                 ],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             0,
         )
@@ -4568,6 +5267,7 @@ mod tests {
                 paragraph("tail", "tail"),
             ],
             page_setup: None,
+            page_semantics: Default::default(),
         };
         let mut engine = DocumentEngine::new(model.clone(), 10).unwrap();
         let error = engine
@@ -4609,6 +5309,7 @@ mod tests {
                     paragraph("tail", "tail"),
                 ],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             0,
         )
@@ -4676,6 +5377,7 @@ mod tests {
                     paragraph("tail", "tail"),
                 ],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             0,
         )
@@ -4810,6 +5512,7 @@ mod tests {
                     paragraph("tail", "tail"),
                 ],
                 page_setup: None,
+                page_semantics: Default::default(),
             },
             0,
         )
@@ -4851,5 +5554,59 @@ mod tests {
         );
         assert!(engine.store.block("group").is_err());
         assert!(engine.model().validate().is_ok());
+    }
+
+    #[test]
+    fn page_semantics_commands_are_atomic_and_undoable() {
+        let mut model = DocumentModel::empty();
+        model.root = vec!["p-1".into()];
+        model.blocks = vec![paragraph("p-1", "one")];
+        let mut engine = DocumentEngine::new(model, 0).unwrap();
+
+        engine
+            .execute(DocumentCommandBatch {
+                base_revision: 0,
+                commands: vec![
+                    DocumentCommand::UpsertSection {
+                        section: DocumentSection {
+                            id: "section-1".into(),
+                            start_block_id: "p-1".into(),
+                            page_setup: None,
+                            header: None,
+                            footer: None,
+                            page_numbering: None,
+                        },
+                        index: 0,
+                    },
+                    DocumentCommand::UpsertNote {
+                        note_kind: DocumentNoteKind::Footnote,
+                        note: DocumentNote {
+                            id: "footnote-1".into(),
+                            anchor: oo_schema::DocumentTextAnchor {
+                                block_id: "p-1".into(),
+                                row_id: None,
+                                cell_id: None,
+                                start: 0,
+                                end: 1,
+                            },
+                            content: vec![RichText {
+                                text: "note".into(),
+                                runs: Vec::new(),
+                            }],
+                        },
+                    },
+                ],
+            })
+            .unwrap();
+        assert_eq!(engine.model().page_semantics.sections.len(), 1);
+        assert_eq!(engine.model().page_semantics.footnotes.len(), 1);
+
+        engine.undo().unwrap();
+        assert!(engine.model().page_semantics.sections.is_empty());
+        assert!(engine.model().page_semantics.footnotes.is_empty());
+
+        engine.redo().unwrap();
+        assert_eq!(engine.model().page_semantics.sections[0].id, "section-1");
+        assert_eq!(engine.model().page_semantics.footnotes[0].id, "footnote-1");
     }
 }

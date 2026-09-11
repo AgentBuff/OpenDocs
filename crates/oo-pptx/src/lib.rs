@@ -12,12 +12,13 @@ use std::{
 };
 
 use oo_schema::presentation_v5::{
-    AssetRef, ColorRef, ConnectorEndpoint, ConnectorNode, Deck, DeckTheme, GroupNode,
-    HorizontalAlign, ImageNode, Insets, NodeTransform, Paint, Point, PresentationRichText,
+    AnimationEntry, AnimationPreset, AnimationTrigger, AssetRef, ColorRef, ConnectorEndpoint,
+    ConnectorNode, Deck, DeckTheme, GroupNode, HorizontalAlign, ImageNode, Insets, NodeTransform,
+    Paint, Point, PresentationListStyle, PresentationParagraph, PresentationRichText,
     PresentationTextRun, PresentationTextStyle, Rgba, SceneNode, SceneNodeKind, ShapeGeometry,
-    ShapeNode, ShapeStyle, Slide, SlideBackground, SlideLayout, SlideMaster, TableCell,
-    TableCellStyle, TableNode, TextAutoFit, TextFrame, TextNode, TextVerticalAlign,
-    ThemeColorToken, ThemeFontToken,
+    ShapeNode, ShapeStyle, Slide, SlideBackground, SlideLayout, SlideMaster, SlideTransition,
+    TableCell, TableCellStyle, TableNode, TextAutoFit, TextFrame, TextHorizontalAlign, TextNode,
+    TextVerticalAlign, ThemeColorToken, ThemeFontToken, Timeline, TransitionKind,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -164,9 +165,33 @@ pub fn semantic_diff(expected: &Deck, actual: &Deck) -> PptxSemanticDiff {
         let path = format!("slides[{index}]");
         compare_json(
             &mut differences,
+            &format!("{path}.name"),
+            &expected_slide.name,
+            &actual_slide.name,
+        );
+        compare_json(
+            &mut differences,
             &format!("{path}.background"),
             &expected_slide.background,
             &actual_slide.background,
+        );
+        compare_json(
+            &mut differences,
+            &format!("{path}.notes"),
+            &expected_slide.notes,
+            &actual_slide.notes,
+        );
+        compare_json(
+            &mut differences,
+            &format!("{path}.transition"),
+            &expected_slide.transition,
+            &actual_slide.transition,
+        );
+        compare_json(
+            &mut differences,
+            &format!("{path}.timeline"),
+            &semantic_timeline(expected_slide),
+            &semantic_timeline(actual_slide),
         );
         compare_json(
             &mut differences,
@@ -248,7 +273,7 @@ pub fn parse_pptx_with_report(bytes: &[u8]) -> Result<PptxImportResult, PptxErro
     import_masters_layouts_theme(&mut archive, &presentation_rels, &mut deck, &mut report)?;
     let mut imported_assets = BTreeMap::<String, PptxImportedAsset>::new();
     for (slide_index, part) in slide_parts.iter().enumerate() {
-        let xml = read_part(&mut archive, part, MAX_XML_PART_BYTES)?;
+        let xml = read_relationship_part(&mut archive, part, MAX_XML_PART_BYTES)?;
         let rels = relationships_for(&mut archive, part, &mut report)?;
         report_unmapped_slide_relationships(part, &rels, &mut report);
         let layout_id = rels
@@ -407,6 +432,53 @@ fn semantic_slide_nodes(slide: &Slide, deck: &Deck) -> Vec<serde_json::Value> {
     semantic_children(None, &slide.nodes, &assets)
 }
 
+fn semantic_timeline(slide: &Slide) -> Vec<serde_json::Value> {
+    let mut entries = slide.timeline.entries.iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.order_key.cmp(&right.order_key));
+    entries
+        .into_iter()
+        .map(|entry| {
+            serde_json::json!({
+                "target": semantic_node_path(slide, &entry.target_node_id),
+                "trigger": entry.trigger,
+                "preset": entry.preset,
+                "durationMs": entry.duration_ms,
+                "delayMs": entry.delay_ms,
+            })
+        })
+        .collect()
+}
+
+fn semantic_node_path(slide: &Slide, target_id: &str) -> Option<String> {
+    fn find(
+        nodes: &[SceneNode],
+        parent_id: Option<&str>,
+        target_id: &str,
+        prefix: &str,
+    ) -> Option<String> {
+        let mut siblings = nodes
+            .iter()
+            .filter(|node| node.parent_id.as_deref() == parent_id)
+            .collect::<Vec<_>>();
+        siblings.sort_by(|left, right| left.order_key.cmp(&right.order_key));
+        for (index, node) in siblings.into_iter().enumerate() {
+            let path = if prefix.is_empty() {
+                index.to_string()
+            } else {
+                format!("{prefix}.{index}")
+            };
+            if node.id == target_id {
+                return Some(path);
+            }
+            if let Some(found) = find(nodes, Some(&node.id), target_id, &path) {
+                return Some(found);
+            }
+        }
+        None
+    }
+    find(&slide.nodes, None, target_id, "")
+}
+
 fn semantic_children(
     parent_id: Option<&str>,
     nodes: &[SceneNode],
@@ -516,6 +588,19 @@ fn read_part<R: Read + std::io::Seek>(
     Ok(body)
 }
 
+fn read_relationship_part<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    target: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, PptxError> {
+    match read_part(archive, target, max_bytes) {
+        Err(PptxError::Zip(zip::result::ZipError::FileNotFound)) => Err(
+            PptxError::InvalidStructure(format!("relationship target 不存在：{target}")),
+        ),
+        result => result,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Relationship {
     kind: String,
@@ -528,8 +613,13 @@ fn local_name(name: &[u8]) -> &[u8] {
 
 fn attr(event: &quick_xml::events::BytesStart<'_>, name: &[u8]) -> Option<String> {
     event.attributes().flatten().find_map(|attribute| {
-        (local_name(attribute.key.as_ref()) == name)
-            .then(|| String::from_utf8_lossy(attribute.value.as_ref()).into_owned())
+        if local_name(attribute.key.as_ref()) != name {
+            return None;
+        }
+        let raw = String::from_utf8_lossy(attribute.value.as_ref());
+        quick_xml::escape::unescape(&raw)
+            .ok()
+            .map(|value| value.into_owned())
     })
 }
 
@@ -831,7 +921,7 @@ fn import_masters_layouts_theme<R: Read + std::io::Seek>(
         .map(|relationship| relationship.target.clone())
         .collect::<Vec<_>>();
     for master_part in master_parts {
-        let master_xml = read_part(archive, &master_part, MAX_XML_PART_BYTES)?;
+        let master_xml = read_relationship_part(archive, &master_part, MAX_XML_PART_BYTES)?;
         let master_id = stable_part_id("master", &master_part);
         deck.masters.push(SlideMaster {
             id: master_id.clone(),
@@ -846,11 +936,9 @@ fn import_masters_layouts_theme<R: Read + std::io::Seek>(
                 .values()
                 .find(|relationship| relationship.kind.ends_with("/theme"))
             {
-                deck.theme = parse_theme(
-                    &read_part(archive, &theme_rel.target, MAX_XML_PART_BYTES)?,
-                    stable_part_id("theme", &theme_rel.target),
-                )?;
-                let theme_xml = read_part(archive, &theme_rel.target, MAX_XML_PART_BYTES)?;
+                let theme_xml =
+                    read_relationship_part(archive, &theme_rel.target, MAX_XML_PART_BYTES)?;
+                deck.theme = parse_theme(&theme_xml, stable_part_id("theme", &theme_rel.target))?;
                 if contains_local_tag(&theme_xml, b"fmtScheme")
                     || contains_local_tag(&theme_xml, b"effectStyleLst")
                 {
@@ -868,7 +956,8 @@ fn import_masters_layouts_theme<R: Read + std::io::Seek>(
             .values()
             .filter(|relationship| relationship.kind.ends_with("/slideLayout"))
         {
-            let layout_xml = read_part(archive, &layout_rel.target, MAX_XML_PART_BYTES)?;
+            let layout_xml =
+                read_relationship_part(archive, &layout_rel.target, MAX_XML_PART_BYTES)?;
             deck.layouts.push(SlideLayout {
                 id: stable_part_id("layout", &layout_rel.target),
                 master_id: master_id.clone(),
@@ -1061,8 +1150,9 @@ fn parse_notes<R: Read + std::io::Seek>(
     part: &str,
     report: &mut PptxLossReport,
 ) -> Result<Option<String>, PptxError> {
-    let xml = read_part(archive, part, MAX_XML_PART_BYTES)?;
-    if contains_local_tag(&xml, b"rPr") {
+    let xml = read_relationship_part(archive, part, MAX_XML_PART_BYTES)?;
+    let (text, has_formatting, has_multiple_bodies) = parse_notes_body_text(&xml)?;
+    if has_formatting {
         report.unsupported.push(report_item(
             PptxReportKind::Unsupported,
             "notesFormatting",
@@ -1071,27 +1161,138 @@ fn parse_notes<R: Read + std::io::Seek>(
             Some("保留原始 PPTX source asset，或等待 notes rich-text adapter"),
         ));
     }
-    let text = collect_text(&xml)?;
-    Ok((!text.trim().is_empty()).then_some(text))
+    if has_multiple_bodies {
+        report.unsupported.push(report_item(
+            PptxReportKind::Unsupported,
+            "notesStructure",
+            part,
+            "notesSlide 包含多个 body placeholder，无法无歧义映射为单个 slide.notes",
+            Some("合并演讲者备注 body 后重新导入，或保留原始 PPTX source asset"),
+        ));
+    }
+    Ok(text.filter(|value| !value.trim().is_empty()))
 }
 
-fn collect_text(xml: &[u8]) -> Result<String, PptxError> {
+#[derive(Default)]
+struct NotesShapeDraft {
+    is_body: bool,
+    paragraphs: Vec<String>,
+    paragraph: Option<String>,
+    in_text: bool,
+    has_formatting: bool,
+}
+
+fn parse_notes_body_text(xml: &[u8]) -> Result<(Option<String>, bool, bool), PptxError> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
     let mut buffer = Vec::new();
-    let mut in_text = false;
-    let mut values = Vec::new();
+    let mut shape = None::<NotesShapeDraft>;
+    let mut bodies = Vec::<(String, bool)>::new();
     loop {
         match reader.read_event_into(&mut buffer)? {
-            Event::Start(event) if local_name(event.name().as_ref()) == b"t" => in_text = true,
-            Event::End(event) if local_name(event.name().as_ref()) == b"t" => in_text = false,
-            Event::Text(text) if in_text => values.push(text.unescape()?.into_owned()),
+            Event::Start(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"sp" if shape.is_none() => shape = Some(NotesShapeDraft::default()),
+                    b"ph" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.is_body = attr(&event, b"type").as_deref() == Some("body");
+                        }
+                    }
+                    b"p" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.paragraph = Some(String::new());
+                        }
+                    }
+                    b"t" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.in_text = true;
+                        }
+                    }
+                    b"rPr" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.has_formatting = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Empty(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"ph" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.is_body = attr(&event, b"type").as_deref() == Some("body");
+                        }
+                    }
+                    b"p" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.paragraphs.push(String::new());
+                        }
+                    }
+                    b"br" => {
+                        if let Some(paragraph) =
+                            shape.as_mut().and_then(|shape| shape.paragraph.as_mut())
+                        {
+                            paragraph.push('\n');
+                        }
+                    }
+                    b"rPr" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.has_formatting = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::Text(text) if shape.as_ref().is_some_and(|shape| shape.in_text) => {
+                if let Some(paragraph) = shape.as_mut().and_then(|shape| shape.paragraph.as_mut()) {
+                    paragraph.push_str(&text.unescape()?);
+                }
+            }
+            Event::End(event) => {
+                let name = event.name().as_ref().to_vec();
+                match local_name(&name) {
+                    b"t" => {
+                        if let Some(shape) = shape.as_mut() {
+                            shape.in_text = false;
+                        }
+                    }
+                    b"p" => {
+                        if let Some(shape) = shape.as_mut() {
+                            if let Some(paragraph) = shape.paragraph.take() {
+                                shape.paragraphs.push(paragraph);
+                            }
+                        }
+                    }
+                    b"sp" => {
+                        if let Some(mut finished) = shape.take() {
+                            if let Some(paragraph) = finished.paragraph.take() {
+                                finished.paragraphs.push(paragraph);
+                            }
+                            if finished.is_body {
+                                bodies.push((
+                                    finished.paragraphs.join("\n"),
+                                    finished.has_formatting,
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Event::Eof => break,
             _ => {}
         }
         buffer.clear();
     }
-    Ok(values.join("\n"))
+    let has_multiple_bodies = bodies.len() > 1;
+    let has_formatting = bodies.iter().any(|(_, formatted)| *formatted);
+    Ok((
+        bodies.into_iter().next().map(|(text, _)| text),
+        has_formatting,
+        has_multiple_bodies,
+    ))
 }
 
 struct SlideNodeDraft {
@@ -1103,6 +1304,11 @@ struct SlideNodeDraft {
     text: String,
     runs: Vec<PresentationTextRun>,
     active_run: Option<ActiveTextRun>,
+    paragraphs: Vec<PresentationParagraph>,
+    active_paragraph: Option<ActiveParagraph>,
+    vertical_align: TextVerticalAlign,
+    padding: Insets,
+    auto_fit: TextAutoFit,
     embed_relationship: Option<String>,
     is_picture: bool,
     is_group: bool,
@@ -1118,6 +1324,14 @@ struct ActiveTextRun {
     style: PresentationTextStyle,
 }
 
+#[derive(Debug, Clone)]
+struct ActiveParagraph {
+    start: usize,
+    alignment: TextHorizontalAlign,
+    list: Option<PresentationListStyle>,
+    indent_level: u8,
+}
+
 impl Default for SlideNodeDraft {
     fn default() -> Self {
         Self {
@@ -1129,6 +1343,11 @@ impl Default for SlideNodeDraft {
             text: String::new(),
             runs: Vec::new(),
             active_run: None,
+            paragraphs: Vec::new(),
+            active_paragraph: None,
+            vertical_align: TextVerticalAlign::Top,
+            padding: Insets::default(),
+            auto_fit: TextAutoFit::None,
             embed_relationship: None,
             is_picture: false,
             is_group: false,
@@ -1145,6 +1364,40 @@ fn report_text_run_unsupported(report: &mut PptxLossReport, slide_index: usize, 
         detail,
         Some("保留原始 PPTX source asset，或简化为基础文本 run 后重新导入"),
     ));
+}
+
+fn parse_text_body_properties(
+    event: &quick_xml::events::BytesStart<'_>,
+    draft: &mut SlideNodeDraft,
+    report: &mut PptxLossReport,
+    slide_index: usize,
+) -> Result<(), PptxError> {
+    draft.vertical_align = match attr(event, b"anchor").as_deref() {
+        None | Some("t") => TextVerticalAlign::Top,
+        Some("ctr") => TextVerticalAlign::Middle,
+        Some("b") => TextVerticalAlign::Bottom,
+        Some(_) => {
+            report_text_run_unsupported(
+                report,
+                slide_index,
+                "a:bodyPr anchor 不是 top/middle/bottom，不能无损映射",
+            );
+            TextVerticalAlign::Top
+        }
+    };
+    for (name, target) in [
+        (b"tIns".as_slice(), &mut draft.padding.top),
+        (b"rIns".as_slice(), &mut draft.padding.right),
+        (b"bIns".as_slice(), &mut draft.padding.bottom),
+        (b"lIns".as_slice(), &mut draft.padding.left),
+    ] {
+        *target = parse_coordinate(event, name, 0.0)?;
+        if !target.is_finite() || *target < 0.0 {
+            report_text_run_unsupported(report, slide_index, "a:bodyPr inset 必须是非负有限坐标");
+            *target = 0.0;
+        }
+    }
+    Ok(())
 }
 
 fn parse_run_properties(
@@ -1198,6 +1451,61 @@ fn parse_run_properties(
     }
 }
 
+fn parse_paragraph_properties(
+    event: &quick_xml::events::BytesStart<'_>,
+    paragraph: &mut ActiveParagraph,
+    report: &mut PptxLossReport,
+    slide_index: usize,
+) {
+    paragraph.alignment = match attr(event, b"algn").as_deref() {
+        None | Some("l") => TextHorizontalAlign::Left,
+        Some("ctr") => TextHorizontalAlign::Center,
+        Some("r") => TextHorizontalAlign::Right,
+        Some("just") | Some("justLow") => TextHorizontalAlign::Justify,
+        Some(_) => {
+            report_text_run_unsupported(report, slide_index, "a:pPr algn 尚未映射");
+            TextHorizontalAlign::Left
+        }
+    };
+    if let Some(level) = attr(event, b"lvl") {
+        match level.parse::<u8>() {
+            Ok(level @ 0..=8) => paragraph.indent_level = level,
+            _ => report_text_run_unsupported(report, slide_index, "a:pPr lvl 必须在 0 到 8 之间"),
+        }
+    }
+}
+
+fn start_paragraph(draft: &mut SlideNodeDraft) {
+    if !draft.paragraphs.is_empty() {
+        draft.text.push('\n');
+        if let Some(previous) = draft.paragraphs.last_mut() {
+            previous.end = draft.text.chars().count();
+        }
+    }
+    draft.active_paragraph = Some(ActiveParagraph {
+        start: draft.text.chars().count(),
+        alignment: TextHorizontalAlign::Left,
+        list: None,
+        indent_level: 0,
+    });
+}
+
+fn finish_paragraph(draft: &mut SlideNodeDraft) {
+    let Some(paragraph) = draft.active_paragraph.take() else {
+        return;
+    };
+    if paragraph.start == draft.text.chars().count() {
+        draft.text.push('\n');
+    }
+    draft.paragraphs.push(PresentationParagraph {
+        start: paragraph.start,
+        end: draft.text.chars().count(),
+        alignment: paragraph.alignment,
+        list: paragraph.list,
+        indent_level: paragraph.indent_level,
+    });
+}
+
 fn take_valid_text_runs(
     draft: &mut SlideNodeDraft,
     text: &str,
@@ -1213,17 +1521,16 @@ fn take_valid_text_runs(
         return Vec::new();
     }
     let length = text.chars().count();
-    let contiguous = draft
+    let valid = draft
         .runs
         .iter()
         .scan(0usize, |cursor, run| {
-            let valid = run.start == *cursor && run.start < run.end && run.end <= length;
+            let valid = run.start >= *cursor && run.start < run.end && run.end <= length;
             *cursor = run.end;
             Some(valid)
         })
-        .all(|valid| valid)
-        && draft.runs.last().is_some_and(|run| run.end == length);
-    if !contiguous {
+        .all(|valid| valid);
+    if !valid {
         report_text_run_unsupported(
             report,
             slide_index,
@@ -1231,8 +1538,27 @@ fn take_valid_text_runs(
         );
         return Vec::new();
     }
-    if draft
-        .runs
+    let mut cursor = 0;
+    let mut complete = Vec::new();
+    for run in std::mem::take(&mut draft.runs) {
+        if cursor < run.start {
+            complete.push(PresentationTextRun {
+                start: cursor,
+                end: run.start,
+                style: PresentationTextStyle::default(),
+            });
+        }
+        cursor = run.end;
+        complete.push(run);
+    }
+    if cursor < length {
+        complete.push(PresentationTextRun {
+            start: cursor,
+            end: length,
+            style: PresentationTextStyle::default(),
+        });
+    }
+    if complete
         .iter()
         .all(|run| run.style == PresentationTextStyle::default())
     {
@@ -1240,8 +1566,407 @@ fn take_valid_text_runs(
         // `a:r` wrapper nevertheless, so normalise that transport-only default on import.
         Vec::new()
     } else {
-        std::mem::take(&mut draft.runs)
+        complete
     }
+}
+
+fn parse_slide_transition(
+    xml: &[u8],
+    slide_index: usize,
+    report: &mut PptxLossReport,
+) -> Result<Option<SlideTransition>, PptxError> {
+    #[derive(Default)]
+    struct Candidate {
+        duration_ms: u32,
+        kind: Option<TransitionKind>,
+        saw_unknown_effect: bool,
+    }
+
+    fn duration(
+        event: &quick_xml::events::BytesStart<'_>,
+        slide_index: usize,
+        report: &mut PptxLossReport,
+    ) -> u32 {
+        let Some(raw) = attr(event, b"dur") else {
+            return 0;
+        };
+        match raw.parse::<u32>() {
+            Ok(value) if value <= 600_000 => value,
+            _ => {
+                report.unsupported.push(report_item(
+                    PptxReportKind::Invalid,
+                    "slideTransitionDuration",
+                    format!("slides[{slide_index}].transition"),
+                    format!("p14:dur={raw:?} 不是 0 到 600000 毫秒的有效时长"),
+                    Some("修复 transition duration 后重新导入"),
+                ));
+                0
+            }
+        }
+    }
+
+    fn set_effect(candidate: &mut Candidate, local: &[u8]) -> bool {
+        let kind = match local {
+            b"fade" => TransitionKind::Fade,
+            b"push" => TransitionKind::Push,
+            b"wipe" => TransitionKind::Wipe,
+            b"cut" => TransitionKind::None,
+            _ => return false,
+        };
+        candidate.kind.get_or_insert(kind);
+        true
+    }
+
+    let mut reader = Reader::from_reader(xml);
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    let mut current: Option<Candidate> = None;
+    let mut candidates = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buffer)? {
+            Event::Start(event) if local_name(event.name().as_ref()) == b"transition" => {
+                current = Some(Candidate {
+                    duration_ms: duration(&event, slide_index, report),
+                    ..Candidate::default()
+                });
+                depth = 1;
+            }
+            Event::Empty(event) if local_name(event.name().as_ref()) == b"transition" => {
+                candidates.push(Candidate {
+                    duration_ms: duration(&event, slide_index, report),
+                    kind: Some(TransitionKind::None),
+                    saw_unknown_effect: false,
+                });
+            }
+            Event::Start(event) if current.is_some() => {
+                if depth == 1 {
+                    let event_name = event.name().as_ref().to_vec();
+                    let local = local_name(&event_name);
+                    if !set_effect(current.as_mut().expect("checked above"), local) {
+                        current.as_mut().expect("checked above").saw_unknown_effect = true;
+                    }
+                }
+                depth += 1;
+            }
+            Event::Empty(event) if current.is_some() && depth == 1 => {
+                let event_name = event.name().as_ref().to_vec();
+                let local = local_name(&event_name);
+                if !set_effect(current.as_mut().expect("checked above"), local) {
+                    current.as_mut().expect("checked above").saw_unknown_effect = true;
+                }
+            }
+            Event::End(event)
+                if current.is_some() && local_name(event.name().as_ref()) == b"transition" =>
+            {
+                candidates.push(current.take().expect("checked above"));
+                depth = 0;
+            }
+            Event::End(_) if current.is_some() => depth = depth.saturating_sub(1),
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+
+    if candidates
+        .iter()
+        .any(|candidate| candidate.saw_unknown_effect)
+    {
+        report.unsupported.push(report_item(
+            PptxReportKind::Unsupported,
+            "slideTransitionEffect",
+            format!("slides[{slide_index}].transition"),
+            "transition 包含 canonical Deck 未支持的效果、声音或扩展；仅保留可识别 fallback",
+            Some("改用 fade/push/wipe/cut，或保留原始 PPTX source asset"),
+        ));
+    }
+    Ok(candidates.into_iter().find_map(|candidate| {
+        candidate.kind.map(|kind| SlideTransition {
+            kind,
+            duration_ms: candidate.duration_ms,
+        })
+    }))
+}
+
+#[derive(Debug)]
+struct TimelineImportDraft {
+    base_depth: usize,
+    preset: AnimationPreset,
+    trigger: AnimationTrigger,
+    delay_ms: Option<u32>,
+    duration_ms: Option<u32>,
+    target_spid: Option<String>,
+    behavior_depth: Option<usize>,
+    saw_expected_behavior: bool,
+}
+
+fn parse_timeline_milliseconds(value: Option<String>) -> Option<u32> {
+    value?.parse::<u32>().ok().filter(|value| *value <= 600_000)
+}
+
+fn animation_preset(value: &str) -> Option<AnimationPreset> {
+    match value {
+        "1" => Some(AnimationPreset::Appear),
+        "2" => Some(AnimationPreset::FlyIn),
+        "10" => Some(AnimationPreset::Fade),
+        "22" => Some(AnimationPreset::Wipe),
+        _ => None,
+    }
+}
+
+fn animation_trigger(value: &str) -> Option<AnimationTrigger> {
+    match value {
+        "clickEffect" => Some(AnimationTrigger::OnClick),
+        "withEffect" => Some(AnimationTrigger::WithPrevious),
+        "afterEffect" => Some(AnimationTrigger::AfterPrevious),
+        _ => None,
+    }
+}
+
+fn animation_filter_matches(preset: AnimationPreset, filter: Option<&str>) -> bool {
+    match preset {
+        AnimationPreset::Appear => false,
+        AnimationPreset::Fade => filter == Some("fade"),
+        AnimationPreset::FlyIn => filter.is_some_and(|value| value.starts_with("fly(")),
+        AnimationPreset::Wipe => filter.is_some_and(|value| value.starts_with("wipe(")),
+    }
+}
+
+fn parse_slide_timeline(
+    xml: &[u8],
+    slide_index: usize,
+    nodes: &[SceneNode],
+    report: &mut PptxLossReport,
+) -> Result<Timeline, PptxError> {
+    if !contains_local_tag(xml, b"timing") && !contains_local_tag(xml, b"bldLst") {
+        return Ok(Timeline::default());
+    }
+
+    let mut reader = Reader::from_reader(xml);
+    let mut buffer = Vec::new();
+    let mut depth = 0usize;
+    let mut timing_depth = None;
+    let mut active: Option<TimelineImportDraft> = None;
+    let mut drafts = Vec::new();
+    let mut unsupported = contains_local_tag(xml, b"bldLst");
+
+    loop {
+        match reader.read_event_into(&mut buffer)? {
+            Event::Start(event) => {
+                let name = event.name().as_ref().to_vec();
+                let local = local_name(&name);
+                let event_depth = depth;
+                depth += 1;
+                if local == b"timing" {
+                    timing_depth = Some(event_depth);
+                    buffer.clear();
+                    continue;
+                }
+                if timing_depth.is_none() {
+                    buffer.clear();
+                    continue;
+                }
+
+                if local == b"cTn" {
+                    if let Some(preset_class) = attr(&event, b"presetClass") {
+                        if active.is_some() || preset_class != "entr" {
+                            unsupported = true;
+                        } else {
+                            let preset = attr(&event, b"presetID")
+                                .as_deref()
+                                .and_then(animation_preset);
+                            let trigger = attr(&event, b"nodeType")
+                                .as_deref()
+                                .and_then(animation_trigger);
+                            match (preset, trigger) {
+                                (Some(preset), Some(trigger)) => {
+                                    active = Some(TimelineImportDraft {
+                                        base_depth: event_depth,
+                                        preset,
+                                        trigger,
+                                        delay_ms: None,
+                                        duration_ms: None,
+                                        target_spid: None,
+                                        behavior_depth: None,
+                                        saw_expected_behavior: false,
+                                    });
+                                }
+                                _ => unsupported = true,
+                            }
+                        }
+                    } else if let Some(draft) = active.as_mut() {
+                        if draft.behavior_depth.is_some() {
+                            match parse_timeline_milliseconds(attr(&event, b"dur")) {
+                                Some(duration_ms) => draft.duration_ms = Some(duration_ms),
+                                None => unsupported = true,
+                            }
+                        }
+                    }
+                    if attr(&event, b"nodeType").as_deref() == Some("interactiveSeq") {
+                        unsupported = true;
+                    }
+                } else if local == b"cBhvr" {
+                    if let Some(draft) = active.as_mut() {
+                        draft.behavior_depth = Some(event_depth);
+                    }
+                } else if local == b"cond" {
+                    if let Some(draft) = active.as_mut() {
+                        if draft.behavior_depth.is_none() && draft.delay_ms.is_none() {
+                            match parse_timeline_milliseconds(attr(&event, b"delay")) {
+                                Some(delay_ms) => draft.delay_ms = Some(delay_ms),
+                                None => unsupported = true,
+                            }
+                        }
+                    }
+                } else if local == b"spTgt" {
+                    if let Some(draft) = active.as_mut() {
+                        let target = attr(&event, b"spid");
+                        if draft.target_spid.is_some() && draft.target_spid != target {
+                            unsupported = true;
+                        } else {
+                            draft.target_spid = target;
+                        }
+                    }
+                } else if local == b"animEffect" {
+                    if let Some(draft) = active.as_mut() {
+                        let matches = attr(&event, b"transition").as_deref() == Some("in")
+                            && animation_filter_matches(
+                                draft.preset,
+                                attr(&event, b"filter").as_deref(),
+                            );
+                        draft.saw_expected_behavior |= matches;
+                        unsupported |= !matches;
+                    }
+                } else if local == b"set" {
+                    if let Some(draft) = active.as_mut() {
+                        let matches = draft.preset == AnimationPreset::Appear;
+                        draft.saw_expected_behavior |= matches;
+                        unsupported |= !matches;
+                    }
+                } else if matches!(
+                    local,
+                    b"anim"
+                        | b"animClr"
+                        | b"animMotion"
+                        | b"animRot"
+                        | b"animScale"
+                        | b"cmd"
+                        | b"audio"
+                        | b"video"
+                        | b"excl"
+                ) {
+                    unsupported = true;
+                }
+            }
+            Event::Empty(event) if timing_depth.is_some() => {
+                let name = event.name().as_ref().to_vec();
+                let local = local_name(&name);
+                if local == b"cond" {
+                    if let Some(draft) = active.as_mut() {
+                        if draft.behavior_depth.is_none() && draft.delay_ms.is_none() {
+                            match parse_timeline_milliseconds(attr(&event, b"delay")) {
+                                Some(delay_ms) => draft.delay_ms = Some(delay_ms),
+                                None => unsupported = true,
+                            }
+                        }
+                    }
+                } else if local == b"spTgt" {
+                    if let Some(draft) = active.as_mut() {
+                        let target = attr(&event, b"spid");
+                        if draft.target_spid.is_some() && draft.target_spid != target {
+                            unsupported = true;
+                        } else {
+                            draft.target_spid = target;
+                        }
+                    }
+                } else if local == b"cTn" {
+                    if let Some(draft) = active.as_mut() {
+                        if draft.behavior_depth.is_some() {
+                            match parse_timeline_milliseconds(attr(&event, b"dur")) {
+                                Some(duration_ms) => draft.duration_ms = Some(duration_ms),
+                                None => unsupported = true,
+                            }
+                        }
+                    }
+                } else if matches!(
+                    local,
+                    b"anim"
+                        | b"animClr"
+                        | b"animMotion"
+                        | b"animRot"
+                        | b"animScale"
+                        | b"cmd"
+                        | b"audio"
+                        | b"video"
+                        | b"excl"
+                ) {
+                    unsupported = true;
+                }
+            }
+            Event::End(event) => {
+                depth = depth.saturating_sub(1);
+                let name = event.name().as_ref().to_vec();
+                let local = local_name(&name);
+                if active
+                    .as_ref()
+                    .is_some_and(|draft| local == b"cTn" && draft.base_depth == depth)
+                {
+                    drafts.push(active.take().expect("checked above"));
+                } else if active
+                    .as_ref()
+                    .is_some_and(|draft| local == b"cBhvr" && draft.behavior_depth == Some(depth))
+                {
+                    active.as_mut().expect("checked above").behavior_depth = None;
+                }
+                if local == b"timing" && timing_depth == Some(depth) {
+                    timing_depth = None;
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+
+    let node_ids = nodes
+        .iter()
+        .map(|node| (node.id.rsplit('-').next().unwrap_or(&node.id), &node.id))
+        .collect::<HashMap<_, _>>();
+    let mut entries = Vec::new();
+    for (index, draft) in drafts.into_iter().enumerate() {
+        let target_node_id = draft
+            .target_spid
+            .as_deref()
+            .and_then(|spid| node_ids.get(spid).copied())
+            .cloned();
+        let valid = draft.saw_expected_behavior
+            && target_node_id.is_some()
+            && draft.delay_ms.is_some()
+            && draft.duration_ms.is_some();
+        if !valid {
+            unsupported = true;
+            continue;
+        }
+        entries.push(AnimationEntry {
+            id: format!("pptx-slide-{}-animation-{}", slide_index + 1, index + 1),
+            target_node_id: target_node_id.expect("validated above"),
+            trigger: draft.trigger,
+            preset: draft.preset,
+            duration_ms: draft.duration_ms.expect("validated above"),
+            delay_ms: draft.delay_ms.expect("validated above"),
+            order_key: format!("{index:08}"),
+        });
+    }
+    if unsupported || (contains_local_tag(xml, b"timing") && entries.is_empty()) {
+        report.unsupported.push(report_item(
+            PptxReportKind::Unsupported,
+            "timeline",
+            format!("slides[{slide_index}].timeline"),
+            "动画时间树超出受支持的主序列入口效果子集；仅保留可严格识别的 appear/fade/flyIn/wipe",
+            Some("简化为 On Click/With Previous/After Previous 入口动画，或保留原始 PPTX source asset"),
+        ));
+    }
+    Ok(Timeline { entries })
 }
 
 fn parse_slide(
@@ -1251,6 +1976,7 @@ fn parse_slide(
     assets: &HashMap<String, AssetRef>,
     report: &mut PptxLossReport,
 ) -> Result<Slide, PptxError> {
+    let transition = parse_slide_transition(xml, slide_index, report)?;
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
     let mut buffer = Vec::new();
@@ -1258,6 +1984,7 @@ fn parse_slide(
     let mut nodes = Vec::<SceneNode>::new();
     let mut sequence = 0usize;
     let mut in_text = false;
+    let mut slide_name = String::new();
     let mut root_group_seen = false;
     let mut root_group_started = false;
     loop {
@@ -1266,6 +1993,9 @@ fn parse_slide(
                 let event_name = event.name().as_ref().to_vec();
                 let local = local_name(&event_name);
                 match local {
+                    b"cSld" if stack.is_empty() => {
+                        slide_name = attr(&event, b"name").unwrap_or_default();
+                    }
                     b"spTree" => root_group_seen = true,
                     b"sp" | b"pic" | b"grpSp" => {
                         if local == b"grpSp" && root_group_seen && !root_group_started {
@@ -1340,6 +2070,67 @@ fn parse_slide(
                             });
                         }
                     }
+                    b"p" => {
+                        if let Some(draft) = stack.last_mut() {
+                            start_paragraph(draft);
+                        }
+                    }
+                    b"pPr" => {
+                        if let Some(paragraph) = stack
+                            .last_mut()
+                            .and_then(|draft| draft.active_paragraph.as_mut())
+                        {
+                            parse_paragraph_properties(&event, paragraph, report, slide_index);
+                        }
+                    }
+                    b"bodyPr" => {
+                        if let Some(draft) = stack.last_mut() {
+                            parse_text_body_properties(&event, draft, report, slide_index)?;
+                        }
+                    }
+                    b"noAutofit" => {
+                        if let Some(draft) = stack.last_mut() {
+                            draft.auto_fit = TextAutoFit::None;
+                        }
+                    }
+                    b"normAutofit" => {
+                        if let Some(draft) = stack.last_mut() {
+                            draft.auto_fit = TextAutoFit::ShrinkText;
+                        }
+                    }
+                    b"spAutoFit" => {
+                        if let Some(draft) = stack.last_mut() {
+                            draft.auto_fit = TextAutoFit::ResizeShape;
+                        }
+                    }
+                    b"buChar" => {
+                        if let Some(paragraph) = stack
+                            .last_mut()
+                            .and_then(|draft| draft.active_paragraph.as_mut())
+                        {
+                            paragraph.list = Some(PresentationListStyle::Bullet);
+                        }
+                    }
+                    b"buAutoNum" => {
+                        if let Some(paragraph) = stack
+                            .last_mut()
+                            .and_then(|draft| draft.active_paragraph.as_mut())
+                        {
+                            let start_at = attr(&event, b"startAt")
+                                .and_then(|value| value.parse().ok())
+                                .filter(|value| *value > 0)
+                                .unwrap_or(1);
+                            paragraph.list = Some(PresentationListStyle::Ordered { start_at });
+                        }
+                    }
+                    b"buNone" => {
+                        if let Some(paragraph) = stack
+                            .last_mut()
+                            .and_then(|draft| draft.active_paragraph.as_mut())
+                        {
+                            paragraph.list = None;
+                        }
+                    }
                     b"rPr" => {
                         if let Some(run) =
                             stack.last_mut().and_then(|draft| draft.active_run.as_mut())
@@ -1347,7 +2138,7 @@ fn parse_slide(
                             parse_run_properties(&event, &mut run.style, report, slide_index);
                         }
                     }
-                    b"latin" => {
+                    b"latin" | b"ea" | b"cs" => {
                         if let Some(run) =
                             stack.last_mut().and_then(|draft| draft.active_run.as_mut())
                         {
@@ -1359,7 +2150,7 @@ fn parse_slide(
                                         "a:latin typeface 为空，不能安全映射",
                                     );
                                 } else {
-                                    run.style.font_family = Some(typeface);
+                                    set_run_font(&mut run.style, typeface, report, slide_index);
                                 }
                             }
                         }
@@ -1411,7 +2202,14 @@ fn parse_slide(
             Event::Empty(event) => {
                 let event_name = event.name().as_ref().to_vec();
                 let local = local_name(&event_name);
-                if local == b"off" {
+                if local == b"cNvPr" {
+                    if let Some(draft) = stack.last_mut() {
+                        draft.name = attr(&event, b"name");
+                        if let Some(id) = attr(&event, b"id") {
+                            draft.id = format!("slide-{}-node-{id}", slide_index + 1);
+                        }
+                    }
+                } else if local == b"off" {
                     if let Some(draft) = stack.last_mut() {
                         draft.transform.x = parse_coordinate(&event, b"x", draft.transform.x)?;
                         draft.transform.y = parse_coordinate(&event, b"y", draft.transform.y)?;
@@ -1427,12 +2225,65 @@ fn parse_slide(
                     if let Some(draft) = stack.last_mut() {
                         draft.embed_relationship = attr(&event, b"embed");
                     }
+                } else if local == b"p" {
+                    if let Some(draft) = stack.last_mut() {
+                        start_paragraph(draft);
+                        finish_paragraph(draft);
+                    }
+                } else if local == b"pPr" {
+                    if let Some(paragraph) = stack
+                        .last_mut()
+                        .and_then(|draft| draft.active_paragraph.as_mut())
+                    {
+                        parse_paragraph_properties(&event, paragraph, report, slide_index);
+                    }
+                } else if local == b"bodyPr" {
+                    if let Some(draft) = stack.last_mut() {
+                        parse_text_body_properties(&event, draft, report, slide_index)?;
+                    }
+                } else if local == b"noAutofit" {
+                    if let Some(draft) = stack.last_mut() {
+                        draft.auto_fit = TextAutoFit::None;
+                    }
+                } else if local == b"normAutofit" {
+                    if let Some(draft) = stack.last_mut() {
+                        draft.auto_fit = TextAutoFit::ShrinkText;
+                    }
+                } else if local == b"spAutoFit" {
+                    if let Some(draft) = stack.last_mut() {
+                        draft.auto_fit = TextAutoFit::ResizeShape;
+                    }
+                } else if local == b"buChar" {
+                    if let Some(paragraph) = stack
+                        .last_mut()
+                        .and_then(|draft| draft.active_paragraph.as_mut())
+                    {
+                        paragraph.list = Some(PresentationListStyle::Bullet);
+                    }
+                } else if local == b"buAutoNum" {
+                    if let Some(paragraph) = stack
+                        .last_mut()
+                        .and_then(|draft| draft.active_paragraph.as_mut())
+                    {
+                        let start_at = attr(&event, b"startAt")
+                            .and_then(|value| value.parse().ok())
+                            .filter(|value| *value > 0)
+                            .unwrap_or(1);
+                        paragraph.list = Some(PresentationListStyle::Ordered { start_at });
+                    }
+                } else if local == b"buNone" {
+                    if let Some(paragraph) = stack
+                        .last_mut()
+                        .and_then(|draft| draft.active_paragraph.as_mut())
+                    {
+                        paragraph.list = None;
+                    }
                 } else if local == b"rPr" {
                     if let Some(run) = stack.last_mut().and_then(|draft| draft.active_run.as_mut())
                     {
                         parse_run_properties(&event, &mut run.style, report, slide_index);
                     }
-                } else if local == b"latin" {
+                } else if matches!(local, b"latin" | b"ea" | b"cs") {
                     if let Some(run) = stack.last_mut().and_then(|draft| draft.active_run.as_mut())
                     {
                         if let Some(typeface) = attr(&event, b"typeface") {
@@ -1443,7 +2294,7 @@ fn parse_slide(
                                     "a:latin typeface 为空，不能安全映射",
                                 );
                             } else {
-                                run.style.font_family = Some(typeface);
+                                set_run_font(&mut run.style, typeface, report, slide_index);
                             }
                         }
                     }
@@ -1519,6 +2370,11 @@ fn parse_slide(
                         }
                     }
                 }
+                if local == b"p" {
+                    if let Some(draft) = stack.last_mut() {
+                        finish_paragraph(draft);
+                    }
+                }
                 if matches!(local, b"sp" | b"pic" | b"grpSp") {
                     if local == b"grpSp" && stack.is_empty() && root_group_started {
                         root_group_started = false;
@@ -1577,14 +2433,22 @@ fn parse_slide(
                     } else if !draft.text.is_empty() {
                         let text = std::mem::take(&mut draft.text);
                         let runs = take_valid_text_runs(&mut draft, &text, report, slide_index);
+                        let body = rich_text_with_runs_and_paragraphs(
+                            text,
+                            runs,
+                            std::mem::take(&mut draft.paragraphs),
+                        );
+                        let vertical_align = draft.vertical_align;
+                        let padding = draft.padding.clone();
+                        let auto_fit = draft.auto_fit;
                         nodes.push(scene_node_from_draft(
                             draft,
                             SceneNodeKind::Text(TextNode {
                                 frame: TextFrame {
-                                    body: PresentationRichText { text, runs },
-                                    vertical_align: TextVerticalAlign::Top,
-                                    padding: Insets::default(),
-                                    auto_fit: TextAutoFit::ShrinkText,
+                                    body,
+                                    vertical_align,
+                                    padding,
+                                    auto_fit,
                                 },
                             }),
                         ));
@@ -1615,17 +2479,18 @@ fn parse_slide(
     nodes.extend(parse_supported_tables(xml, slide_index, report)?);
     nodes.extend(parse_supported_connectors(xml, slide_index, report)?);
     nodes.sort_by(|left, right| left.order_key.cmp(&right.order_key));
+    let timeline = parse_slide_timeline(xml, slide_index, &nodes, report)?;
 
     Ok(Slide {
         id: format!("slide-{}", slide_index + 1),
         order_key: format!("{slide_index:08}"),
-        name: String::new(),
+        name: slide_name,
         layout_id: None,
         background: SlideBackground::None,
         notes: None,
-        transition: None,
+        transition,
         nodes,
-        timeline: Default::default(),
+        timeline,
     })
 }
 
@@ -1855,12 +2720,14 @@ fn parse_supported_tables(
                             }
                         }
                     }
-                    b"latin" => {
+                    b"latin" | b"ea" | b"cs" => {
                         if let Some(cell) =
                             table.as_mut().and_then(|table| table.current_cell.as_mut())
                         {
                             if let Some(run) = cell.active_run.as_mut() {
-                                run.style.font_family = attr(&event, b"typeface");
+                                if let Some(typeface) = attr(&event, b"typeface") {
+                                    set_run_font(&mut run.style, typeface, report, slide_index);
+                                }
                             }
                         }
                     }
@@ -1929,12 +2796,14 @@ fn parse_supported_tables(
                             }
                         }
                     }
-                    b"latin" => {
+                    b"latin" | b"ea" | b"cs" => {
                         if let Some(cell) =
                             table.as_mut().and_then(|table| table.current_cell.as_mut())
                         {
                             if let Some(run) = cell.active_run.as_mut() {
-                                run.style.font_family = attr(&event, b"typeface");
+                                if let Some(typeface) = attr(&event, b"typeface") {
+                                    set_run_font(&mut run.style, typeface, report, slide_index);
+                                }
                             }
                         }
                     }
@@ -2089,10 +2958,7 @@ fn finish_table_import(
             column: cell.column,
             row_span: 1,
             column_span: 1,
-            content: PresentationRichText {
-                text: cell.content,
-                runs: normalize_runs(cell.runs),
-            },
+            content: rich_text_with_runs(cell.content, normalize_runs(cell.runs)),
             style: TableCellStyle {
                 fill: cell.fill,
                 horizontal_align: cell.horizontal_align,
@@ -2128,6 +2994,25 @@ fn normalize_runs(runs: Vec<PresentationTextRun>) -> Vec<PresentationTextRun> {
     } else {
         runs
     }
+}
+
+fn rich_text_with_runs(text: String, runs: Vec<PresentationTextRun>) -> PresentationRichText {
+    let mut body = PresentationRichText::plain(text);
+    body.runs = runs;
+    body
+}
+
+fn rich_text_with_runs_and_paragraphs(
+    text: String,
+    runs: Vec<PresentationTextRun>,
+    paragraphs: Vec<PresentationParagraph>,
+) -> PresentationRichText {
+    let mut body = PresentationRichText::plain(text);
+    body.runs = runs;
+    if !paragraphs.is_empty() {
+        body.paragraphs = paragraphs;
+    }
+    body
 }
 
 /// A connector can be losslessly represented by OOXML only when both endpoints are free points
@@ -2266,7 +3151,7 @@ fn read_import_asset<R: Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     relationship: &Relationship,
 ) -> Result<PptxImportedAsset, PptxError> {
-    let bytes = read_part(archive, &relationship.target, MAX_MEDIA_PART_BYTES)?;
+    let bytes = read_relationship_part(archive, &relationship.target, MAX_MEDIA_PART_BYTES)?;
     let mime_type = mime_from_part(&relationship.target).ok_or_else(|| {
         PptxError::InvalidStructure(format!("不支持的嵌入图片类型：{}", relationship.target))
     })?;
@@ -2361,15 +3246,6 @@ fn report_unsupported_export_fields(deck: &Deck, report: &mut PptxLossReport) {
 
     for slide in &deck.slides {
         let slide_path = format!("slides/{}", slide.id);
-        if !slide.name.is_empty() {
-            report.unsupported.push(report_item(
-                PptxReportKind::Unsupported,
-                "slideName",
-                &slide_path,
-                "writer 尚未写出 cSld name",
-                Some("清空 slide 名称后导出，或等待 slide metadata writer"),
-            ));
-        }
         if slide.layout_id.is_some() {
             report.unsupported.push(report_item(
                 PptxReportKind::Unsupported,
@@ -2386,33 +3262,6 @@ fn report_unsupported_export_fields(deck: &Deck, report: &mut PptxLossReport) {
                 &slide_path,
                 "writer 尚未写出 slide background fill",
                 Some("使用默认背景，或等待 background writer"),
-            ));
-        }
-        if slide.notes.is_some() {
-            report.unsupported.push(report_item(
-                PptxReportKind::Unsupported,
-                "notes",
-                &slide_path,
-                "writer 尚未生成 notesSlide/notesMaster package",
-                Some("保留 slide.notes，等待 notes writer 完成"),
-            ));
-        }
-        if slide.transition.is_some() {
-            report.unsupported.push(report_item(
-                PptxReportKind::Unsupported,
-                "slideTransition",
-                &slide_path,
-                "writer 尚未写出 slide transition",
-                Some("移除 transition 后导出，或等待 timeline writer"),
-            ));
-        }
-        if !slide.timeline.entries.is_empty() {
-            report.unsupported.push(report_item(
-                PptxReportKind::Unsupported,
-                "timeline",
-                &slide_path,
-                "writer 尚未写出动画时间线",
-                Some("移除 timeline 后导出，或等待 timeline writer"),
             ));
         }
         for node in &slide.nodes {
@@ -2451,20 +3300,7 @@ fn report_unsupported_node_export_fields(node: &SceneNode, report: &mut PptxLoss
     }
     match &node.kind {
         SceneNodeKind::Text(text) => {
-            let frame = &text.frame;
-            if frame.vertical_align != TextVerticalAlign::Top
-                || frame.padding != Insets::default()
-                || frame.auto_fit != TextAutoFit::ShrinkText
-            {
-                report.unsupported.push(report_item(
-                    PptxReportKind::Unsupported,
-                    "richTextFrame",
-                    &node.id,
-                    "writer 仅支持基础 run 样式、Top/ShrinkText、零 padding 的文本 frame",
-                    Some("简化 text frame 属性后导出，或等待完整 text-frame writer"),
-                ));
-            }
-            report_unsupported_text_runs(node, &frame.body, report);
+            report_unsupported_text_runs(node, &text.frame.body, report);
         }
         SceneNodeKind::Shape(shape) if shape.style != ShapeStyle::default() => {
             report.unsupported.push(report_item(
@@ -2615,24 +3451,41 @@ impl ExportPackage {
         report: &mut PptxLossReport,
     ) -> Result<Self, PptxError> {
         report_unsupported_export_fields(deck, report);
+        let has_notes = deck.slides.iter().any(|slide| slide.notes.is_some());
         let mut xml_parts = vec![
             (PRESENTATION_PART.into(), presentation_xml(deck)),
             (
                 "ppt/_rels/presentation.xml.rels".into(),
-                presentation_rels(deck.slides.len()),
+                presentation_rels(deck.slides.len(), has_notes),
             ),
         ];
+        if has_notes {
+            xml_parts.push((
+                "ppt/notesMasters/notesMaster1.xml".into(),
+                notes_master_xml(),
+            ));
+        }
         let mut binary_parts = Vec::new();
         for (index, slide) in deck.slides.iter().enumerate() {
-            let (xml, rels) = slide_xml(slide, assets, &mut binary_parts, report);
+            let (xml, rels) = slide_xml(slide, index, assets, &mut binary_parts, report);
             xml_parts.push((format!("ppt/slides/slide{}.xml", index + 1), xml));
             xml_parts.push((
                 format!("ppt/slides/_rels/slide{}.xml.rels", index + 1),
                 rels,
             ));
+            if let Some(notes) = &slide.notes {
+                xml_parts.push((
+                    format!("ppt/notesSlides/notesSlide{}.xml", index + 1),
+                    notes_slide_xml(notes),
+                ));
+                xml_parts.push((
+                    format!("ppt/notesSlides/_rels/notesSlide{}.xml.rels", index + 1),
+                    notes_slide_rels(index),
+                ));
+            }
         }
         Ok(Self {
-            content_types: content_types(deck.slides.len()),
+            content_types: content_types(deck),
             xml_parts,
             binary_parts,
         })
@@ -2652,11 +3505,22 @@ fn presentation_xml(deck: &Deck) -> String {
             )
         })
         .collect::<String>();
-    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx=\"{}\" cy=\"{}\" type=\"screen16x9\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/></p:presentation>", deck.page_spec.width.round(), deck.page_spec.height.round())
+    let notes_master = if deck.slides.iter().any(|slide| slide.notes.is_some()) {
+        format!(
+            "<p:notesMasterIdLst><p:notesMasterId r:id=\"rId{}\"/></p:notesMasterIdLst>",
+            deck.slides.len() + 1
+        )
+    } else {
+        String::new()
+    };
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:presentation xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\">{notes_master}<p:sldIdLst>{ids}</p:sldIdLst><p:sldSz cx=\"{}\" cy=\"{}\" type=\"screen16x9\"/><p:notesSz cx=\"6858000\" cy=\"9144000\"/></p:presentation>", deck.page_spec.width.round(), deck.page_spec.height.round())
 }
 
-fn presentation_rels(count: usize) -> String {
-    let rels = (0..count).map(|index| format!("<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide{}.xml\"/>", index + 1, index + 1)).collect::<String>();
+fn presentation_rels(count: usize, has_notes: bool) -> String {
+    let mut rels = (0..count).map(|index| format!("<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/slide{}.xml\"/>", index + 1, index + 1)).collect::<String>();
+    if has_notes {
+        rels.push_str(&format!("<Relationship Id=\"rId{}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster\" Target=\"notesMasters/notesMaster1.xml\"/>", count + 1));
+    }
     relationships_xml(&rels)
 }
 
@@ -2666,6 +3530,7 @@ fn relationships_xml(rels: &str) -> String {
 
 fn slide_xml(
     slide: &Slide,
+    slide_index: usize,
     assets: &PptxAssetSource,
     binary_parts: &mut Vec<(String, Vec<u8>)>,
     report: &mut PptxLossReport,
@@ -2685,8 +3550,114 @@ fn slide_xml(
             append_node_xml(node, &mut nodes, &mut context);
         }
     }
-    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>{nodes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>");
+    if slide.notes.is_some() {
+        relationships.push_str(&format!("<Relationship Id=\"rIdNotes\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide\" Target=\"../notesSlides/notesSlide{}.xml\"/>", slide_index + 1));
+    }
+    let transition = slide
+        .transition
+        .as_ref()
+        .map(transition_xml)
+        .unwrap_or_default();
+    let timing = timeline_xml(slide);
+    let slide_name = if slide.name.is_empty() {
+        String::new()
+    } else {
+        format!(" name=\"{}\"", xml_escaped(&slide.name))
+    };
+    let xml = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:sld xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\" xmlns:p14=\"http://schemas.microsoft.com/office/powerpoint/2010/main\"><p:cSld{slide_name}><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>{nodes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr>{transition}{timing}</p:sld>");
     (xml, relationships_xml(&relationships))
+}
+
+fn transition_xml(transition: &SlideTransition) -> String {
+    let effect = match transition.kind {
+        TransitionKind::None => "cut",
+        TransitionKind::Fade => "fade",
+        TransitionKind::Push => "push",
+        TransitionKind::Wipe => "wipe",
+    };
+    format!(
+        "<p:transition p14:dur=\"{}\"><p:{effect}/></p:transition>",
+        transition.duration_ms
+    )
+}
+
+fn timeline_xml(slide: &Slide) -> String {
+    if slide.timeline.entries.is_empty() {
+        return String::new();
+    }
+    let mut entries = slide.timeline.entries.iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.order_key.cmp(&right.order_key));
+    let mut groups = Vec::<(bool, Vec<&AnimationEntry>)>::new();
+    for entry in entries {
+        if entry.trigger == AnimationTrigger::OnClick || groups.is_empty() {
+            groups.push((entry.trigger != AnimationTrigger::OnClick, vec![entry]));
+        } else {
+            groups.last_mut().expect("created above").1.push(entry);
+        }
+    }
+
+    let mut next_id = 3u32;
+    let groups = groups
+        .into_iter()
+        .map(|(automatic, entries)| {
+            let group_id = next_id;
+            let container_id = next_id + 1;
+            next_id += 2;
+            let effects = entries
+                .into_iter()
+                .map(|entry| animation_entry_xml(entry, &mut next_id))
+                .collect::<String>();
+            let start_delay = if automatic { "0" } else { "indefinite" };
+            format!("<p:par><p:cTn id=\"{group_id}\" fill=\"hold\"><p:stCondLst><p:cond delay=\"{start_delay}\"/></p:stCondLst><p:childTnLst><p:par><p:cTn id=\"{container_id}\" fill=\"hold\"><p:stCondLst><p:cond delay=\"0\"/></p:stCondLst><p:childTnLst>{effects}</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>")
+        })
+        .collect::<String>();
+    format!("<p:timing><p:tnLst><p:par><p:cTn id=\"1\" dur=\"indefinite\" restart=\"never\" nodeType=\"tmRoot\"><p:childTnLst><p:seq concurrent=\"1\" nextAc=\"seek\"><p:cTn id=\"2\" dur=\"indefinite\" nodeType=\"mainSeq\"><p:childTnLst>{groups}</p:childTnLst></p:cTn></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>")
+}
+
+fn animation_entry_xml(entry: &AnimationEntry, next_id: &mut u32) -> String {
+    let effect_id = *next_id;
+    let behavior_id = *next_id + 1;
+    *next_id += 2;
+    let (preset_id, behavior) = match entry.preset {
+        AnimationPreset::Appear => (
+            1,
+            format!("<p:set><p:cBhvr><p:cTn id=\"{behavior_id}\" dur=\"{}\" fill=\"hold\"/><p:tgtEl><p:spTgt spid=\"{}\"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val=\"visible\"/></p:to></p:set>", entry.duration_ms, numeric_id(&entry.target_node_id)),
+        ),
+        AnimationPreset::Fade => (
+            10,
+            animation_effect_xml("fade", entry, behavior_id),
+        ),
+        AnimationPreset::FlyIn => (
+            2,
+            animation_effect_xml("fly(right)", entry, behavior_id),
+        ),
+        AnimationPreset::Wipe => (
+            22,
+            animation_effect_xml("wipe(right)", entry, behavior_id),
+        ),
+    };
+    let node_type = match entry.trigger {
+        AnimationTrigger::OnClick => "clickEffect",
+        AnimationTrigger::WithPrevious => "withEffect",
+        AnimationTrigger::AfterPrevious => "afterEffect",
+    };
+    format!("<p:par><p:cTn id=\"{effect_id}\" presetID=\"{preset_id}\" presetClass=\"entr\" presetSubtype=\"0\" fill=\"hold\" nodeType=\"{node_type}\"><p:stCondLst><p:cond delay=\"{}\"/></p:stCondLst><p:childTnLst>{behavior}</p:childTnLst></p:cTn></p:par>", entry.delay_ms)
+}
+
+fn animation_effect_xml(filter: &str, entry: &AnimationEntry, behavior_id: u32) -> String {
+    format!("<p:animEffect transition=\"in\" filter=\"{filter}\"><p:cBhvr><p:cTn id=\"{behavior_id}\" dur=\"{}\" fill=\"hold\"/><p:tgtEl><p:spTgt spid=\"{}\"/></p:tgtEl></p:cBhvr></p:animEffect>", entry.duration_ms, numeric_id(&entry.target_node_id))
+}
+
+fn notes_master_xml() -> String {
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:notesMaster xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap accent1=\"accent1\" accent2=\"accent2\" accent3=\"accent3\" accent4=\"accent4\" accent5=\"accent5\" accent6=\"accent6\" bg1=\"lt1\" bg2=\"lt2\" folHlink=\"folHlink\" hlink=\"hlink\" tx1=\"dk1\" tx2=\"dk2\"/></p:notesMaster>".into()
+}
+
+fn notes_slide_xml(notes: &str) -> String {
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><p:notes xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\" xmlns:p=\"http://schemas.openxmlformats.org/presentationml/2006/main\"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id=\"1\" name=\"\"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/><p:sp><p:nvSpPr><p:cNvPr id=\"2\" name=\"Notes Placeholder\"/><p:cNvSpPr/><p:nvPr><p:ph type=\"body\"/></p:nvPr></p:nvSpPr><p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t xml:space=\"preserve\">{}</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:notes>", xml_escaped(notes))
+}
+
+fn notes_slide_rels(slide_index: usize) -> String {
+    relationships_xml(&format!("<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"../slides/slide{}.xml\"/><Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesMaster\" Target=\"../notesMasters/notesMaster1.xml\"/>", slide_index + 1))
 }
 
 struct SlideExportContext<'a> {
@@ -2700,7 +3671,7 @@ struct SlideExportContext<'a> {
 
 fn append_node_xml(node: &SceneNode, output: &mut String, context: &mut SlideExportContext<'_>) {
     match &node.kind {
-        SceneNodeKind::Text(text) => output.push_str(&text_xml(node, &text.frame.body)),
+        SceneNodeKind::Text(text) => output.push_str(&text_xml(node, &text.frame)),
         SceneNodeKind::Shape(shape) => output.push_str(&shape_xml(node, shape.geometry)),
         SceneNodeKind::Group(_) => {
             let children = context
@@ -2798,27 +3769,28 @@ fn table_xml(node: &SceneNode, table: &TableNode) -> String {
 }
 
 fn table_cell_xml(cell: &TableCell) -> String {
-    let align = match cell.style.horizontal_align {
-        HorizontalAlign::Left => "l",
-        HorizontalAlign::Center => "ctr",
-        HorizontalAlign::Right => "r",
-    };
     let anchor = match cell.style.vertical_align {
         TextVerticalAlign::Top => "t",
         TextVerticalAlign::Middle => "ctr",
         TextVerticalAlign::Bottom => "b",
     };
-    let body = rich_text_paragraph_xml(&cell.content);
+    let mut content = cell.content.clone();
+    let alignment = match cell.style.horizontal_align {
+        HorizontalAlign::Left => TextHorizontalAlign::Left,
+        HorizontalAlign::Center => TextHorizontalAlign::Center,
+        HorizontalAlign::Right => TextHorizontalAlign::Right,
+    };
+    for paragraph in &mut content.paragraphs {
+        paragraph.alignment = alignment;
+    }
+    let body = rich_text_paragraph_xml(&content);
     format!(
-        "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:pPr algn=\"{align}\"/>{body}</a:p></a:txBody><a:tcPr anchor=\"{anchor}\">{}</a:tcPr></a:tc>",
+        "<a:tc><a:txBody><a:bodyPr/><a:lstStyle/>{body}</a:txBody><a:tcPr anchor=\"{anchor}\">{}</a:tcPr></a:tc>",
         paint_xml(&cell.style.fill),
     )
 }
 
 fn rich_text_paragraph_xml(body: &PresentationRichText) -> String {
-    if body.text.is_empty() {
-        return String::new();
-    }
     let runs = if body.runs.is_empty() {
         vec![PresentationTextRun {
             start: 0,
@@ -2829,14 +3801,63 @@ fn rich_text_paragraph_xml(body: &PresentationRichText) -> String {
         body.runs.clone()
     };
     let chars = body.text.chars().collect::<Vec<_>>();
-    runs.iter()
-        .map(|run| {
-            text_run_xml(
-                &chars[run.start..run.end].iter().collect::<String>(),
-                &run.style,
+    let paragraphs = if body.paragraphs.is_empty() {
+        vec![PresentationParagraph {
+            start: 0,
+            end: chars.len(),
+            alignment: TextHorizontalAlign::Left,
+            list: None,
+            indent_level: 0,
+        }]
+    } else {
+        body.paragraphs.clone()
+    };
+    paragraphs
+        .iter()
+        .map(|paragraph| {
+            let content_end =
+                if paragraph.end > paragraph.start && chars.get(paragraph.end - 1) == Some(&'\n') {
+                    paragraph.end - 1
+                } else {
+                    paragraph.end
+                };
+            let content = runs
+                .iter()
+                .filter_map(|run| {
+                    let start = run.start.max(paragraph.start);
+                    let end = run.end.min(content_end);
+                    (start < end).then(|| {
+                        text_run_xml(&chars[start..end].iter().collect::<String>(), &run.style)
+                    })
+                })
+                .collect::<String>();
+            format!(
+                "<a:p>{}{}</a:p>",
+                paragraph_properties_xml(paragraph),
+                content
             )
         })
         .collect()
+}
+
+fn paragraph_properties_xml(paragraph: &PresentationParagraph) -> String {
+    let alignment = match paragraph.alignment {
+        TextHorizontalAlign::Left => "l",
+        TextHorizontalAlign::Center => "ctr",
+        TextHorizontalAlign::Right => "r",
+        TextHorizontalAlign::Justify => "just",
+    };
+    let list = match &paragraph.list {
+        None => "<a:buNone/>".to_owned(),
+        Some(PresentationListStyle::Bullet) => "<a:buChar char=\"•\"/>".to_owned(),
+        Some(PresentationListStyle::Ordered { start_at }) => {
+            format!("<a:buAutoNum type=\"arabicPeriod\" startAt=\"{start_at}\"/>")
+        }
+    };
+    format!(
+        "<a:pPr algn=\"{alignment}\" lvl=\"{}\">{list}</a:pPr>",
+        paragraph.indent_level
+    )
 }
 
 fn graphic_frame_xfrm_xml(node: &SceneNode) -> String {
@@ -2893,32 +3914,55 @@ fn xfrm_xml(node: &SceneNode) -> String {
     )
 }
 
-fn text_xml(node: &SceneNode, body: &PresentationRichText) -> String {
-    let runs = if body.runs.is_empty() {
-        vec![PresentationTextRun {
-            start: 0,
-            end: body.text.chars().count(),
-            style: PresentationTextStyle::default(),
-        }]
-    } else {
-        body.runs.clone()
+fn text_xml(node: &SceneNode, frame: &TextFrame) -> String {
+    let content = rich_text_paragraph_xml(&frame.body);
+    let body_properties = text_body_properties_xml(frame);
+    format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{}\" name=\"{}\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr><p:txBody>{body_properties}<a:lstStyle/>{content}</p:txBody></p:sp>", numeric_id(&node.id), xml_escaped(&node.name.clone().unwrap_or_default()), xfrm_xml(node))
+}
+
+fn text_body_properties_xml(frame: &TextFrame) -> String {
+    let anchor = match frame.vertical_align {
+        TextVerticalAlign::Top => "t",
+        TextVerticalAlign::Middle => "ctr",
+        TextVerticalAlign::Bottom => "b",
     };
-    let chars = body.text.chars().collect::<Vec<_>>();
-    let content = runs
-        .iter()
-        .map(|run| {
-            text_run_xml(
-                &chars[run.start..run.end].iter().collect::<String>(),
-                &run.style,
-            )
-        })
-        .collect::<String>();
-    format!("<p:sp><p:nvSpPr><p:cNvPr id=\"{}\" name=\"{}\"/><p:cNvSpPr txBox=\"1\"/><p:nvPr/></p:nvSpPr><p:spPr>{}<a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p>{content}</a:p></p:txBody></p:sp>", numeric_id(&node.id), xml_escaped(&node.name.clone().unwrap_or_default()), xfrm_xml(node))
+    let auto_fit = match frame.auto_fit {
+        TextAutoFit::None => "<a:noAutofit/>",
+        TextAutoFit::ShrinkText => "<a:normAutofit/>",
+        TextAutoFit::ResizeShape => "<a:spAutoFit/>",
+    };
+    format!(
+        "<a:bodyPr anchor=\"{anchor}\" tIns=\"{}\" rIns=\"{}\" bIns=\"{}\" lIns=\"{}\">{auto_fit}</a:bodyPr>",
+        frame.padding.top.round(),
+        frame.padding.right.round(),
+        frame.padding.bottom.round(),
+        frame.padding.left.round(),
+    )
 }
 
 fn text_run_xml(text: &str, style: &PresentationTextStyle) -> String {
     let properties = text_run_properties_xml(style);
     format!("<a:r>{properties}<a:t>{}</a:t></a:r>", xml_escaped(text))
+}
+
+fn set_run_font(
+    style: &mut PresentationTextStyle,
+    family: String,
+    report: &mut PptxLossReport,
+    slide_index: usize,
+) {
+    if family.trim().is_empty() {
+        return;
+    }
+    if style
+        .font_family
+        .as_ref()
+        .is_some_and(|existing| existing != &family)
+    {
+        report_text_run_unsupported(report, slide_index, "同一文字 run 使用不同的 Latin/East Asian/complex-script 字体；canonical run 仅支持一个字体");
+    } else {
+        style.font_family = Some(family);
+    }
 }
 
 fn text_run_properties_xml(style: &PresentationTextStyle) -> String {
@@ -2941,10 +3985,13 @@ fn text_run_properties_xml(style: &PresentationTextStyle) -> String {
     let latin = style
         .font_family
         .as_ref()
-        .map(|family| format!("<a:latin typeface=\"{}\"/>", xml_escaped(family)))
+        .map(|family| {
+            let family = xml_escaped(&oo_schema::font_family::primary_font_family(family));
+            format!("<a:latin typeface=\"{family}\"/><a:ea typeface=\"{family}\"/><a:cs typeface=\"{family}\"/>")
+        })
         .unwrap_or_default();
     let color = style.color.as_ref().map(text_color_xml).unwrap_or_default();
-    format!("<a:rPr{attributes}>{latin}{color}</a:rPr>")
+    format!("<a:rPr{attributes}>{color}{latin}</a:rPr>")
 }
 
 fn text_color_xml(color: &ColorRef) -> String {
@@ -3004,15 +4051,146 @@ fn xml_escape(source: &str, output: &mut String) {
 }
 
 const ROOT_RELS: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"ppt/presentation.xml\"/></Relationships>";
-fn content_types(slide_count: usize) -> String {
-    let slides = (0..slide_count).map(|index| format!("<Override PartName=\"/ppt/slides/slide{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slide+xml\"/>", index + 1)).collect::<String>();
-    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"jpg\" ContentType=\"image/jpeg\"/><Default Extension=\"jpeg\" ContentType=\"image/jpeg\"/><Default Extension=\"gif\" ContentType=\"image/gif\"/><Default Extension=\"webp\" ContentType=\"image/webp\"/><Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>{slides}</Types>")
+fn content_types(deck: &Deck) -> String {
+    let slides = deck.slides.iter().enumerate().map(|(index, _)| format!("<Override PartName=\"/ppt/slides/slide{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.slide+xml\"/>", index + 1)).collect::<String>();
+    let notes_slides = deck
+        .slides
+        .iter()
+        .enumerate()
+        .filter(|(_, slide)| slide.notes.is_some())
+        .map(|(index, _)| format!("<Override PartName=\"/ppt/notesSlides/notesSlide{}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml\"/>", index + 1))
+        .collect::<String>();
+    let notes_master = if notes_slides.is_empty() {
+        ""
+    } else {
+        "<Override PartName=\"/ppt/notesMasters/notesMaster1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml\"/>"
+    };
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Default Extension=\"jpg\" ContentType=\"image/jpeg\"/><Default Extension=\"jpeg\" ContentType=\"image/jpeg\"/><Default Extension=\"gif\" ContentType=\"image/gif\"/><Default Extension=\"webp\" ContentType=\"image/webp\"/><Override PartName=\"/ppt/presentation.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml\"/>{slides}{notes_slides}{notes_master}</Types>")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use oo_schema::presentation_v5::{ChartNode, ChartSeries, ChartSpec, ChartType};
+
+    fn package(parts: impl IntoIterator<Item = (String, Vec<u8>)>) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in parts {
+            archive
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(&bytes).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn office_font_fields_use_a_family_name_for_all_scripts() {
+        let xml = text_run_properties_xml(&PresentationTextStyle {
+            font_family: Some("\"Noto Serif SC\", serif".into()),
+            ..PresentationTextStyle::default()
+        });
+        for script in ["latin", "ea", "cs"] {
+            assert!(xml.contains(&format!("<a:{script} typeface=\"Noto Serif SC\"/>")));
+        }
+        assert!(!xml.contains(", serif"));
+    }
+
+    #[test]
+    fn notes_parser_reads_only_body_placeholder_and_concatenates_runs_per_paragraph() {
+        let xml = br#"<p:notes xmlns:p="p" xmlns:a="a"><p:cSld><p:spTree>
+          <p:sp><p:nvSpPr><p:nvPr><p:ph type="dt"/></p:nvPr></p:nvSpPr>
+            <p:txBody><a:p><a:r><a:t>2026-09-10</a:t></a:r></a:p></p:txBody></p:sp>
+          <p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr>
+            <p:txBody><a:p><a:r><a:t>first </a:t></a:r><a:r><a:t>line</a:t></a:r></a:p>
+            <a:p><a:r><a:t>second</a:t></a:r></a:p></p:txBody></p:sp>
+          <p:sp><p:nvSpPr><p:nvPr><p:ph type="sldNum"/></p:nvPr></p:nvSpPr>
+            <p:txBody><a:p><a:r><a:t>42</a:t></a:r></a:p></p:txBody></p:sp>
+        </p:spTree></p:cSld></p:notes>"#;
+        let (text, formatting, multiple) = parse_notes_body_text(xml).unwrap();
+        assert_eq!(text.as_deref(), Some("first line\nsecond"));
+        assert!(!formatting);
+        assert!(!multiple);
+    }
+
+    #[test]
+    fn unknown_transition_and_animation_are_structured_losses() {
+        let transition_xml = br#"<p:sld xmlns:p="p"><p:transition p14:dur="500" xmlns:p14="p14"><p:zoom/></p:transition></p:sld>"#;
+        let mut transition_report = PptxLossReport::default();
+        assert!(
+            parse_slide_transition(transition_xml, 0, &mut transition_report)
+                .unwrap()
+                .is_none()
+        );
+        assert!(transition_report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "slideTransitionEffect"));
+
+        let timeline_xml = br#"<p:sld xmlns:p="p"><p:timing><p:tnLst><p:par><p:cTn id="1" presetID="99" presetClass="entr" nodeType="clickEffect"/></p:par></p:tnLst></p:timing></p:sld>"#;
+        let mut timeline_report = PptxLossReport::default();
+        let timeline = parse_slide_timeline(timeline_xml, 0, &[], &mut timeline_report).unwrap();
+        assert!(timeline.entries.is_empty());
+        assert!(timeline_report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "timeline"));
+    }
+
+    #[test]
+    fn package_hazards_and_dangling_relationships_are_rejected_or_reported() {
+        let macro_package = package([("ppt/vbaProject.bin".into(), b"untrusted macro".to_vec())]);
+        let macro_report = inspect_pptx(&macro_package).unwrap();
+        assert!(macro_report
+            .unsupported
+            .iter()
+            .any(|item| item.capability == "macro"));
+
+        let presentation = br#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rIdMissing"/></p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/></p:presentation>"#;
+        let dangling = package([
+            (PRESENTATION_PART.into(), presentation.to_vec()),
+            (
+                "ppt/_rels/presentation.xml.rels".into(),
+                relationships_xml("").into_bytes(),
+            ),
+        ]);
+        assert!(matches!(
+            parse_pptx_with_report(&dangling),
+            Err(PptxError::InvalidStructure(message)) if message.contains("rIdMissing")
+        ));
+
+        let rels = relationships_xml("<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide\" Target=\"slides/missing.xml\"/>");
+        let missing_target_presentation = br#"<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst><p:sldSz cx="12192000" cy="6858000"/></p:presentation>"#;
+        let missing_target = package([
+            (
+                PRESENTATION_PART.into(),
+                missing_target_presentation.to_vec(),
+            ),
+            ("ppt/_rels/presentation.xml.rels".into(), rels.into_bytes()),
+        ]);
+        assert!(matches!(
+            parse_pptx_with_report(&missing_target),
+            Err(PptxError::InvalidStructure(message)) if message.contains("slides/missing.xml")
+        ));
+    }
+
+    #[test]
+    fn archive_entry_and_xml_part_limits_fail_closed() {
+        let too_many_entries = package(
+            (0..=MAX_ARCHIVE_ENTRIES).map(|index| (format!("custom/item-{index}"), Vec::new())),
+        );
+        assert!(matches!(
+            inspect_pptx(&too_many_entries),
+            Err(PptxError::InvalidStructure(message)) if message.contains("entry 数量")
+        ));
+
+        let oversized_xml =
+            package([(PRESENTATION_PART.into(), vec![b' '; MAX_XML_PART_BYTES + 1])]);
+        assert!(matches!(
+            parse_pptx_with_report(&oversized_xml),
+            Err(PptxError::InvalidStructure(message)) if message.contains("大小超限")
+        ));
+    }
 
     fn text_node(id: &str, text: &str) -> SceneNode {
         SceneNode {
@@ -3028,10 +4206,7 @@ mod tests {
             opacity: 1.0,
             kind: SceneNodeKind::Text(TextNode {
                 frame: TextFrame {
-                    body: PresentationRichText {
-                        text: text.into(),
-                        runs: vec![],
-                    },
+                    body: PresentationRichText::plain(text),
                     vertical_align: TextVerticalAlign::Top,
                     padding: Insets::default(),
                     auto_fit: TextAutoFit::ShrinkText,
@@ -3050,7 +4225,7 @@ mod tests {
             slides: vec![Slide {
                 id: "s".into(),
                 order_key: "a".into(),
-                name: String::new(),
+                name: "季度 & 计划".into(),
                 layout_id: None,
                 background: Default::default(),
                 notes: None,
@@ -3068,6 +4243,44 @@ mod tests {
             imported.slides[0].nodes[0].kind,
             SceneNodeKind::Text(_)
         ));
+    }
+
+    #[test]
+    fn paragraph_alignment_lists_and_unicode_ranges_roundtrip() {
+        let mut node = text_node("text-1", "第一项\n🚀第二项");
+        let SceneNodeKind::Text(text) = &mut node.kind else {
+            unreachable!()
+        };
+        text.frame.body.paragraphs[0].alignment = TextHorizontalAlign::Center;
+        text.frame.body.paragraphs[0].list = Some(PresentationListStyle::Bullet);
+        text.frame.body.paragraphs[0].indent_level = 1;
+        text.frame.body.paragraphs[1].alignment = TextHorizontalAlign::Right;
+        text.frame.body.paragraphs[1].list = Some(PresentationListStyle::Ordered { start_at: 3 });
+        let deck = Deck {
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: SlideBackground::None,
+                notes: None,
+                transition: None,
+                nodes: vec![node],
+                timeline: Default::default(),
+            }],
+            ..Deck::default()
+        };
+        deck.validate().unwrap();
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(
+            imported.loss_report.unsupported.is_empty(),
+            "report={:?}, entries={:?}",
+            imported.loss_report,
+            imported.deck.slides[0].timeline.entries
+        );
+        assert!(semantic_diff(&deck, &imported.deck).is_equivalent());
     }
 
     #[test]
@@ -3098,10 +4311,7 @@ mod tests {
                         column: 0,
                         row_span: 1,
                         column_span: 1,
-                        content: PresentationRichText {
-                            text: "任务".into(),
-                            runs: vec![],
-                        },
+                        content: PresentationRichText::plain("任务"),
                         style: TableCellStyle {
                             fill: Paint::Solid(ColorRef::Rgba(Rgba {
                                 r: 1,
@@ -3118,10 +4328,7 @@ mod tests {
                         column: 1,
                         row_span: 1,
                         column_span: 1,
-                        content: PresentationRichText {
-                            text: "负责人".into(),
-                            runs: vec![],
-                        },
+                        content: PresentationRichText::plain("负责人"),
                         style: TableCellStyle {
                             fill: Paint::None,
                             horizontal_align: HorizontalAlign::Left,
@@ -3133,10 +4340,7 @@ mod tests {
                         column: 0,
                         row_span: 1,
                         column_span: 1,
-                        content: PresentationRichText {
-                            text: "完成".into(),
-                            runs: vec![],
-                        },
+                        content: PresentationRichText::plain("完成"),
                         style: TableCellStyle {
                             fill: Paint::None,
                             horizontal_align: HorizontalAlign::Right,
@@ -3148,10 +4352,7 @@ mod tests {
                         column: 1,
                         row_span: 1,
                         column_span: 1,
-                        content: PresentationRichText {
-                            text: String::new(),
-                            runs: vec![],
-                        },
+                        content: PresentationRichText::plain(""),
                         style: TableCellStyle::default(),
                     },
                 ],
@@ -3235,10 +4436,7 @@ mod tests {
                 column: 0,
                 row_span: 1,
                 column_span: 2,
-                content: PresentationRichText {
-                    text: "merged".into(),
-                    runs: vec![],
-                },
+                content: PresentationRichText::plain("merged"),
                 style: TableCellStyle::default(),
             }],
         });
@@ -3589,7 +4787,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_writer_rejects_not_yet_mapped_master_and_notes_instead_of_dropping_them() {
+    fn strict_writer_rejects_not_yet_mapped_master_instead_of_dropping_it() {
         let deck = Deck {
             theme: DeckTheme {
                 id: "theme".into(),
@@ -3607,7 +4805,7 @@ mod tests {
                 name: String::new(),
                 layout_id: None,
                 background: Default::default(),
-                notes: Some("speaker note".into()),
+                notes: None,
                 transition: None,
                 nodes: vec![text_node("text", "hello")],
                 timeline: Default::default(),
@@ -3620,12 +4818,178 @@ mod tests {
             .unsupported
             .iter()
             .any(|item| item.capability == "master"));
-        assert!(exported
-            .loss_report
-            .unsupported
-            .iter()
-            .any(|item| item.capability == "notes"));
         assert!(matches!(write_pptx(&deck), Err(PptxError::LossyExport(_))));
+    }
+
+    #[test]
+    fn notes_and_supported_transitions_have_strict_semantic_roundtrip() {
+        let transitions = [
+            TransitionKind::None,
+            TransitionKind::Fade,
+            TransitionKind::Push,
+            TransitionKind::Wipe,
+        ];
+        let deck = Deck {
+            theme: DeckTheme {
+                id: "theme".into(),
+                ..Default::default()
+            },
+            slides: transitions
+                .into_iter()
+                .enumerate()
+                .map(|(index, kind)| Slide {
+                    id: format!("slide-{index}"),
+                    order_key: format!("{index:08}"),
+                    name: String::new(),
+                    layout_id: None,
+                    background: Default::default(),
+                    notes: Some(format!("  speaker note {index}\nsecond line  ")),
+                    transition: Some(SlideTransition {
+                        kind,
+                        duration_ms: 250 + index as u32 * 125,
+                    }),
+                    nodes: vec![text_node(&format!("text-{index}"), "hello")],
+                    timeline: Default::default(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(imported.loss_report.unsupported.is_empty());
+        assert!(semantic_diff(&deck, &imported.deck).is_equivalent());
+
+        let mut archive = open_archive(&exported.bytes).unwrap();
+        assert!(archive.by_name("ppt/notesMasters/notesMaster1.xml").is_ok());
+        for index in 1..=transitions.len() {
+            assert!(archive
+                .by_name(&format!("ppt/notesSlides/notesSlide{index}.xml"))
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn text_frame_alignment_insets_and_autofit_roundtrip() {
+        let variants = [
+            (TextVerticalAlign::Top, TextAutoFit::None, 0.0),
+            (TextVerticalAlign::Middle, TextAutoFit::ShrinkText, 48_000.0),
+            (
+                TextVerticalAlign::Bottom,
+                TextAutoFit::ResizeShape,
+                96_000.0,
+            ),
+        ];
+        let nodes = variants
+            .into_iter()
+            .enumerate()
+            .map(|(index, (vertical_align, auto_fit, inset))| {
+                let mut node = text_node(&format!("frame-{index}"), "frame");
+                node.order_key = format!("{index:08}");
+                let SceneNodeKind::Text(text) = &mut node.kind else {
+                    unreachable!()
+                };
+                text.frame.vertical_align = vertical_align;
+                text.frame.auto_fit = auto_fit;
+                text.frame.padding = Insets {
+                    top: inset,
+                    right: inset + 1.0,
+                    bottom: inset + 2.0,
+                    left: inset + 3.0,
+                };
+                node
+            })
+            .collect();
+        let deck = Deck {
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: Default::default(),
+                notes: None,
+                transition: None,
+                nodes,
+                timeline: Default::default(),
+            }],
+            ..Deck::default()
+        };
+
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(imported.loss_report.unsupported.is_empty());
+        assert!(semantic_diff(&deck, &imported.deck).is_equivalent());
+    }
+
+    #[test]
+    fn supported_entrance_timeline_has_strict_semantic_roundtrip() {
+        let presets = [
+            AnimationPreset::Appear,
+            AnimationPreset::Fade,
+            AnimationPreset::FlyIn,
+            AnimationPreset::Wipe,
+        ];
+        let triggers = [
+            AnimationTrigger::WithPrevious,
+            AnimationTrigger::OnClick,
+            AnimationTrigger::WithPrevious,
+            AnimationTrigger::AfterPrevious,
+        ];
+        let nodes = (0..presets.len())
+            .map(|index| {
+                let mut node = text_node(&format!("animated-{index}"), &format!("node {index}"));
+                node.order_key = format!("{index:08}");
+                node
+            })
+            .collect::<Vec<_>>();
+        let timeline = Timeline {
+            entries: presets
+                .into_iter()
+                .zip(triggers)
+                .enumerate()
+                .map(|(index, (preset, trigger))| AnimationEntry {
+                    id: format!("animation-{index}"),
+                    target_node_id: nodes[index].id.clone(),
+                    trigger,
+                    preset,
+                    duration_ms: 150 + index as u32 * 100,
+                    delay_ms: 25 + index as u32 * 10,
+                    order_key: format!("{index:08}"),
+                })
+                .collect(),
+        };
+        let deck = Deck {
+            theme: DeckTheme {
+                id: "theme".into(),
+                ..Default::default()
+            },
+            slides: vec![Slide {
+                id: "slide".into(),
+                order_key: "00000000".into(),
+                name: String::new(),
+                layout_id: None,
+                background: Default::default(),
+                notes: None,
+                transition: None,
+                nodes,
+                timeline,
+            }],
+            ..Default::default()
+        };
+
+        let exported = write_pptx_with_report(&deck).unwrap();
+        assert!(exported.loss_report.unsupported.is_empty());
+        let imported = parse_pptx_with_report(&exported.bytes).unwrap();
+        assert!(
+            imported.loss_report.unsupported.is_empty(),
+            "report={:?}, entries={:?}",
+            imported.loss_report,
+            imported.deck.slides[0].timeline.entries
+        );
+        assert_eq!(imported.deck.slides[0].timeline.entries.len(), 4);
+        assert!(semantic_diff(&deck, &imported.deck).is_equivalent());
     }
 
     #[test]
@@ -3646,7 +5010,6 @@ mod tests {
         assert!(capabilities.contains(&"master"));
         assert!(capabilities.contains(&"layout"));
         assert!(capabilities.contains(&"theme"));
-        assert!(capabilities.contains(&"slideName"));
         assert!(capabilities.contains(&"slideLayoutReference"));
         assert!(capabilities.contains(&"layoutPlaceholderReference"));
         assert!(matches!(write_pptx(&deck), Err(PptxError::LossyExport(_))));

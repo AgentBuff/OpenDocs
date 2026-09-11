@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use oo_schema::{
     BlockAlignment, BlockData, BlockPresentation, DocumentBlock, DocumentBlockKind, DocumentModel,
-    ImageBlock, InlineRun, InlineStyle, PageSetup, ParagraphStyleRef, RichText,
+    DocumentPageNumbering, DocumentSection, ImageBlock, InlineRun, InlineStyle, PageNumberFormat,
+    PageSetup, ParagraphStyleRef, RichText,
 };
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -29,6 +30,7 @@ pub fn parse_document(
     let _ = doc_id.into();
     let mut doc = DocumentModel::default();
     let mut paragraph_seq = 0usize;
+    let mut page_numbering = None;
 
     loop {
         match reader.read_event()? {
@@ -43,7 +45,11 @@ pub fn parse_document(
                     doc.blocks.push(para);
                     append_image_blocks(&mut doc, paragraph_seq, media_ids, media_relations)?;
                 }
-                b"sectPr" => doc.page_setup = read_section_properties(&mut reader)?,
+                b"sectPr" => {
+                    let section = read_section_properties(&mut reader)?;
+                    doc.page_setup = section.0;
+                    page_numbering = section.1;
+                }
                 _ => skip_subtree(&mut reader, &e)?,
             },
             // 空段落 <w:p/> 也要占一行。
@@ -63,6 +69,18 @@ pub fn parse_document(
         }
     }
 
+    if let Some(start_block_id) = doc.root.first().cloned() {
+        if doc.page_setup.is_some() || page_numbering.is_some() {
+            doc.page_semantics.sections.push(DocumentSection {
+                id: "section-1".into(),
+                start_block_id,
+                page_setup: doc.page_setup.clone(),
+                header: None,
+                footer: None,
+                page_numbering,
+            });
+        }
+    }
     Ok(doc)
 }
 
@@ -297,7 +315,9 @@ fn text_style(props: &TextProps) -> InlineStyle {
 }
 
 /// 读取 `w:sectPr` 中的纸张尺寸与页边距。
-fn read_section_properties(reader: &mut Reader<&[u8]>) -> Result<Option<PageSetup>, DocxError> {
+fn read_section_properties(
+    reader: &mut Reader<&[u8]>,
+) -> Result<(Option<PageSetup>, Option<DocumentPageNumbering>), DocxError> {
     let mut page = PageSetup {
         width: 595.28,
         height: 841.89,
@@ -306,12 +326,13 @@ fn read_section_properties(reader: &mut Reader<&[u8]>) -> Result<Option<PageSetu
         margin_bottom: 72.0,
         margin_left: 72.0,
     };
+    let mut page_numbering = None;
     loop {
         let event = reader.read_event()?;
         // sectPr 的子元素几乎都是自闭合的；带子树的（如 w:footnotePr）整体跳过，
         // 否则它们的结束标签会被误判成 sectPr 结束。
         if let Event::Start(e) = &event {
-            if !matches!(local_name(e).as_slice(), b"pgSz" | b"pgMar") {
+            if !matches!(local_name(e).as_slice(), b"pgSz" | b"pgMar" | b"pgNumType") {
                 skip_subtree(reader, e)?;
                 continue;
             }
@@ -344,6 +365,20 @@ fn read_section_properties(reader: &mut Reader<&[u8]>) -> Result<Option<PageSetu
                             page.margin_left = twips_to_pt(v);
                         }
                     }
+                    b"pgNumType" => {
+                        let start_at = attr(&e, "start")
+                            .and_then(|value| value.parse::<u32>().ok())
+                            .filter(|value| *value > 0)
+                            .unwrap_or(1);
+                        let format = match attr(&e, "fmt").as_deref() {
+                            Some("upperRoman") => PageNumberFormat::UpperRoman,
+                            Some("lowerRoman") => PageNumberFormat::LowerRoman,
+                            Some("upperLetter") => PageNumberFormat::UpperLetter,
+                            Some("lowerLetter") => PageNumberFormat::LowerLetter,
+                            _ => PageNumberFormat::Decimal,
+                        };
+                        page_numbering = Some(DocumentPageNumbering { start_at, format });
+                    }
                     _ => {}
                 }
             }
@@ -352,5 +387,5 @@ fn read_section_properties(reader: &mut Reader<&[u8]>) -> Result<Option<PageSetu
             _ => {}
         }
     }
-    Ok(Some(page))
+    Ok((Some(page), page_numbering))
 }

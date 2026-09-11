@@ -4,9 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+pdf-export = ["dep:pdf-writer", "dep:svg2pdf"]
+
 [dependencies]
 oo-schema.workspace = true
 oo-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+base64.workspace = true
 thiserror.workspace = true
+quick-xml = "0.37"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+svg2pdf = { version = "0.13", optional = true }
+pdf-writer = { version = "0.12", optional = true }
+
+[dev-dependencies]
+lopdf = { version = "0.36", default-features = false }
+pdf-extract = "0.12"

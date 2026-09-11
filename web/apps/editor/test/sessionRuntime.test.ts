@@ -6,7 +6,7 @@ import type {
   DocumentChangeSet,
   DocumentCommandBatch,
 } from "@open-office/document-engine";
-import type { SnapshotEnvelope } from "@open-office/schema/artifact";
+import { CURRENT_SCHEMA_VERSION, type SnapshotEnvelope } from "@open-office/schema/artifact";
 
 import { AutosaveOutbox } from "../src/runtime/autosaveOutbox.js";
 import { CommitApplier } from "../src/runtime/commitApplier.js";
@@ -196,7 +196,7 @@ function createSnapshot(revision: number): SnapshotEnvelope {
     protocolVersion: 1,
     artifact: {
       format: "open-office-artifact",
-      schemaVersion: 4,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       artifactId: "doc-1",
       revision,
       kind: "document",
@@ -206,6 +206,7 @@ function createSnapshot(revision: number): SnapshotEnvelope {
           root: [],
           blocks: [],
           pageSetup: null,
+          pageSemantics: { sections: [], footnotes: [], endnotes: [] },
         },
       },
     },
@@ -233,6 +234,8 @@ function fakeAdapter(): DocumentEngineAdapter {
         canRedo: () => false,
         readBlock: () => { throw new Error("not implemented"); },
         readBlocks: () => { throw new Error("not implemented"); },
+        findText: () => "[]",
+        tableOfContents: () => "[]",
         readChangeSet: () => null,
         readSnapshot: () => ({ ...snapshot, artifact: { ...snapshot.artifact, revision } }),
         revision: () => revision,

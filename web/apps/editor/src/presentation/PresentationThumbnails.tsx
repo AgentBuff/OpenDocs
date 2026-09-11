@@ -1,3 +1,4 @@
+import { PresentationRichText, PresentationTextFrame } from "./PresentationRichText.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { PresentationDeckProjection, PresentationSlideOutlineItem, PresentationSlideProjection } from "@open-office/schema/api";
@@ -114,7 +115,13 @@ function ThumbnailSurface({ slide, deck, label }: { slide: PresentationSlideProj
 function ThumbnailNode({ node }: { node: PresentationV5Node }) {
   const { x, y, width, height, rotation } = node.transform;
   const transform = `rotate(${rotation} ${x + width / 2} ${y + height / 2})`;
-  if (node.kind.type === "text") return <text x={x + 6000} y={y + Math.min(height / 2, 28000)} transform={transform} fontSize={Math.max(9000, Math.min(24000, height / 3))} fill="#26354d">{node.kind.data.frame.body.text.slice(0, 80)}</text>;
+  if (node.kind.type === "text") {
+    const frame = node.kind.data.frame;
+    // Render text in CSS pixels inside the EMU SVG coordinate system.
+    return <g transform={transform} opacity={node.opacity}><foreignObject width={width / 9525} height={height / 9525} transform={`translate(${x} ${y}) scale(9525)`}>
+      <PresentationTextFrame className="presentation-studio__thumbnail-text" body={frame.body} autoFit={frame.autoFit} verticalAlign={frame.verticalAlign} padding={`${frame.padding.top / 9525}px ${frame.padding.right / 9525}px ${frame.padding.bottom / 9525}px ${frame.padding.left / 9525}px`} style={{ width: "100%", height: "100%", overflow: frame.autoFit === "resizeShape" ? "visible" : "hidden", boxSizing: "border-box", whiteSpace: "pre-wrap", color: "#26354d", fontSize: 16, lineHeight: 1.35 }} />
+    </foreignObject></g>;
+  }
   if (node.kind.type === "shape") {
     const fill = paintCss(node.kind.data.style.fill) ?? "transparent";
     const stroke = colorCss(node.kind.data.style.stroke?.color) ?? "#5d6b82";
@@ -122,7 +129,9 @@ function ThumbnailNode({ node }: { node: PresentationV5Node }) {
       ? <ellipse cx={x + width / 2} cy={y + height / 2} rx={width / 2} ry={height / 2} transform={transform} fill={fill} stroke={stroke} />
       : <rect x={x} y={y} width={width} height={height} transform={transform} fill={fill} stroke={stroke} />;
   }
-  if (node.kind.type === "table") return <rect x={x} y={y} width={width} height={height} transform={transform} fill="#fff" stroke="#9eacc0" />;
+  if (node.kind.type === "table") return <g transform={transform} opacity={node.opacity}><foreignObject width={width / 9525} height={height / 9525} transform={`translate(${x} ${y}) scale(9525)`}>
+    <div className="presentation-studio__thumbnail-table" style={{ display: "grid", width: "100%", height: "100%", overflow: "hidden", fontSize: 16, lineHeight: 1.35, color: "#26354d", gridTemplateColumns: `repeat(${node.kind.data.columns}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${node.kind.data.rows}, minmax(0, 1fr))` }}>{node.kind.data.cells.map(cell => <div key={`${cell.row}:${cell.column}`} style={{ gridColumn: `${cell.column + 1} / span ${cell.columnSpan}`, gridRow: `${cell.row + 1} / span ${cell.rowSpan}`, overflow: "hidden", whiteSpace: "pre-wrap", border: "1px solid #9eacc0", padding: "5px 7px", textAlign: cell.style.horizontalAlign, alignContent: cell.style.verticalAlign, background: paintCss(cell.style.fill) ?? "#fff" }}><PresentationRichText body={cell.content} /></div>)}</div>
+  </foreignObject></g>;
   return <rect x={x} y={y} width={width} height={height} transform={transform} fill="#dce4ef" stroke="#9eacc0" />;
 }
 

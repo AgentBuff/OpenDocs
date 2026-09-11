@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,7 +21,17 @@ for (const [file, value] of Object.entries(generatedFiles())) {
     stale = true;
   }
 }
+
+// ADR-0010 phase 3: the generated TypeScript protocol types share the same
+// Rust golden snapshot and must stay in lockstep with it.
+const typescript = spawnSync(
+  process.execPath,
+  [resolve(root, "scripts/generate-protocol-typescript.mjs"), "--check"],
+  { stdio: "inherit" },
+);
+if (typescript.status !== 0) stale = true;
+
 if (stale) {
-  console.error("Run: node scripts/generate-api-contract.mjs");
+  console.error("Run: node scripts/generate-api-contract.mjs && node scripts/generate-protocol-typescript.mjs");
   process.exitCode = 1;
 }

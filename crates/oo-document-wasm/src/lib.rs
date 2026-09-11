@@ -5,6 +5,8 @@
 //! `SnapshotEnvelope`，高频编辑时接收 `DocumentCommandBatch` 并返回 `ChangeSet`，只有
 //! 明确调用 `readSnapshot` 才重新序列化完整快照。
 
+use oo_document::print_projection::document_print_projection;
+use oo_document::search::{find_text, table_of_contents, DocumentSearchOptions};
 use oo_document::{ChangeSet, DocumentCommandBatch, DocumentEngine};
 use oo_protocol::{SnapshotEnvelope, CURRENT_PROTOCOL_VERSION};
 use oo_schema::{ArtifactEnvelope, ArtifactKind, ArtifactPayload};
@@ -144,6 +146,36 @@ impl DocumentSession {
             .read_blocks(&block_ids)
             .map_err(|error| js_error("批量读取 block 失败", error))?;
         serde_json::to_string(&blocks).map_err(|error| js_error("Block 列表序列化失败", error))
+    }
+
+    /// Query the immutable current model using Unicode scalar offsets. This is
+    /// a read projection; it neither advances revision nor exposes model
+    /// mutation outside `dispatch`.
+    #[wasm_bindgen(js_name = findText)]
+    pub fn find_text(&self, query: &str, options_json: &str) -> Result<String, JsValue> {
+        let options: DocumentSearchOptions = serde_json::from_str(options_json)
+            .map_err(|error| js_error("DocumentSearchOptions JSON 无效", error))?;
+        serde_json::to_string(&find_text(self.engine.model(), query, options))
+            .map_err(|error| js_error("搜索结果序列化失败", error))
+    }
+
+    /// Return the current heading-only table-of-contents projection in tree
+    /// order. Layout coordinates remain renderer state.
+    #[wasm_bindgen(js_name = tableOfContents)]
+    pub fn table_of_contents(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&table_of_contents(self.engine.model()))
+            .map_err(|error| js_error("目录投影序列化失败", error))
+    }
+
+    /// Return logical section ranges and page semantics for DOM print/pagination.
+    /// The result contains no renderer coordinates and cannot mutate the model.
+    #[wasm_bindgen(js_name = printProjection)]
+    pub fn print_projection(&self) -> Result<String, JsValue> {
+        serde_json::to_string(&document_print_projection(
+            self.engine.model(),
+            self.engine.revision(),
+        ))
+        .map_err(|error| js_error("打印投影序列化失败", error))
     }
 
     /// 读取最近一次成功事务的增量 ChangeSet；没有事务时返回 `null`。

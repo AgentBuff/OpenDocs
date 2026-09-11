@@ -16,9 +16,12 @@ function canHostTextCursor(block: DocumentBlock | null): block is DocumentBlock 
 }
 
 function focusEditableBlock(id: string, edge: CursorEdge) {
-  requestAnimationFrame(() => {
+  const focus = (remainingFrames: number) => requestAnimationFrame(() => {
     const target = document.querySelector<HTMLElement>(`[data-block-id="${id}"] [contenteditable="true"]`);
-    if (!target) return;
+    if (!target) {
+      if (remainingFrames > 0) focus(remainingFrames - 1);
+      return;
+    }
     target.focus();
     const selection = window.getSelection();
     if (!selection) return;
@@ -28,6 +31,10 @@ function focusEditableBlock(id: string, edge: CursorEdge) {
     selection.removeAllRanges();
     selection.addRange(range);
   });
+  // Structural commands and the virtual root list commit in separate React
+  // frames. Retrying briefly makes focus recovery deterministic without
+  // forcing the renderer to synchronously mutate DOM ownership.
+  focus(3);
 }
 
 /**

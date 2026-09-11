@@ -18,14 +18,14 @@ use oo_protocol::{
     HistoryAction, Invalidation, MutationRecord, PresentationHistoryOperation, TransactionOrigin,
     CURRENT_PROTOCOL_VERSION, PRESENTATION_HISTORY_TYPE_ID,
 };
-use oo_schema::{ArtifactEnvelope, ArtifactPayload};
+use oo_schema::{ArtifactEnvelope, ArtifactPayload, AssetReferenceSource};
 
 use crate::artifact_routes::{artifact_for, load_artifact};
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind};
 use crate::document_support::TransactionCommit;
-use crate::error::{AppError, ConflictDetails};
-use crate::request_context;
+use crate::error::AppError;
+use crate::transaction_kernel;
 use crate::AppState;
 
 /// Applies a real v5 Presentation command batch. Undo/redo reconstruct the
@@ -38,58 +38,28 @@ pub async fn submit_transaction(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<TransactionCommit>, AppError> {
-    let transaction: ArtifactCommandEnvelope = serde_json::from_str(&body)
-        .map_err(|error| AppError::BadRequest(format!("事务 JSON 无效：{error}")))?;
-    transaction
-        .validate()
-        .map_err(|error| AppError::BadRequest(format!("事务协议无效：{error}")))?;
-    if transaction.artifact_id != id {
-        return Err(AppError::BadRequest(
-            "事务 artifactId 必须与请求路径一致".into(),
-        ));
-    }
-    let request = request_context::transaction(&headers, &transaction)?;
-    let transaction_id = request.transaction_id;
-    let expected_version = i64::try_from(request.expected_revision)
-        .map_err(|_| AppError::BadRequest("事务 baseRevision 超出服务端范围".into()))?;
-    let history = presentation_history_operation(&transaction)?;
+    let prepared = transaction_kernel::prepare(&headers, &id, &body)?;
+    let history = presentation_history_operation(&prepared.envelope)?;
 
     let _write_guard = state.write_lock.lock().await;
-    let (meta, snapshot) = load_artifact(&state, &user, &id).await?;
-    if meta.kind != ArtifactKind::Presentation {
-        return Err(AppError::UnsupportedArtifact(meta.kind));
+    let (meta, snapshot) =
+        transaction_kernel::load_target(&state, &user, &id, ArtifactKind::Presentation).await?;
+    if let Some(replay) = transaction_kernel::replay_if_committed(
+        &state,
+        &id,
+        &meta,
+        &prepared.transaction_id,
+        presentation_invalidation_from_keys,
+    )
+    .await?
+    {
+        return Ok(Json(replay));
     }
-    if let Some(record) = db::get_artifact_transaction(&state.pool, &id, &transaction_id).await? {
-        let revision = u64::try_from(record.version)
-            .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
-        let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
-        return Ok(Json(TransactionCommit {
-            result: CommitResult {
-                protocol_version: CURRENT_PROTOCOL_VERSION,
-                artifact_id: id,
-                transaction_id: record.transaction_id,
-                revision,
-                invalidation: presentation_invalidation_from_keys(
-                    &record.changed_entities,
-                    record.structure_changed,
-                ),
-                mutations: Vec::new(),
-                events: Vec::new(),
-            },
-            document: meta,
-            can_undo,
-            can_redo,
-        }));
-    }
-    if meta.version != expected_version {
-        return Err(AppError::VersionConflictDetails(ConflictDetails {
-            artifact_id: id,
-            requested_revision: request.expected_revision,
-            current_revision: u64::try_from(meta.version)
-                .map_err(|_| AppError::Internal("Artifact revision 超出协议范围".into()))?,
-            changed_entities: Vec::new(),
-        }));
-    }
+    transaction_kernel::require_current_revision(&state, &meta, &id, prepared.expected_revision)
+        .await?;
+    let transaction = prepared.envelope;
+    let transaction_id = prepared.transaction_id;
+    let expected_version = prepared.expected_version;
     if let Some(history) = history {
         return submit_history_transaction(
             &state,
@@ -133,22 +103,25 @@ pub async fn submit_transaction(
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Artifact {id} 不存在")))?;
-    let referenced_asset_ids = presentation_asset_ids(engine.deck());
+    let referenced_assets = engine.deck().asset_references();
     let changed_entities = presentation_entity_keys(&change_set.invalidation);
     let events = presentation_events(
         &transaction_id,
         revision,
         &change_set.mutations,
         &change_set.dirty_thumbnail_ids,
+        &user.id,
     )?;
-    let committed = match db::commit_artifact_transaction_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_candidate(
+        &state,
+        &snapshot_key,
         db::ArtifactTransactionCommit {
             id: &id,
             expected_version,
             snapshot_key: &snapshot_key,
             transaction_id: &transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &changed_entities,
             structure_changed: change_set.invalidation.structure_changed,
             origin: transaction_origin_name(transaction.origin),
@@ -156,20 +129,9 @@ pub async fn submit_transaction(
             before_snapshot_key: &blobs.snapshot_key,
             events: &events,
         },
-        &referenced_asset_ids,
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(Some(meta)) => meta,
-        Ok(None) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-        Err(error) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
+    .await?;
     let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
     Ok(Json(TransactionCommit {
         result: CommitResult {
@@ -202,12 +164,6 @@ async fn persist_candidate_snapshot(
     let snapshot_key = crate::document_support::artifact_snapshot_key(artifact_id, version);
     state.store.put(&snapshot_key, &bytes).await?;
     Ok(snapshot_key)
-}
-
-async fn discard_candidate_snapshot(state: &AppState, snapshot_key: &str) {
-    if let Err(error) = state.store.delete(snapshot_key).await {
-        tracing::warn!(snapshot_key, error = %error, "无法清理未提交的 Presentation snapshot");
-    }
 }
 
 /// Validate the Presentation-scoped history intent before any command reaches
@@ -328,13 +284,14 @@ async fn submit_history_transaction(
     .map_err(|_| AppError::Internal("Presentation revision 超出协议范围".into()))?;
     let snapshot_key =
         persist_candidate_snapshot(state, id, revision, engine.deck().clone()).await?;
-    let referenced_asset_ids = presentation_asset_ids(engine.deck());
+    let referenced_assets = engine.deck().asset_references();
     let changed_entities = presentation_entity_keys(&change_set.invalidation);
     let mut events = presentation_events(
         transaction_id,
         revision,
         &change_set.mutations,
         &change_set.dirty_thumbnail_ids,
+        &user.id,
     )?;
     events.push(DomainEventRecord {
         event_id: format!("{transaction_id}:{revision}:history"),
@@ -346,18 +303,21 @@ async fn submit_history_transaction(
             },
             "historyId": entry.history_id,
             "sourceTransactionId": entry.transaction_id,
+            "actorId": user.id,
         }),
     });
     let commands_json = serde_json::to_string(&transaction.commands)
         .map_err(|error| AppError::Internal(format!("事务记录序列化失败：{error}")))?;
-    let committed = match db::commit_artifact_history_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_history_candidate(
+        state,
+        &snapshot_key,
         db::ArtifactHistoryCommit {
             id,
             expected_version,
             snapshot_key: &snapshot_key,
             transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &changed_entities,
             structure_changed: change_set.invalidation.structure_changed,
             origin: transaction_origin_name(transaction.origin),
@@ -367,20 +327,9 @@ async fn submit_history_transaction(
             next_undone: !expected_undone,
             events: &events,
         },
-        &referenced_asset_ids,
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(Some(meta)) => meta,
-        Ok(None) => {
-            discard_candidate_snapshot(state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-        Err(error) => {
-            discard_candidate_snapshot(state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
+    .await?;
     let (can_undo, can_redo) = db::artifact_history_state(&state.pool, id).await?;
     Ok(Json(TransactionCommit {
         result: CommitResult {
@@ -428,17 +377,6 @@ async fn load_presentation_from_snapshot_key(
             "历史 snapshot 不是 Presentation Artifact".into(),
         )),
     }
-}
-
-fn presentation_asset_ids(deck: &oo_schema::presentation_v5::Deck) -> Vec<String> {
-    let mut ids = deck
-        .assets
-        .iter()
-        .map(|asset| asset.asset_id.clone())
-        .collect::<Vec<_>>();
-    ids.sort();
-    ids.dedup();
-    ids
 }
 
 async fn validate_registered_assets(
@@ -554,6 +492,7 @@ fn presentation_events(
     revision: u64,
     mutations: &[PresentationMutation],
     dirty_thumbnail_ids: &[String],
+    actor_id: &str,
 ) -> Result<Vec<DomainEventRecord>, AppError> {
     let mut events = mutations
         .iter()
@@ -583,6 +522,7 @@ fn presentation_events(
                 payload: serde_json::json!({ "slideId": slide_id }),
             }),
     );
+    transaction_kernel::stamp_events(&mut events, actor_id);
     Ok(events)
 }
 

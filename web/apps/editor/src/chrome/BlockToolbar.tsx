@@ -10,6 +10,7 @@ import { PageSetupPanel } from "./PageSetupPanel.js";
 import { ColorPalette, type ColorRole, type ColorValue } from "./ColorPalette.js";
 import { ParagraphSettingsDialog, type ParagraphSettingsValue } from "./ParagraphSettingsDialog.js";
 import type { ToolbarSelectionState } from "../toolbar/selectionState.js";
+import { FontPicker } from "../typography/FontPicker.js";
 
 type ActionToolbarItem = ToolbarItem & { kind: "button" | "toggle" };
 
@@ -70,7 +71,6 @@ export function BlockToolbar({
   };
 }) {
   const [paragraphSettingsOpen, setParagraphSettingsOpen] = useState(false);
-  const isSpecialBlock = activeKind.type === "quote" || activeKind.type === "code";
   const kind = activeKind.type === "heading" ? `heading-${activeKind.level}` : activeKind.type;
   const renderAction = (item: ActionToolbarItem) => {
     const actionId = item.action;
@@ -136,11 +136,7 @@ export function BlockToolbar({
     return null;
   };
 
-  const renderKindSelect = () => isSpecialBlock ? (
-    <ToolbarField className="toolbar-field--special" aria-label={activeKind.type === "quote" ? "引用块" : "代码块"}>
-      {activeKind.type === "quote" ? "引用块" : "代码块"}
-    </ToolbarField>
-  ) : (
+  const renderKindSelect = () => (
     <ToolbarSelect
       className="toolbar-select--kind"
       value={kind}
@@ -155,6 +151,8 @@ export function BlockToolbar({
         { value: "heading-4", label: "标题 4" },
         { value: "heading-5", label: "标题 5" },
         { value: "heading-6", label: "标题 6" },
+        { value: "quote", label: "引用块" },
+        { value: "code", label: "代码块" },
         { value: "todo", label: "待办事项" },
       ]}
     />
@@ -162,22 +160,11 @@ export function BlockToolbar({
 
   const renderFontControls = () => (
     <>
-      <ToolbarSelect
+      <FontPicker
         className="toolbar-select--font"
         value={toolbarSelection.fontFamily ?? ""}
         disabled={!actionContext.hasTextSelection}
-        onValueChange={(nextValue) => {
-          if (nextValue) onInlineAttrs({ fontFamily: nextValue });
-        }}
-        aria-label="字体"
-        options={[
-          { value: "", label: "字体" },
-          { value: "Arial", label: "Arial" },
-          { value: "Helvetica", label: "Helvetica" },
-          { value: "PingFang SC", label: "苹方" },
-          { value: "Microsoft YaHei", label: "微软雅黑" },
-          { value: "Georgia", label: "Georgia" },
-        ]}
+        onChange={nextValue => onInlineAttrs({ fontFamily: nextValue })}
       />
       <ToolbarSelect
         className="toolbar-select--size"
@@ -351,5 +338,7 @@ function ToolbarColorSplit({
 function parseKind(value: string): DocumentBlockKind {
   if (value.startsWith("heading-")) return { type: "heading", level: Number(value.slice(8)) };
   if (value === "todo") return { type: "todo" };
+  if (value === "quote") return { type: "quote" };
+  if (value === "code") return { type: "code" };
   return { type: "paragraph" };
 }

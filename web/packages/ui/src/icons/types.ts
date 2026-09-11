@@ -45,6 +45,7 @@ export type IconName =
   | "line-height"
   | "link"
   | "lock"
+  | "mindmap"
   | "merge-cells"
   | "split-cells"
   | "table-borders"

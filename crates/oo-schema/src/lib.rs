@@ -11,6 +11,7 @@ use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+pub mod font_family;
 mod migration;
 /// Offline v4 → v5 Presentation compiler. It is an import/migration boundary only; online
 /// snapshots accept the v5 Deck and reject retired v4 presentation payloads.
@@ -22,7 +23,9 @@ pub mod presentation_v5;
 
 pub use migration::{
     migrate_artifact_v1_to_v3, migrate_artifact_v2_to_v3, migrate_artifact_v3_to_v4,
-    migrate_artifact_v4_to_v5, ArtifactMigrationError,
+    migrate_artifact_v4_to_v5, migrate_artifact_v5_to_v6, migrate_artifact_v6_to_v7,
+    migrate_artifact_v7_to_v8, migrate_artifact_v8_to_v9, migrate_artifact_v9_to_v10,
+    ArtifactMigrationError,
 };
 
 pub type ArtifactId = String;
@@ -31,7 +34,7 @@ pub type ElementId = String;
 pub type AssetId = String;
 
 /// 持久化 schema 版本，与服务端 revision、协同 clock 完全分离。
-pub const CURRENT_SCHEMA_VERSION: u16 = 5;
+pub const CURRENT_SCHEMA_VERSION: u16 = 10;
 
 /// 所有可编辑内容共享的外层信封。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,7 +85,7 @@ impl ArtifactEnvelope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactKind {
     Document,
@@ -122,6 +125,103 @@ impl ArtifactPayload {
             Self::Whiteboard(board) => board.validate(),
         }
     }
+
+    /// Returns the complete immutable asset closure declared by this payload.
+    /// Duplicate occurrences are retained so persistence can rebuild an exact
+    /// reference count without knowing any domain-specific model shape.
+    pub fn asset_references(&self) -> Vec<AssetReference> {
+        match self {
+            Self::Document(model) => model.asset_references(),
+            Self::Spreadsheet(model) => model.asset_references(),
+            Self::Presentation(model) => model.asset_references(),
+            Self::Mindmap(model) => model.asset_references(),
+            Self::Whiteboard(model) => model.asset_references(),
+        }
+    }
+}
+
+/// One binary object referenced by a canonical Artifact payload. Only models
+/// that persist an authoritative digest or MIME type populate those fields;
+/// the server verifies every populated expectation in the same transaction
+/// that advances the snapshot and rebuilds reference counts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssetReference {
+    pub asset_id: AssetId,
+    pub expected_checksum: Option<String>,
+    pub expected_content_type: Option<String>,
+}
+
+impl AssetReference {
+    pub fn by_id(asset_id: impl Into<AssetId>) -> Self {
+        Self {
+            asset_id: asset_id.into(),
+            expected_checksum: None,
+            expected_content_type: None,
+        }
+    }
+}
+
+/// Read-only bridge from domain-specific payloads to persistence. It does not
+/// allow the asset service to mutate Document/Grid/Graph/Scene state.
+pub trait AssetReferenceSource {
+    fn asset_references(&self) -> Vec<AssetReference>;
+}
+
+impl AssetReferenceSource for DocumentModel {
+    fn asset_references(&self) -> Vec<AssetReference> {
+        let mut references = Vec::new();
+        for block in &self.blocks {
+            if let BlockData::Image(image) = &block.data {
+                references.push(AssetReference::by_id(image.asset_id.clone()));
+                if let Some(original_asset_id) = &image.original_asset_id {
+                    references.push(AssetReference::by_id(original_asset_id.clone()));
+                }
+            }
+        }
+        references.sort_by(|left, right| left.asset_id.cmp(&right.asset_id));
+        references
+    }
+}
+
+impl AssetReferenceSource for SpreadsheetModel {
+    fn asset_references(&self) -> Vec<AssetReference> {
+        Vec::new()
+    }
+}
+
+impl AssetReferenceSource for presentation_v5::Deck {
+    fn asset_references(&self) -> Vec<AssetReference> {
+        let mut references = self
+            .assets
+            .iter()
+            .map(|asset| AssetReference {
+                asset_id: asset.asset_id.clone(),
+                expected_checksum: Some(asset.digest.clone()),
+                expected_content_type: Some(asset.mime_type.clone()),
+            })
+            .collect::<Vec<_>>();
+        references.sort_by(|left, right| left.asset_id.cmp(&right.asset_id));
+        references
+    }
+}
+
+impl AssetReferenceSource for MindmapModel {
+    fn asset_references(&self) -> Vec<AssetReference> {
+        let mut references = self
+            .nodes
+            .iter()
+            .filter_map(|node| node.supplement.image.as_ref())
+            .map(|image| AssetReference::by_id(image.asset_id.clone()))
+            .collect::<Vec<_>>();
+        references.sort_by(|left, right| left.asset_id.cmp(&right.asset_id));
+        references
+    }
+}
+
+impl AssetReferenceSource for WhiteboardModel {
+    fn asset_references(&self) -> Vec<AssetReference> {
+        Vec::new()
+    }
 }
 
 /// 文档模型：根节点和 block 记录分开保存，children 是唯一的父子顺序真相。
@@ -134,6 +234,9 @@ pub struct DocumentModel {
     pub blocks: Vec<DocumentBlock>,
     #[serde(default)]
     pub page_setup: Option<PageSetup>,
+    /// Ordered section boundaries. A section starts at a root block and owns
+    /// only page semantics; block content remains in the canonical tree.
+    pub page_semantics: DocumentPageSemantics,
 }
 
 impl DocumentModel {
@@ -169,6 +272,7 @@ impl DocumentModel {
             root: vec![block.id.clone()],
             blocks: vec![block],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         }
     }
 
@@ -249,6 +353,303 @@ impl DocumentModel {
         if let Some(page_setup) = &self.page_setup {
             page_setup.validate()?;
         }
+        self.validate_page_semantics(&by_id)?;
+        Ok(())
+    }
+
+    fn validate_page_semantics(
+        &self,
+        by_id: &HashMap<&str, &DocumentBlock>,
+    ) -> Result<(), SchemaValidationError> {
+        let semantics = &self.page_semantics;
+        unique_ids(
+            semantics.sections.iter().map(|section| section.id.as_str()),
+            "section",
+        )?;
+        let root_positions = self
+            .root
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect::<HashMap<_, _>>();
+        let mut previous = None;
+        for section in &semantics.sections {
+            if section.id.trim().is_empty() {
+                return Err(SchemaValidationError::EmptyId("section"));
+            }
+            let position = root_positions
+                .get(section.start_block_id.as_str())
+                .copied()
+                .ok_or_else(|| SchemaValidationError::MissingReference {
+                    owner: section.id.clone(),
+                    target: section.start_block_id.clone(),
+                })?;
+            if previous.is_none() && position != 0 {
+                return Err(SchemaValidationError::InvalidValue(
+                    "首个 section 必须从第一个根 block 开始".into(),
+                ));
+            }
+            if previous.is_some_and(|last| position <= last) {
+                return Err(SchemaValidationError::InvalidValue(
+                    "section 必须按根 block 顺序排列且起点不能重复".into(),
+                ));
+            }
+            section.validate()?;
+            previous = Some(position);
+        }
+        unique_ids(
+            semantics.footnotes.iter().map(|note| note.id.as_str()),
+            "footnote",
+        )?;
+        unique_ids(
+            semantics.endnotes.iter().map(|note| note.id.as_str()),
+            "endnote",
+        )?;
+        let mut note_ids = HashSet::new();
+        for (kind, notes) in [
+            ("footnote", &semantics.footnotes),
+            ("endnote", &semantics.endnotes),
+        ] {
+            for note in notes {
+                if note.id.trim().is_empty() {
+                    return Err(SchemaValidationError::EmptyId("document note"));
+                }
+                if !note_ids.insert(note.id.as_str()) {
+                    return Err(SchemaValidationError::DuplicateId("document note"));
+                }
+                note.validate(kind, by_id)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentPageSemantics {
+    pub sections: Vec<DocumentSection>,
+    pub footnotes: Vec<DocumentNote>,
+    pub endnotes: Vec<DocumentNote>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentSection {
+    pub id: String,
+    pub start_block_id: BlockId,
+    #[serde(default)]
+    pub page_setup: Option<PageSetup>,
+    #[serde(default)]
+    pub header: Option<DocumentHeaderFooter>,
+    #[serde(default)]
+    pub footer: Option<DocumentHeaderFooter>,
+    #[serde(default)]
+    pub page_numbering: Option<DocumentPageNumbering>,
+}
+
+impl DocumentSection {
+    fn validate(&self) -> Result<(), SchemaValidationError> {
+        if let Some(page_setup) = &self.page_setup {
+            page_setup.validate()?;
+        }
+        if let Some(header) = &self.header {
+            header.validate("section header")?;
+        }
+        if let Some(footer) = &self.footer {
+            footer.validate("section footer")?;
+        }
+        if let Some(numbering) = &self.page_numbering {
+            numbering.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentHeaderFooter {
+    #[serde(default)]
+    pub default: HeaderFooterContent,
+    #[serde(default)]
+    pub first_page: Option<HeaderFooterContent>,
+    #[serde(default)]
+    pub even_pages: Option<HeaderFooterContent>,
+}
+
+impl DocumentHeaderFooter {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        self.default.validate(owner)?;
+        if let Some(content) = &self.first_page {
+            content.validate(owner)?;
+        }
+        if let Some(content) = &self.even_pages {
+            content.validate(owner)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HeaderFooterContent {
+    #[serde(default)]
+    pub segments: Vec<HeaderFooterSegment>,
+}
+
+impl HeaderFooterContent {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        if self.segments.len() > 256 {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "{owner} 片段不能超过 256 个"
+            )));
+        }
+        for segment in &self.segments {
+            if let HeaderFooterSegment::Text { content } = segment {
+                content.validate(owner)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HeaderFooterSegment {
+    Text { content: RichText },
+    PageNumber,
+    PageCount,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentPageNumbering {
+    #[serde(default = "default_page_number_start")]
+    pub start_at: u32,
+    #[serde(default)]
+    pub format: PageNumberFormat,
+}
+
+fn default_page_number_start() -> u32 {
+    1
+}
+
+impl DocumentPageNumbering {
+    fn validate(&self) -> Result<(), SchemaValidationError> {
+        if self.start_at == 0 || self.start_at > 1_000_000 {
+            return Err(SchemaValidationError::InvalidValue(
+                "pageNumbering.startAt 必须在 1 到 1000000 之间".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PageNumberFormat {
+    #[default]
+    Decimal,
+    UpperRoman,
+    LowerRoman,
+    UpperLetter,
+    LowerLetter,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentNote {
+    pub id: String,
+    pub anchor: DocumentTextAnchor,
+    pub content: Vec<RichText>,
+}
+
+impl DocumentNote {
+    fn validate(
+        &self,
+        kind: &str,
+        by_id: &HashMap<&str, &DocumentBlock>,
+    ) -> Result<(), SchemaValidationError> {
+        if self.content.is_empty() {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "{kind} {} 内容不能为空",
+                self.id
+            )));
+        }
+        for content in &self.content {
+            content.validate(&self.id)?;
+        }
+        self.anchor.validate(&self.id, by_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DocumentTextAnchor {
+    pub block_id: BlockId,
+    #[serde(default)]
+    pub row_id: Option<String>,
+    #[serde(default)]
+    pub cell_id: Option<String>,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl DocumentTextAnchor {
+    fn validate(
+        &self,
+        owner: &str,
+        by_id: &HashMap<&str, &DocumentBlock>,
+    ) -> Result<(), SchemaValidationError> {
+        let block = by_id.get(self.block_id.as_str()).ok_or_else(|| {
+            SchemaValidationError::MissingReference {
+                owner: owner.into(),
+                target: self.block_id.clone(),
+            }
+        })?;
+        let text_len = match (&self.row_id, &self.cell_id) {
+            (None, None) => block
+                .content
+                .as_ref()
+                .ok_or_else(|| {
+                    SchemaValidationError::InvalidValue(format!(
+                        "note {owner} 的 anchor block 不是文本 block"
+                    ))
+                })?
+                .text
+                .chars()
+                .count(),
+            (Some(row_id), Some(cell_id)) => {
+                let BlockData::Table(table) = &block.data else {
+                    return Err(SchemaValidationError::InvalidValue(format!(
+                        "note {owner} 的 anchor block 不是表格"
+                    )));
+                };
+                table
+                    .rows
+                    .iter()
+                    .find(|row| row.id == *row_id)
+                    .and_then(|row| row.cells.iter().find(|cell| cell.id == *cell_id))
+                    .ok_or_else(|| SchemaValidationError::MissingReference {
+                        owner: owner.into(),
+                        target: format!("{row_id}/{cell_id}"),
+                    })?
+                    .content
+                    .text
+                    .chars()
+                    .count()
+            }
+            _ => {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "note {owner} 的 rowId/cellId 必须同时存在或同时省略"
+                )))
+            }
+        };
+        if self.start > self.end || self.end > text_len {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "note {owner} 的 anchor 范围 {}..{} 超出文本长度 {text_len}",
+                self.start, self.end
+            )));
+        }
         Ok(())
     }
 }
@@ -290,6 +691,12 @@ fn validate_block_data(block: &DocumentBlock) -> Result<(), SchemaValidationErro
             if image.caption.chars().count() > 512 {
                 return Err(SchemaValidationError::InvalidValue(format!(
                     "image block {} 的题注不能超过 512 个字符",
+                    block.id
+                )));
+            }
+            if image.alt.chars().count() > 2_048 {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "image block {} 的替代文本不能超过 2048 个字符",
                     block.id
                 )));
             }
@@ -1590,6 +1997,26 @@ impl SpreadsheetModel {
                 )));
             }
         }
+        let mut named_ranges = HashSet::new();
+        for named in &self.metadata.named_ranges {
+            if named.name.trim().is_empty()
+                || !named_ranges.insert((
+                    named.scope_sheet_id.as_deref(),
+                    named.name.to_ascii_lowercase(),
+                ))
+                || !self.sheets.iter().any(|sheet| sheet.id == named.sheet_id)
+                || named
+                    .scope_sheet_id
+                    .as_ref()
+                    .is_some_and(|id| !self.sheets.iter().any(|sheet| &sheet.id == id))
+            {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "named range {} 无效、重名或引用未知 sheet",
+                    named.name
+                )));
+            }
+            named.range.validate(&named.sheet_id)?;
+        }
         for sheet in &self.sheets {
             if sheet.name.trim().is_empty() {
                 return Err(SchemaValidationError::InvalidValue(format!(
@@ -1604,6 +2031,12 @@ impl SpreadsheetModel {
                         "sheet {} 的 cell ({}, {}) 重复",
                         sheet.id, cell.row, cell.column
                     )));
+                }
+                if let Some(style) = &cell.style {
+                    style
+                        .borders
+                        .as_ref()
+                        .map_or(Ok(()), |borders| borders.validate(&sheet.id))?;
                 }
             }
             sheet.metadata.validate(&sheet.id)?;
@@ -1622,6 +2055,18 @@ pub struct SpreadsheetMetadata {
     pub calculation_mode: CalculationMode,
     #[serde(default)]
     pub date_system: DateSystem,
+    #[serde(default)]
+    pub named_ranges: Vec<SpreadsheetNamedRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpreadsheetNamedRange {
+    pub name: String,
+    #[serde(default)]
+    pub scope_sheet_id: Option<String>,
+    pub sheet_id: String,
+    pub range: GridRange,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1651,11 +2096,24 @@ pub struct SheetModel {
     pub metadata: SheetMetadata,
 }
 
+/// Sparse, persisted row layout. Height uses Office points (1 pt = 4/3 CSS px).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetRowLayout {
+    pub row: u32,
+    #[serde(default)]
+    pub height: Option<f64>,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
 /// Worksheet metadata and data-management rules. Rules are typed so adapters can report loss
 /// explicitly instead of putting opaque renderer flags into `CellModel.attrs`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SheetMetadata {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_layout: Vec<SheetRowLayout>,
     #[serde(default)]
     pub visibility: SheetVisibility,
     #[serde(default)]
@@ -1680,6 +2138,20 @@ pub struct SheetMetadata {
 
 impl SheetMetadata {
     fn validate(&self, sheet_id: &str) -> Result<(), SchemaValidationError> {
+        let mut rows = std::collections::HashSet::new();
+        for entry in &self.row_layout {
+            if entry.row >= self.row_count.unwrap_or(1_048_576)
+                || !rows.insert(entry.row)
+                || entry
+                    .height
+                    .is_some_and(|h| !h.is_finite() || h <= 0.0 || h > 409.5)
+            {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "sheet {} row layout 无效",
+                    sheet_id
+                )));
+            }
+        }
         if self.freeze.rows > self.row_count.unwrap_or(u32::MAX)
             || self.freeze.columns > self.column_count.unwrap_or(u32::MAX)
         {
@@ -1879,6 +2351,65 @@ pub struct CellStyle {
     pub fill: Option<FillStyle>,
     #[serde(default)]
     pub alignment: Option<AlignmentStyle>,
+    #[serde(default)]
+    pub borders: Option<CellBorders>,
+}
+
+/// One cell border edge. `style` uses the common spreadsheet vocabulary so a
+/// future XLSX adapter can map it without translation.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellBorderEdge {
+    #[serde(default)]
+    pub style: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+/// The four edges of one cell. `None` fields mean "no border on that side".
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellBorders {
+    #[serde(default)]
+    pub top: Option<CellBorderEdge>,
+    #[serde(default)]
+    pub bottom: Option<CellBorderEdge>,
+    #[serde(default)]
+    pub left: Option<CellBorderEdge>,
+    #[serde(default)]
+    pub right: Option<CellBorderEdge>,
+}
+
+impl CellBorders {
+    /// Rejects unknown border style words at the schema boundary so renderers
+    /// and the future XLSX adapter share one closed vocabulary.
+    const KNOWN_STYLES: &'static [&'static str] = &[
+        "thin", "medium", "thick", "dashed", "dotted", "double", "hair",
+    ];
+
+    pub fn validate(&self, sheet_id: &str) -> Result<(), SchemaValidationError> {
+        for (side, edge) in [
+            ("top", &self.top),
+            ("bottom", &self.bottom),
+            ("left", &self.left),
+            ("right", &self.right),
+        ] {
+            let Some(edge) = edge else { continue };
+            if let Some(style) = &edge.style {
+                if !Self::KNOWN_STYLES.contains(&style.as_str()) {
+                    return Err(SchemaValidationError::InvalidValue(format!(
+                        "sheet {sheet_id} 边框 {side} 样式无效：{style}"
+                    )));
+                }
+            }
+            if edge.style.is_none() && edge.color.is_none() {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "sheet {sheet_id} 边框 {side} 的样式与颜色不能同时为空"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1892,6 +2423,10 @@ pub struct FontStyle {
     pub bold: bool,
     #[serde(default)]
     pub italic: bool,
+    #[serde(default)]
+    pub strikethrough: bool,
+    #[serde(default)]
+    pub underline: bool,
     #[serde(default)]
     pub color: Option<String>,
 }
@@ -2089,6 +2624,9 @@ fn is_css_color(value: &str) -> bool {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MindmapModel {
+    /// Shared document settings. Viewport color mode, zoom, pan and selection
+    /// deliberately stay out of the persisted Artifact.
+    pub settings: MindmapSettings,
     pub root: Option<String>,
     #[serde(default)]
     pub nodes: Vec<MindmapNode>,
@@ -2097,10 +2635,18 @@ pub struct MindmapModel {
     /// references, never inferred by a renderer.
     #[serde(default)]
     pub edges: Vec<MindmapEdge>,
+    #[serde(default)]
+    pub summaries: Vec<MindmapSummary>,
+    #[serde(default)]
+    pub boundaries: Vec<MindmapBoundary>,
+    #[serde(default)]
+    pub formulas: Vec<MindmapFormula>,
 }
 
 impl MindmapModel {
-    fn validate(&self) -> Result<(), SchemaValidationError> {
+    /// Validate graph identity, parent reachability, rich content, typed style and assets.
+    pub fn validate(&self) -> Result<(), SchemaValidationError> {
+        self.settings.validate()?;
         unique_ids(
             self.nodes.iter().map(|node| node.id.as_str()),
             "mindmap node",
@@ -2109,6 +2655,49 @@ impl MindmapModel {
             self.edges.iter().map(|edge| edge.id.as_str()),
             "mindmap edge",
         )?;
+        unique_ids(
+            self.summaries.iter().map(|summary| summary.id.as_str()),
+            "mindmap summary",
+        )?;
+        unique_ids(
+            self.boundaries.iter().map(|boundary| boundary.id.as_str()),
+            "mindmap boundary",
+        )?;
+        unique_ids(
+            self.formulas.iter().map(|formula| formula.id.as_str()),
+            "mindmap formula",
+        )?;
+        let mut entity_ids = HashSet::new();
+        for (kind, id) in self
+            .nodes
+            .iter()
+            .map(|item| ("node", item.id.as_str()))
+            .chain(self.edges.iter().map(|item| ("edge", item.id.as_str())))
+            .chain(
+                self.summaries
+                    .iter()
+                    .map(|item| ("summary", item.id.as_str())),
+            )
+            .chain(
+                self.boundaries
+                    .iter()
+                    .map(|item| ("boundary", item.id.as_str())),
+            )
+            .chain(
+                self.formulas
+                    .iter()
+                    .map(|item| ("formula", item.id.as_str())),
+            )
+        {
+            if id.trim().is_empty() {
+                return Err(SchemaValidationError::EmptyId("mindmap entity"));
+            }
+            if !entity_ids.insert(id) {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap {kind} id 与其它 graph entity 重复：{id}"
+                )));
+            }
+        }
         let by_id: HashMap<&str, &MindmapNode> = self
             .nodes
             .iter()
@@ -2123,6 +2712,14 @@ impl MindmapModel {
             if !self.edges.is_empty() {
                 return Err(SchemaValidationError::InvalidValue(
                     "空 mindmap 不能设置 edge".into(),
+                ));
+            }
+            if !self.summaries.is_empty()
+                || !self.boundaries.is_empty()
+                || !self.formulas.is_empty()
+            {
+                return Err(SchemaValidationError::InvalidValue(
+                    "空 mindmap 不能设置高级结构".into(),
                 ));
             }
             return Ok(());
@@ -2161,6 +2758,8 @@ impl MindmapModel {
             if let Some(content) = &node.content {
                 content.validate(&node.id)?;
             }
+            node.style.validate(&node.id)?;
+            node.supplement.validate(&node.id)?;
         }
         let node_ids: HashSet<&str> = by_id.keys().copied().collect();
         for edge in &self.edges {
@@ -2182,6 +2781,71 @@ impl MindmapModel {
                     target: edge.target_id.clone(),
                 });
             }
+            if let Some(label) = &edge.label {
+                label.validate(&edge.id)?;
+            }
+            edge.style.validate(&edge.id)?;
+        }
+        for summary in &self.summaries {
+            let start = by_id.get(summary.start_node_id.as_str()).ok_or_else(|| {
+                SchemaValidationError::MissingReference {
+                    owner: summary.id.clone(),
+                    target: summary.start_node_id.clone(),
+                }
+            })?;
+            let end = by_id.get(summary.end_node_id.as_str()).ok_or_else(|| {
+                SchemaValidationError::MissingReference {
+                    owner: summary.id.clone(),
+                    target: summary.end_node_id.clone(),
+                }
+            })?;
+            if start.id == end.id || start.parent_id.is_none() || start.parent_id != end.parent_id {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap summary {} 必须引用同一非空 parent 下的不同兄弟节点",
+                    summary.id
+                )));
+            }
+            let siblings = self
+                .nodes
+                .iter()
+                .filter(|node| node.parent_id == start.parent_id)
+                .map(|node| node.id.as_str())
+                .collect::<Vec<_>>();
+            let start_index = siblings.iter().position(|id| *id == start.id).unwrap();
+            let end_index = siblings.iter().position(|id| *id == end.id).unwrap();
+            if start_index >= end_index {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap summary {} 的兄弟区间必须为正向非空区间",
+                    summary.id
+                )));
+            }
+            summary.content.validate(&summary.id)?;
+        }
+        for boundary in &self.boundaries {
+            if !by_id.contains_key(boundary.root_node_id.as_str()) {
+                return Err(SchemaValidationError::MissingReference {
+                    owner: boundary.id.clone(),
+                    target: boundary.root_node_id.clone(),
+                });
+            }
+            if let Some(label) = &boundary.label {
+                label.validate(&boundary.id)?;
+            }
+        }
+        for formula in &self.formulas {
+            if !by_id.contains_key(formula.node_id.as_str()) {
+                return Err(SchemaValidationError::MissingReference {
+                    owner: formula.id.clone(),
+                    target: formula.node_id.clone(),
+                });
+            }
+            let source = formula.source.trim();
+            if source.is_empty() || source.chars().count() > 4096 {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap formula {} source 必须为 1 到 4096 个字符",
+                    formula.id
+                )));
+            }
         }
         let mut visiting = HashSet::new();
         let mut visited = HashSet::new();
@@ -2192,6 +2856,282 @@ impl MindmapModel {
     }
 }
 
+/// Persisted layout semantics. Direction belongs to the selected strategy,
+/// avoiding renderer-owned booleans such as `isLeft` or arbitrary layout ids.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MindmapLayoutKind {
+    #[default]
+    LogicalRight,
+    LogicalLeft,
+    MindMap,
+    Organization,
+    Catalog,
+    TimelineHorizontal,
+    TimelineVertical,
+    Fishbone,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MindmapConnectorShape {
+    #[default]
+    Orthogonal,
+    Curve,
+    Straight,
+}
+
+/// Document-wide visual semantics shared by collaborators. `theme_id` names a
+/// product theme; light/dark/high-contrast is a personal renderer preference.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapSettings {
+    #[serde(default)]
+    pub layout: MindmapLayoutKind,
+    #[serde(default)]
+    pub theme_id: Option<String>,
+    #[serde(default)]
+    pub connector: MindmapConnectorStyle,
+}
+
+impl MindmapSettings {
+    fn validate(&self) -> Result<(), SchemaValidationError> {
+        if self
+            .theme_id
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(SchemaValidationError::InvalidValue(
+                "mindmap themeId 不能为空".into(),
+            ));
+        }
+        self.connector.validate("settings")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapConnectorStyle {
+    #[serde(default)]
+    pub shape: MindmapConnectorShape,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default = "default_mindmap_connector_width")]
+    pub width: f32,
+    #[serde(default)]
+    pub dashed: bool,
+}
+
+const fn default_mindmap_connector_width() -> f32 {
+    2.0
+}
+
+impl Default for MindmapConnectorStyle {
+    fn default() -> Self {
+        Self {
+            shape: MindmapConnectorShape::default(),
+            color: None,
+            width: default_mindmap_connector_width(),
+            dashed: false,
+        }
+    }
+}
+
+impl MindmapConnectorStyle {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        if !self.width.is_finite() || !(0.5..=16.0).contains(&self.width) {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "mindmap {owner} connector width 必须在 0.5 到 16 之间"
+            )));
+        }
+        validate_optional_mindmap_token(self.color.as_deref(), owner, "connector color")
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MindmapNodeShape {
+    #[default]
+    RoundedRectangle,
+    Rectangle,
+    Ellipse,
+    Diamond,
+    Pill,
+    Underline,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MindmapTextAlign {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+
+/// First-party node styling is strongly typed. `attrs` remains extension-only
+/// compatibility storage and must not be used for these fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapNodeStyle {
+    #[serde(default)]
+    pub shape: MindmapNodeShape,
+    #[serde(default)]
+    pub fill_color: Option<String>,
+    #[serde(default)]
+    pub border_color: Option<String>,
+    #[serde(default)]
+    pub text_color: Option<String>,
+    #[serde(default = "default_mindmap_border_width")]
+    pub border_width: f32,
+    #[serde(default)]
+    pub text_align: MindmapTextAlign,
+    #[serde(default = "default_mindmap_min_width")]
+    pub min_width: f32,
+    #[serde(default = "default_mindmap_max_width")]
+    pub max_width: f32,
+}
+
+/// Rich node attachments remain renderer-independent and reference verified
+/// Artifact assets by stable id instead of embedding binary data in snapshots.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapNodeSupplement {
+    #[serde(default)]
+    pub note: Option<RichText>,
+    #[serde(default)]
+    pub hyperlink: Option<String>,
+    #[serde(default)]
+    pub image: Option<MindmapImage>,
+    #[serde(default)]
+    pub markers: Vec<String>,
+}
+
+impl MindmapNodeSupplement {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        if let Some(note) = &self.note {
+            note.validate(owner)?;
+        }
+        if self
+            .hyperlink
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 2048)
+        {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "mindmap node {owner} hyperlink 无效"
+            )));
+        }
+        if let Some(image) = &self.image {
+            image.validate(owner)?;
+        }
+        let mut markers = HashSet::new();
+        for marker in &self.markers {
+            if marker.trim().is_empty() || marker.len() > 64 || !markers.insert(marker) {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap node {owner} marker 无效或重复"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapImage {
+    pub asset_id: String,
+    #[serde(default)]
+    pub alt: String,
+    #[serde(default)]
+    pub width: Option<f32>,
+    #[serde(default)]
+    pub height: Option<f32>,
+}
+
+impl MindmapImage {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        if self.asset_id.trim().is_empty() || self.alt.len() > 1024 {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "mindmap node {owner} image 无效"
+            )));
+        }
+        for (name, value) in [("width", self.width), ("height", self.height)] {
+            if value.is_some_and(|value| !value.is_finite() || !(8.0..=4096.0).contains(&value)) {
+                return Err(SchemaValidationError::InvalidValue(format!(
+                    "mindmap node {owner} image {name} 无效"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+const fn default_mindmap_border_width() -> f32 {
+    1.0
+}
+const fn default_mindmap_min_width() -> f32 {
+    96.0
+}
+const fn default_mindmap_max_width() -> f32 {
+    320.0
+}
+
+impl Default for MindmapNodeStyle {
+    fn default() -> Self {
+        Self {
+            shape: MindmapNodeShape::default(),
+            fill_color: None,
+            border_color: None,
+            text_color: None,
+            border_width: default_mindmap_border_width(),
+            text_align: MindmapTextAlign::default(),
+            min_width: default_mindmap_min_width(),
+            max_width: default_mindmap_max_width(),
+        }
+    }
+}
+
+impl MindmapNodeStyle {
+    fn validate(&self, owner: &str) -> Result<(), SchemaValidationError> {
+        if !self.border_width.is_finite() || !(0.0..=16.0).contains(&self.border_width) {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "mindmap node {owner} borderWidth 必须在 0 到 16 之间"
+            )));
+        }
+        if !self.min_width.is_finite()
+            || !self.max_width.is_finite()
+            || self.min_width < 24.0
+            || self.max_width > 2048.0
+            || self.min_width > self.max_width
+        {
+            return Err(SchemaValidationError::InvalidValue(format!(
+                "mindmap node {owner} 宽度约束无效"
+            )));
+        }
+        for (name, value) in [
+            ("fillColor", self.fill_color.as_deref()),
+            ("borderColor", self.border_color.as_deref()),
+            ("textColor", self.text_color.as_deref()),
+        ] {
+            validate_optional_mindmap_token(value, owner, name)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_optional_mindmap_token(
+    value: Option<&str>,
+    owner: &str,
+    name: &str,
+) -> Result<(), SchemaValidationError> {
+    if value.is_some_and(|value| value.trim().is_empty() || value.len() > 128) {
+        return Err(SchemaValidationError::InvalidValue(format!(
+            "mindmap {owner} {name} 无效"
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MindmapNode {
@@ -2200,6 +3140,8 @@ pub struct MindmapNode {
     pub parent_id: Option<String>,
     #[serde(default)]
     pub content: Option<RichText>,
+    pub style: MindmapNodeStyle,
+    pub supplement: MindmapNodeSupplement,
     #[serde(default)]
     pub attrs: Map<String, Value>,
     /// Whether descendants are hidden in the layout projection. This is graph
@@ -2216,7 +3158,46 @@ pub struct MindmapEdge {
     pub source_id: String,
     pub target_id: String,
     #[serde(default)]
+    pub label: Option<RichText>,
+    pub style: MindmapConnectorStyle,
+    #[serde(default)]
     pub attrs: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MindmapSummary {
+    pub id: String,
+    pub start_node_id: String,
+    pub end_node_id: String,
+    pub content: RichText,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MindmapBoundary {
+    pub id: String,
+    pub root_node_id: String,
+    #[serde(default)]
+    pub label: Option<RichText>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MindmapFormulaDisplay {
+    #[default]
+    Inline,
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MindmapFormula {
+    pub id: String,
+    pub node_id: String,
+    pub source: String,
+    #[serde(default)]
+    pub display: MindmapFormulaDisplay,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -2494,6 +3475,61 @@ pub enum SchemaValidationError {
 mod tests {
     use super::*;
 
+    #[test]
+    fn payload_asset_reference_projection_preserves_occurrences_and_expectations() {
+        let image = |id: &str, asset_id: &str| DocumentBlock {
+            id: id.into(),
+            kind: DocumentBlockKind::Image,
+            presentation: BlockPresentation::default(),
+            content: None,
+            children: Vec::new(),
+            data: BlockData::Image(ImageBlock {
+                asset_id: asset_id.into(),
+                alt: String::new(),
+                original_asset_id: None,
+                transform: ImageTransform::default(),
+                size: ImageSize::default(),
+                placement: ImagePlacement::default(),
+                caption: String::new(),
+            }),
+        };
+        let document = ArtifactPayload::Document(DocumentModel {
+            root: vec!["image-1".into(), "image-2".into()],
+            blocks: vec![image("image-1", "shared"), image("image-2", "shared")],
+            page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
+        });
+        assert_eq!(
+            document
+                .asset_references()
+                .iter()
+                .map(|reference| reference.asset_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["shared", "shared"]
+        );
+
+        let mut deck = presentation_v5::Deck::default();
+        deck.assets.push(presentation_v5::AssetRef {
+            asset_id: "poster".into(),
+            digest: "digest-1".into(),
+            mime_type: "image/png".into(),
+            width: None,
+            height: None,
+            original_asset_id: None,
+        });
+        assert_eq!(
+            deck.asset_references(),
+            vec![AssetReference {
+                asset_id: "poster".into(),
+                expected_checksum: Some("digest-1".into()),
+                expected_content_type: Some("image/png".into()),
+            }]
+        );
+
+        assert!(SpreadsheetModel::default().asset_references().is_empty());
+        assert!(WhiteboardModel::default().asset_references().is_empty());
+    }
+
     fn block(id: &str, kind: DocumentBlockKind, children: Vec<&str>) -> DocumentBlock {
         DocumentBlock {
             id: id.into(),
@@ -2516,11 +3552,62 @@ mod tests {
                 block("text-1", DocumentBlockKind::Paragraph, vec![]),
             ],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         document.validate().unwrap();
         let json = serde_json::to_string(&document).unwrap();
         let back: DocumentModel = serde_json::from_str(&json).unwrap();
         assert_eq!(document, back);
+    }
+
+    #[test]
+    fn document_page_semantics_validate_section_order_and_note_anchors() {
+        let mut document = DocumentModel::empty();
+        document.page_semantics.sections.push(DocumentSection {
+            id: "section-1".into(),
+            start_block_id: "block-1".into(),
+            page_setup: None,
+            header: Some(DocumentHeaderFooter {
+                default: HeaderFooterContent {
+                    segments: vec![HeaderFooterSegment::PageNumber],
+                },
+                ..Default::default()
+            }),
+            footer: None,
+            page_numbering: Some(DocumentPageNumbering {
+                start_at: 1,
+                format: PageNumberFormat::Decimal,
+            }),
+        });
+        document.page_semantics.footnotes.push(DocumentNote {
+            id: "note-1".into(),
+            anchor: DocumentTextAnchor {
+                block_id: "block-1".into(),
+                row_id: None,
+                cell_id: None,
+                start: 0,
+                end: 0,
+            },
+            content: vec![RichText {
+                text: "note".into(),
+                runs: Vec::new(),
+            }],
+        });
+        document.validate().unwrap();
+
+        let mut stale = document.clone();
+        stale.page_semantics.footnotes[0].anchor.end = 1;
+        assert!(matches!(
+            stale.validate(),
+            Err(SchemaValidationError::InvalidValue(message)) if message.contains("anchor")
+        ));
+
+        let mut duplicate = document;
+        duplicate.page_semantics.endnotes = duplicate.page_semantics.footnotes.clone();
+        assert!(matches!(
+            duplicate.validate(),
+            Err(SchemaValidationError::DuplicateId("document note"))
+        ));
     }
 
     #[test]
@@ -2532,6 +3619,7 @@ mod tests {
                 block("b", DocumentBlockKind::Page, vec!["a"]),
             ],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -2549,6 +3637,7 @@ mod tests {
                 block("child", DocumentBlockKind::Paragraph, vec![]),
             ],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             multiple_parent.validate(),
@@ -2562,6 +3651,7 @@ mod tests {
                 block("orphan", DocumentBlockKind::Paragraph, vec![]),
             ],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             orphan.validate(),
@@ -2611,6 +3701,7 @@ mod tests {
                 data: BlockData::None,
             }],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             invalid_runs.validate(),
@@ -2667,6 +3758,7 @@ mod tests {
                 data: BlockData::None,
             }],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             invalid_block.validate(),
@@ -2687,6 +3779,7 @@ mod tests {
                 data: BlockData::None,
             }],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             invalid_link.validate(),
@@ -2720,6 +3813,7 @@ mod tests {
                 data: BlockData::None,
             }],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             invalid_color.validate(),
@@ -2782,6 +3876,7 @@ mod tests {
             root: vec![table.id.clone()],
             blocks: vec![table],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         document.validate().unwrap();
         assert_eq!(document.plain_text(), "A\tB");
@@ -2830,6 +3925,7 @@ mod tests {
             root: vec![table.id.clone()],
             blocks: vec![table.clone()],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -2840,6 +3936,7 @@ mod tests {
             root: vec![table.id.clone()],
             blocks: vec![table],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             mismatch.validate(),
@@ -2874,6 +3971,7 @@ mod tests {
             root: vec![code.id.clone()],
             blocks: vec![code],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         document.validate().unwrap();
         let json = serde_json::to_value(&document).unwrap();
@@ -2906,6 +4004,7 @@ mod tests {
             root: vec![code.id.clone()],
             blocks: vec![code.clone()],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -2926,6 +4025,7 @@ mod tests {
             root: vec![wrong.id.clone()],
             blocks: vec![wrong],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -2951,6 +4051,7 @@ mod tests {
             root: vec![invalid_language.id.clone()],
             blocks: vec![invalid_language],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -2973,6 +4074,7 @@ mod tests {
             root: vec![invalid_indent.id.clone()],
             blocks: vec![invalid_indent],
             page_setup: None,
+            page_semantics: DocumentPageSemantics::default(),
         };
         assert!(matches!(
             document.validate(),
@@ -3011,6 +4113,96 @@ mod tests {
     }
 
     #[test]
+    fn spreadsheet_cell_style_roundtrips_font_decorations_and_borders() {
+        let style = CellStyle {
+            number_format: None,
+            font: Some(FontStyle {
+                strikethrough: true,
+                underline: true,
+                ..FontStyle::default()
+            }),
+            fill: None,
+            alignment: None,
+            borders: Some(CellBorders {
+                top: Some(CellBorderEdge {
+                    style: Some("thin".into()),
+                    color: Some("#1f2329".into()),
+                }),
+                ..CellBorders::default()
+            }),
+        };
+        let json = serde_json::to_value(&style).unwrap();
+        assert_eq!(json["font"]["strikethrough"], true);
+        assert_eq!(json["font"]["underline"], true);
+        assert_eq!(json["borders"]["top"]["style"], "thin");
+        let parsed: CellStyle = serde_json::from_value(json).unwrap();
+        assert_eq!(parsed, style);
+
+        // 缺省字段反序列化保持向后兼容：旧 JSON（无新字段）依然有效。
+        let legacy: CellStyle =
+            serde_json::from_value(serde_json::json!({ "numberFormat": null })).unwrap();
+        assert_eq!(legacy, CellStyle::default());
+    }
+
+    #[test]
+    fn spreadsheet_borders_reject_unknown_style_and_empty_edge() {
+        let bad_style = CellBorders {
+            top: Some(CellBorderEdge {
+                style: Some("rainbow".into()),
+                color: None,
+            }),
+            ..CellBorders::default()
+        };
+        assert!(bad_style.validate("sheet-1").is_err());
+
+        let empty_edge = CellBorders {
+            left: Some(CellBorderEdge {
+                style: None,
+                color: None,
+            }),
+            ..CellBorders::default()
+        };
+        assert!(empty_edge.validate("sheet-1").is_err());
+
+        let ok = CellBorders {
+            bottom: Some(CellBorderEdge {
+                style: Some("dashed".into()),
+                color: Some("#4a90d9".into()),
+            }),
+            ..CellBorders::default()
+        };
+        assert!(ok.validate("sheet-1").is_ok());
+    }
+
+    #[test]
+    fn spreadsheet_model_rejects_cell_with_invalid_border_style() {
+        let spreadsheet = SpreadsheetModel {
+            metadata: SpreadsheetMetadata::default(),
+            sheets: vec![SheetModel {
+                id: "sheet-1".into(),
+                name: "Sheet 1".into(),
+                cells: vec![CellModel {
+                    row: 0,
+                    column: 0,
+                    style: Some(CellStyle {
+                        borders: Some(CellBorders {
+                            top: Some(CellBorderEdge {
+                                style: Some("glitter".into()),
+                                color: None,
+                            }),
+                            ..CellBorders::default()
+                        }),
+                        ..CellStyle::default()
+                    }),
+                    ..CellModel::default()
+                }],
+                metadata: SheetMetadata::default(),
+            }],
+        };
+        assert!(SpreadsheetModel::validate(&spreadsheet).is_err());
+    }
+
+    #[test]
     fn mindmap_and_scene_graph_reject_invalid_references() {
         let mindmap = MindmapModel {
             root: Some("root".into()),
@@ -3030,7 +4222,7 @@ mod tests {
                     ..MindmapNode::default()
                 },
             ],
-            edges: vec![],
+            ..MindmapModel::default()
         };
         let mindmap = ArtifactEnvelope::new("mindmap-artifact", ArtifactPayload::Mindmap(mindmap));
         assert!(matches!(
@@ -3058,6 +4250,181 @@ mod tests {
             whiteboard.validate(),
             Err(SchemaValidationError::MissingReference { .. })
         ));
+    }
+
+    #[test]
+    fn mindmap_typed_settings_and_styles_roundtrip_and_validate() {
+        let model = MindmapModel {
+            settings: MindmapSettings {
+                layout: MindmapLayoutKind::MindMap,
+                theme_id: Some("ocean".into()),
+                connector: MindmapConnectorStyle {
+                    shape: MindmapConnectorShape::Curve,
+                    color: Some("var(--mindmap-line)".into()),
+                    width: 3.0,
+                    dashed: true,
+                },
+            },
+            root: Some("root".into()),
+            nodes: vec![MindmapNode {
+                id: "root".into(),
+                style: MindmapNodeStyle {
+                    shape: MindmapNodeShape::Pill,
+                    fill_color: Some("#ffffff".into()),
+                    text_align: MindmapTextAlign::Center,
+                    ..MindmapNodeStyle::default()
+                },
+                ..MindmapNode::default()
+            }],
+            ..MindmapModel::default()
+        };
+        let artifact = ArtifactEnvelope::new("mindmap", ArtifactPayload::Mindmap(model.clone()));
+        artifact.validate().unwrap();
+        let json = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(json["payload"]["data"]["settings"]["layout"], "mindMap");
+        assert_eq!(
+            json["payload"]["data"]["nodes"][0]["style"]["shape"],
+            "pill"
+        );
+        let roundtrip: ArtifactEnvelope = serde_json::from_value(json).unwrap();
+        assert_eq!(roundtrip, artifact);
+
+        let invalid = MindmapModel {
+            settings: MindmapSettings {
+                connector: MindmapConnectorStyle {
+                    width: 0.1,
+                    ..MindmapConnectorStyle::default()
+                },
+                ..MindmapSettings::default()
+            },
+            ..MindmapModel::default()
+        };
+        assert!(
+            ArtifactEnvelope::new("mindmap", ArtifactPayload::Mindmap(invalid))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn mindmap_advanced_entities_validate_ids_references_and_summary_ranges() {
+        let node = |id: &str, parent_id: Option<&str>| MindmapNode {
+            id: id.into(),
+            parent_id: parent_id.map(str::to_owned),
+            content: Some(RichText {
+                text: id.into(),
+                runs: Vec::new(),
+            }),
+            ..MindmapNode::default()
+        };
+        let valid = MindmapModel {
+            root: Some("root".into()),
+            nodes: vec![
+                node("root", None),
+                node("a", Some("root")),
+                node("b", Some("root")),
+            ],
+            summaries: vec![MindmapSummary {
+                id: "summary-1".into(),
+                start_node_id: "a".into(),
+                end_node_id: "b".into(),
+                content: RichText {
+                    text: "结论".into(),
+                    runs: Vec::new(),
+                },
+            }],
+            boundaries: vec![MindmapBoundary {
+                id: "boundary-1".into(),
+                root_node_id: "a".into(),
+                label: None,
+            }],
+            formulas: vec![MindmapFormula {
+                id: "formula-1".into(),
+                node_id: "b".into(),
+                source: "x^2 + y^2".into(),
+                display: MindmapFormulaDisplay::Block,
+            }],
+            ..MindmapModel::default()
+        };
+        valid.validate().unwrap();
+
+        let mut reversed = valid.clone();
+        reversed.summaries[0].start_node_id = "b".into();
+        reversed.summaries[0].end_node_id = "a".into();
+        assert!(matches!(
+            reversed.validate(),
+            Err(SchemaValidationError::InvalidValue(message)) if message.contains("正向")
+        ));
+
+        let mut dangling = valid.clone();
+        dangling.boundaries[0].root_node_id = "missing".into();
+        assert!(matches!(
+            dangling.validate(),
+            Err(SchemaValidationError::MissingReference { .. })
+        ));
+
+        let mut duplicate = valid.clone();
+        duplicate.formulas[0].id = "a".into();
+        assert!(matches!(
+            duplicate.validate(),
+            Err(SchemaValidationError::InvalidValue(message)) if message.contains("重复")
+        ));
+
+        let mut empty_formula = valid;
+        empty_formula.formulas[0].source = "  ".into();
+        assert!(matches!(
+            empty_formula.validate(),
+            Err(SchemaValidationError::InvalidValue(message)) if message.contains("source")
+        ));
+    }
+
+    #[test]
+    fn spreadsheet_named_ranges_validate_scope_targets_and_case_insensitive_uniqueness() {
+        let sheet = |id: &str| SheetModel {
+            id: id.into(),
+            name: id.into(),
+            ..SheetModel::default()
+        };
+        let named = SpreadsheetNamedRange {
+            name: "Revenue".into(),
+            scope_sheet_id: Some("summary".into()),
+            sheet_id: "data".into(),
+            range: GridRange {
+                start_row: 0,
+                start_column: 0,
+                end_row: 4,
+                end_column: 0,
+            },
+        };
+        let model = SpreadsheetModel {
+            metadata: SpreadsheetMetadata {
+                named_ranges: vec![named.clone()],
+                ..SpreadsheetMetadata::default()
+            },
+            sheets: vec![sheet("data"), sheet("summary")],
+        };
+        ArtifactEnvelope::new("named", ArtifactPayload::Spreadsheet(model.clone()))
+            .validate()
+            .unwrap();
+
+        let mut duplicate = model.clone();
+        duplicate.metadata.named_ranges.push(SpreadsheetNamedRange {
+            name: "revenue".into(),
+            ..named.clone()
+        });
+        assert!(
+            ArtifactEnvelope::new("duplicate", ArtifactPayload::Spreadsheet(duplicate))
+                .validate()
+                .is_err()
+        );
+
+        let mut dangling = model;
+        dangling.metadata.named_ranges[0].sheet_id = "missing".into();
+        assert!(
+            ArtifactEnvelope::new("dangling", ArtifactPayload::Spreadsheet(dangling))
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

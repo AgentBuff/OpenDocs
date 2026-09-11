@@ -10,18 +10,23 @@ pub mod db;
 pub mod document_support;
 pub mod error;
 pub mod events;
+pub mod mindmap_support;
 pub mod presence;
 pub mod presentation_migration;
 pub mod presentation_support;
 pub mod projection;
 pub mod request_context;
+pub mod review;
+pub mod spreadsheet_support;
 pub mod store;
+pub mod transaction_kernel;
+pub mod whiteboard_support;
 
 use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderName, HeaderValue, Method};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::Router;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
@@ -81,12 +86,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(document_support::health))
         .route(CAPABILITIES_PATH, get(artifact_routes::capabilities))
         .route("/api/artifacts/{id}/events", get(events::list))
+        .route("/api/artifacts/{id}/event-stream", get(events::stream))
         .route("/api/artifacts/{id}/presence", get(presence::list))
         .route(
             "/api/artifacts/{id}/presence/{session_id}",
             axum::routing::put(presence::put),
         )
+        .route(
+            "/api/artifacts/{id}/reviews",
+            get(review::list).post(review::create_comment),
+        )
+        .route(
+            "/api/artifacts/{id}/suggestions",
+            post(review::create_suggestion),
+        )
+        .route(
+            "/api/artifacts/{id}/reviews/{thread_id}",
+            axum::routing::patch(review::update),
+        )
+        .route(
+            "/api/artifacts/{id}/reviews/{thread_id}/messages",
+            post(review::reply),
+        )
         .route("/api/artifacts/{id}/outline", get(projection::outline))
+        .route(
+            "/api/artifacts/{id}/toc",
+            get(projection::table_of_contents),
+        )
         .route("/api/artifacts/{id}/blocks", get(projection::blocks))
         .route(
             "/api/artifacts/{id}/presentation/outline",
@@ -126,6 +152,14 @@ pub fn build_router(state: AppState) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_BYTES)),
         )
         .route(
+            artifact_routes::ARTIFACT_COLLABORATORS_PATH,
+            get(artifact_routes::list_collaborators),
+        )
+        .route(
+            artifact_routes::ARTIFACT_COLLABORATOR_PATH,
+            put(artifact_routes::upsert_collaborator).delete(artifact_routes::delete_collaborator),
+        )
+        .route(
             artifact_routes::ARTIFACT_ASSET_PATH,
             get(artifact_routes::get_asset).delete(artifact_routes::delete_asset),
         )
@@ -137,9 +171,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             artifact_routes::ARTIFACT_SNAPSHOT_PATH,
-            get(artifact_routes::snapshot)
-                .put(artifact_routes::put_snapshot)
-                .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES)),
+            get(artifact_routes::snapshot),
         )
         .route(
             artifact_routes::ARTIFACT_REVISIONS_PATH,

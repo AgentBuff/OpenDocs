@@ -10,7 +10,8 @@ use std::sync::Arc;
 
 use oo_schema::{
     migrate_artifact_v1_to_v3, migrate_artifact_v2_to_v3, migrate_artifact_v3_to_v4,
-    migrate_artifact_v4_to_v5,
+    migrate_artifact_v4_to_v5, migrate_artifact_v5_to_v6, migrate_artifact_v6_to_v7,
+    migrate_artifact_v7_to_v8,
 };
 use oo_server::store::{BlobStore, LocalFsStore};
 use serde_json::Value;
@@ -66,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         let version = raw.get("schemaVersion").and_then(Value::as_u64);
-        if !matches!(version, Some(1..=4)) {
+        if !matches!(version, Some(1..=7)) {
             skipped += 1;
             continue;
         }
@@ -75,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(2) => migrate_artifact_v2_to_v3(raw),
             Some(3) => migrate_artifact_v3_to_v4(raw),
             Some(4) => migrate_artifact_v4_to_v5(raw),
+            Some(5) => migrate_artifact_v5_to_v6(raw),
+            Some(6) => migrate_artifact_v6_to_v7(raw),
+            Some(7) => migrate_artifact_v7_to_v8(raw),
             _ => unreachable!(),
         };
         let migrated_artifact = match migrated_result {

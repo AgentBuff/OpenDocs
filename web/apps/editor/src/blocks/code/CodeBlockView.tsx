@@ -9,7 +9,6 @@ import {
   CODE_BLOCK_MAX_HEIGHT,
   CODE_BLOCK_MIN_HEIGHT,
   CODE_LANGUAGES,
-  CODE_THEMES,
   codeLineNumbers,
   codeConfig,
   isCurrentHighlightRequest,
@@ -212,35 +211,22 @@ export function CodeBlockView({ block, session }: { block: DocumentBlock; sessio
   }, [commitHeight]);
 
   return (
-    <div ref={codeBlockRef} className={`code-block code-block--${config.theme}`} data-code-language={config.language}>
+    <div ref={codeBlockRef} className="code-block code-block--light" data-code-language={config.language}>
       <header className="code-block__toolbar">
-        <input
-          className="code-block__title"
-          value={config.title}
-          placeholder="请输入代码块名称"
-          maxLength={256}
-          aria-label="代码块标题"
-          onChange={(event) => updateConfig({ title: event.target.value })}
-        />
         <ToolbarSelect
           className="code-block__select code-block__select--language"
-          popupClassName={`code-block__select-popover code-block__select-popover--${config.theme}`}
+          popupClassName="code-block__select-popover code-block__select-popover--light"
           value={config.language}
           aria-label="代码语言"
           options={CODE_LANGUAGES.map((language) => ({ value: language.id, label: language.label }))}
           onValueChange={(language) => updateConfig({ language })}
         />
-        <ToolbarSelect
-          className="code-block__select code-block__select--theme"
-          popupClassName={`code-block__select-popover code-block__select-popover--${config.theme}`}
-          value={config.theme}
-          aria-label="代码主题"
-          options={CODE_THEMES.map((theme) => ({ value: theme.id, label: theme.label }))}
-          onValueChange={(theme) => updateConfig({ theme })}
-        />
         <button className="code-block__tool code-block__tool--copy" type="button" onClick={() => void copy()} aria-label="复制代码" title={copied ? "已复制" : "复制代码"}>
           <Icon name={copied ? "check" : "copy"} />
           <span className="sr-only">{copied ? "已复制" : "复制代码"}</span>
+        </button>
+        <button className="code-block__tool code-block__tool--delete" type="button" onClick={() => session.deleteBlock(block.id)} aria-label="删除代码块" title="删除代码块">
+          <Icon name="delete" />
         </button>
         <Popover
           open={moreOpen}
@@ -250,14 +236,6 @@ export function CodeBlockView({ block, session }: { block: DocumentBlock; sessio
           popupClassName="oo-overlay--code-settings"
           content={(
             <div className="code-block__settings" role="menu" aria-label="代码块设置">
-              <label><span>主题</span><ToolbarSelect
-                className="code-block__settings-select"
-                popupClassName={`code-block__select-popover code-block__select-popover--${config.theme}`}
-                value={config.theme}
-                aria-label="设置代码主题"
-                options={CODE_THEMES.map((theme) => ({ value: theme.id, label: theme.label }))}
-                onValueChange={(theme) => updateConfig({ theme })}
-              /></label>
               <label><span>字号</span><input type="number" min={8} max={32} step={1} value={config.fontSize} onChange={(event) => {
                 const value = Number(event.target.value);
                 if (Number.isFinite(value)) updateConfig({ fontSize: Math.min(32, Math.max(8, Math.round(value))) });
@@ -279,19 +257,6 @@ export function CodeBlockView({ block, session }: { block: DocumentBlock; sessio
               /></label>
               <label><span>行号</span><input type="checkbox" checked={config.showLineNumbers} onChange={(event) => updateConfig({ showLineNumbers: event.target.checked })} /></label>
               <label><span>自动换行</span><input type="checkbox" checked={config.wrap} onChange={(event) => updateConfig({ wrap: event.target.checked })} /></label>
-              <div className="code-block__settings-divider" role="separator" />
-              <button
-                className="code-block__settings-danger"
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setMoreOpen(false);
-                  session.deleteBlock(block.id);
-                }}
-              >
-                <Icon name="delete" />
-                <span>删除代码块</span>
-              </button>
             </div>
           )}
         >

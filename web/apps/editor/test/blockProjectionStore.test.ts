@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { DocumentBlock, DocumentModel, SnapshotEnvelope } from "@open-office/schema/artifact";
+import { CURRENT_SCHEMA_VERSION, type DocumentBlock, type DocumentModel, type SnapshotEnvelope } from "@open-office/schema/artifact";
 
 import { BlockProjectionStore } from "../src/store/blockProjectionStore.js";
 
@@ -24,16 +24,23 @@ function block(id: string, text: string): DocumentBlock {
   };
 }
 
-function snapshot(model: DocumentModel, revision = 1): SnapshotEnvelope {
+function snapshot(
+  model: Omit<DocumentModel, "pageSemantics"> & Partial<Pick<DocumentModel, "pageSemantics">>,
+  revision = 1,
+): SnapshotEnvelope {
+  const completeModel: DocumentModel = {
+    ...model,
+    pageSemantics: model.pageSemantics ?? { sections: [], footnotes: [], endnotes: [] },
+  };
   return {
     protocolVersion: 1,
     artifact: {
       format: "open-office-artifact",
-      schemaVersion: 4,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
       artifactId: "doc-1",
       revision,
       kind: "document",
-      payload: { kind: "document", data: model },
+      payload: { kind: "document", data: completeModel },
     },
   };
 }

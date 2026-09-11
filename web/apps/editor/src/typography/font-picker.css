@@ -1,0 +1,17 @@
+.oo-font-trigger { display:inline-flex; align-items:center; justify-content:space-between; gap:6px; width:110px; height:28px; padding:0 6px; border:1px solid transparent; border-radius:4px; background:transparent; color:inherit; font:inherit; font-size:12px; cursor:pointer; }
+.oo-font-trigger > span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.oo-font-trigger:hover:not(:disabled) { border-color:var(--oo-color-border,#dce0e6); }
+.oo-font-trigger:disabled { opacity:.45; cursor:default; }
+.oo-font-picker { width:300px; max-width:calc(100vw - 24px); padding:8px; box-sizing:border-box; }
+.oo-font-picker > input { box-sizing:border-box; width:100%; height:32px; margin-bottom:6px; border:1px solid var(--oo-color-border,#dce0e6); border-radius:4px; padding:0 8px; font:inherit; }
+.oo-font-picker [role="listbox"] { max-height:340px; overflow-y:auto; }
+.oo-font-option { display:flex; align-items:center; justify-content:space-between; text-align:left; width:100%; min-height:34px; padding:6px 10px; border:0; border-radius:4px; background:transparent; color:inherit; font-size:15px; cursor:pointer; }
+.oo-font-option:hover { background:var(--oo-color-surface-hover,#f0f3f8); }
+.oo-font-option[aria-selected="true"] { background:#edf4ff; color:#165dff; }
+.oo-font-option small,.oo-font-picker p { font:12px/1.5 sans-serif; color:#86909c; }
+
+.oo-font-group { padding: 10px 10px 4px; color: var(--oo-color-text-muted, #86909c); font: 11px/1.5 sans-serif; }
+.oo-font-option:focus-visible { outline: 2px solid #165dff; outline-offset: -2px; }
+
+.oo-font-option > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oo-font-option > small { flex-shrink: 0; margin-left: 8px; font-size: 10px; }

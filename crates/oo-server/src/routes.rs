@@ -11,10 +11,12 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::artifact_routes::{authorize, Role};
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind, ArtifactMeta, NewArtifact};
 use crate::error::AppError;
 use crate::request_context;
+use crate::transaction_kernel;
 use crate::AppState;
 use oo_document::{
     DocumentCommand, DocumentCommandBatch, DocumentEngine, DocumentEngineError,
@@ -25,7 +27,7 @@ use oo_protocol::{
     DomainEventRecord, EntityRef, HistoryAction, Invalidation, MutationRecord, SnapshotEnvelope,
     CURRENT_PROTOCOL_VERSION, DOCUMENT_HISTORY_TYPE_ID,
 };
-use oo_schema::{ArtifactEnvelope, ArtifactPayload, BlockData, DocumentModel};
+use oo_schema::{ArtifactEnvelope, ArtifactPayload, AssetReferenceSource, DocumentModel};
 
 /// 上传体积上限。过大的文档在解析和对象存储阶段都可能阻塞请求，早点拒绝比超时更友好。
 const MAX_UPLOAD_BYTES: usize = 32 * 1024 * 1024;
@@ -100,6 +102,7 @@ pub async fn upload(
             "artifactId": doc_id,
             "artifactKind": "document",
             "revision": 1,
+            "actorId": user.id,
         }),
     }];
     let meta = db::insert_artifact(
@@ -177,6 +180,7 @@ pub async fn create(
             "artifactId": doc_id,
             "artifactKind": "document",
             "revision": 1,
+            "actorId": user.id,
         }),
     }];
     let meta = db::insert_artifact(
@@ -478,54 +482,6 @@ pub async fn restore_snapshot(
     Ok(Json(committed))
 }
 
-/// 以 system/import transaction 保存新的 Artifact snapshot。
-pub async fn put_artifact(
-    State(state): State<AppState>,
-    user: CurrentUser,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: String,
-) -> Result<Json<TransactionCommit>, AppError> {
-    let transaction_id = transaction_id_header(&headers)?;
-    load_owned(&state, &user, &id).await?;
-    let snapshot: SnapshotEnvelope = serde_json::from_str(&body)
-        .map_err(|error| AppError::BadRequest(format!("Artifact JSON 无效：{error}")))?;
-    snapshot
-        .validate()
-        .map_err(|error| AppError::BadRequest(format!("Artifact 协议无效：{error}")))?;
-    if snapshot.artifact.artifact_id != id {
-        return Err(AppError::BadRequest(
-            "Artifact id 必须与请求路径一致".into(),
-        ));
-    }
-    let model = match snapshot.artifact.payload {
-        ArtifactPayload::Document(model) => model,
-        _ => {
-            return Err(AppError::BadRequest(
-                "当前文档路由只支持 Document Artifact".into(),
-            ));
-        }
-    };
-    let expected_version = expected_version(&headers)?;
-    let artifact_revision = i64::try_from(snapshot.artifact.revision)
-        .map_err(|_| AppError::BadRequest("Artifact revision 超出服务端范围".into()))?;
-    if artifact_revision != expected_version {
-        return Err(AppError::VersionConflict);
-    }
-    Ok(Json(
-        save_artifact_transaction(
-            &state,
-            &user,
-            &id,
-            expected_version,
-            model,
-            &transaction_id,
-            "document.artifactImported",
-        )
-        .await?,
-    ))
-}
-
 fn artifact_for(
     id: &str,
     revision: u64,
@@ -580,7 +536,7 @@ async fn save_artifact_transaction(
     if meta.version != expected_version {
         return Err(AppError::VersionConflict);
     }
-    let referenced_asset_ids = document_asset_ids(&model);
+    let referenced_assets = model.asset_references();
     let (snapshot_key, next_version) =
         prepare_artifact_save(state, user, id, expected_version, model).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, id)
@@ -595,14 +551,16 @@ async fn save_artifact_transaction(
         payload: serde_json::json!({ "documentId": id, "revision": revision }),
     }];
     let changed_blocks: Vec<String> = Vec::new();
-    let committed = match db::commit_artifact_transaction_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_candidate(
+        state,
+        &snapshot_key,
         db::ArtifactTransactionCommit {
             id,
             expected_version,
             snapshot_key: &snapshot_key,
             transaction_id,
             author_id: &user.id,
+            client_actor_id: &user.id,
             changed_entities: &changed_blocks,
             structure_changed: true,
             origin: "import",
@@ -610,23 +568,9 @@ async fn save_artifact_transaction(
             before_snapshot_key: &before_snapshot_key,
             events: &events,
         },
-        &referenced_asset_ids,
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(committed) => committed,
-        Err(error) => {
-            discard_uncommitted_snapshot(state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
-    let committed = match committed {
-        Some(meta) => meta,
-        None => {
-            discard_uncommitted_snapshot(state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-    };
+    .await?;
     let (can_undo, can_redo) = db::artifact_history_state(&state.pool, id).await?;
     Ok(TransactionCommit {
         result: CommitResult {
@@ -642,29 +586,6 @@ async fn save_artifact_transaction(
         can_undo,
         can_redo,
     })
-}
-
-/// Return all image asset ids referenced by the canonical Document block tree.
-/// Sorting makes the transaction boundary deterministic for logs and tests;
-/// duplicate ids are retained because `ref_count` represents occurrences.
-fn document_asset_ids(model: &DocumentModel) -> Vec<String> {
-    let mut ids = Vec::new();
-    for block in &model.blocks {
-        if let BlockData::Image(image) = &block.data {
-            ids.push(image.asset_id.clone());
-            if let Some(original_asset_id) = &image.original_asset_id {
-                ids.push(original_asset_id.clone());
-            }
-        }
-    }
-    ids.sort();
-    ids
-}
-
-async fn discard_uncommitted_snapshot(state: &AppState, snapshot_key: &str) {
-    if let Err(error) = state.store.delete(snapshot_key).await {
-        tracing::warn!(snapshot_key, error = %error, "无法清理未提交的 Artifact snapshot");
-    }
 }
 
 async fn prepare_artifact_save(
@@ -744,62 +665,31 @@ pub async fn submit_transaction(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<TransactionCommit>, AppError> {
-    let transaction: ArtifactCommandEnvelope = serde_json::from_str(&body)
-        .map_err(|error| AppError::BadRequest(format!("事务 JSON 无效：{error}")))?;
-    transaction
-        .validate()
-        .map_err(|error| AppError::BadRequest(format!("事务协议无效：{error}")))?;
-    if transaction.artifact_id != id {
-        return Err(AppError::BadRequest(
-            "事务 artifactId 必须与请求路径一致".into(),
-        ));
-    }
-    let request_context = request_context::transaction(&headers, &transaction)?;
-    if let Some(request_id) = request_context.request_id.as_deref() {
-        tracing::debug!(request_id, artifact_id = %id, "accepted transaction request id");
-    }
-    let base_revision = i64::try_from(transaction.base_revision)
-        .map_err(|_| AppError::BadRequest("事务 baseRevision 超出服务端范围".into()))?;
-    let transaction_id = request_context.transaction_id;
+    let prepared = transaction_kernel::prepare(&headers, &id, &body)?;
 
     // Document transaction 使用独立日志做幂等。重试时即使文档已经进入更高 revision，
     // 也返回原提交摘要，不重复应用 block 操作。
     let _write_guard = state.write_lock.lock().await;
-    let meta = load_owned(&state, &user, &id).await?;
-    if let Some(record) = db::get_artifact_transaction(&state.pool, &id, &transaction_id).await? {
-        let revision = u64::try_from(record.version)
-            .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
-        let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
-        return Ok(Json(TransactionCommit {
-            result: CommitResult {
-                protocol_version: CURRENT_PROTOCOL_VERSION,
-                artifact_id: id.clone(),
-                transaction_id: record.transaction_id.clone(),
-                revision,
-                invalidation: document_invalidation(
-                    &record.changed_entities,
-                    &[],
-                    record.structure_changed,
-                ),
-                mutations: Vec::new(),
-                events: Vec::new(),
-            },
-            document: meta,
-            can_undo,
-            can_redo,
-        }));
+    let (meta, snapshot) =
+        transaction_kernel::load_target(&state, &user, &id, ArtifactKind::Document).await?;
+    if let Some(replay) = transaction_kernel::replay_if_committed(
+        &state,
+        &id,
+        &meta,
+        &prepared.transaction_id,
+        |changed_entities, structure_changed| {
+            document_invalidation(changed_entities, &[], structure_changed)
+        },
+    )
+    .await?
+    {
+        return Ok(Json(replay));
     }
-    if base_revision != meta.version {
-        return Err(AppError::VersionConflictDetails(
-            crate::error::ConflictDetails {
-                artifact_id: id.clone(),
-                requested_revision: transaction.base_revision,
-                current_revision: u64::try_from(meta.version)
-                    .map_err(|_| AppError::Internal("文档版本超出协议范围".into()))?,
-                changed_entities: Vec::new(),
-            },
-        ));
-    }
+    transaction_kernel::require_current_revision(&state, &meta, &id, prepared.expected_revision)
+        .await?;
+    let transaction = prepared.envelope;
+    let transaction_id = prepared.transaction_id;
+    let base_revision = prepared.expected_version;
 
     let history = history_operation(&transaction)?;
     if let Some(history) = history {
@@ -815,8 +705,7 @@ pub async fn submit_transaction(
         .await;
     }
 
-    let (_, snapshot) = load_stored_artifact(&state, &user, &id).await?;
-    let model = match snapshot.artifact.payload {
+    let model = match snapshot.payload {
         ArtifactPayload::Document(model) => model,
         _ => return Err(AppError::Internal("事务目标不是 Document Artifact".into())),
     };
@@ -835,7 +724,7 @@ pub async fn submit_transaction(
             commands,
         })
         .map_err(document_engine_error)?;
-    let referenced_asset_ids = document_asset_ids(engine.model());
+    let referenced_assets = engine.model().asset_references();
     let (snapshot_key, _) =
         prepare_artifact_save(&state, &user, &id, base_revision, engine.model().clone()).await?;
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
@@ -845,15 +734,22 @@ pub async fn submit_transaction(
     let revision = base_revision
         .checked_add(1)
         .ok_or_else(|| AppError::Internal("事务 revision 超出服务端范围".into()))?;
-    let events = document_events(&transaction_id, revision as u64, &result.mutations)?;
-    let committed = match db::commit_artifact_transaction_with_assets(
-        &state.pool,
+    let events = document_events(
+        &transaction_id,
+        revision as u64,
+        &result.mutations,
+        &user.id,
+    )?;
+    let committed = transaction_kernel::commit_candidate(
+        &state,
+        &snapshot_key,
         db::ArtifactTransactionCommit {
             id: &id,
             expected_version: base_revision,
             snapshot_key: &snapshot_key,
             transaction_id: &transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &result.changed_blocks,
             structure_changed: result.structure_changed,
             origin: transaction_origin_name(transaction.origin),
@@ -861,26 +757,9 @@ pub async fn submit_transaction(
             before_snapshot_key: &before_snapshot_key,
             events: &events,
         },
-        &referenced_asset_ids,
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(committed) => committed,
-        Err(error) => {
-            // The SQLite transaction has already rolled back.  The object
-            // store is intentionally outside that transaction, so remove the
-            // unreferenced candidate before surfacing the failure.
-            discard_uncommitted_snapshot(&state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
-    let committed = match committed {
-        Some(meta) => meta,
-        None => {
-            discard_uncommitted_snapshot(&state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-    };
+    .await?;
     let revision = u64::try_from(committed.version)
         .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
     let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
@@ -981,7 +860,7 @@ async fn submit_history_transaction(
         HistoryAction::Redo => &entry.after_snapshot_key,
     };
     let model = load_model_from_snapshot_key(state, user, id, target_key).await?;
-    let referenced_asset_ids = document_asset_ids(&model);
+    let referenced_assets = model.asset_references();
     let (snapshot_key, _) = prepare_artifact_save(state, user, id, base_revision, model).await?;
     let commands_json = serde_json::to_string(&transaction.commands)
         .map_err(|error| AppError::Internal(format!("事务记录序列化失败：{error}")))?;
@@ -1001,16 +880,19 @@ async fn submit_history_transaction(
                 HistoryAction::Redo => "redo",
             },
             "historyId": entry.history_id,
+            "actorId": user.id,
         }),
     }];
-    let committed = match db::commit_artifact_history_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_history_candidate(
+        state,
+        &snapshot_key,
         db::ArtifactHistoryCommit {
             id,
             expected_version: base_revision,
             snapshot_key: &snapshot_key,
             transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &entry.changed_entities,
             structure_changed: entry.structure_changed,
             origin,
@@ -1020,23 +902,9 @@ async fn submit_history_transaction(
             next_undone: !undone,
             events: &events,
         },
-        &referenced_asset_ids,
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(committed) => committed,
-        Err(error) => {
-            discard_uncommitted_snapshot(state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
-    let committed = match committed {
-        Some(meta) => meta,
-        None => {
-            discard_uncommitted_snapshot(state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-    };
+    .await?;
     let revision = u64::try_from(committed.version)
         .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
     let (can_undo, can_redo) = db::artifact_history_state(&state.pool, id).await?;
@@ -1105,8 +973,9 @@ fn document_events(
     transaction_id: &str,
     revision: u64,
     mutations: &[DocumentMutation],
+    actor_id: &str,
 ) -> Result<Vec<DomainEventRecord>, AppError> {
-    mutations
+    let mut events = mutations
         .iter()
         .enumerate()
         .map(|(index, mutation)| {
@@ -1159,6 +1028,9 @@ fn document_events(
                 DocumentMutation::SetPageSetup { .. } => {
                     ("document.pageSetupChanged", serde_json::json!({}))
                 }
+                DocumentMutation::SetPageSemantics { .. } => {
+                    ("document.pageSemanticsChanged", serde_json::json!({}))
+                }
                 DocumentMutation::RemoveInserted { block, .. } => (
                     "document.blockDeleted",
                     serde_json::json!({ "blockId": block.id }),
@@ -1174,7 +1046,9 @@ fn document_events(
                 payload,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, AppError>>()?;
+    transaction_kernel::stamp_events(&mut events, actor_id);
+    Ok(events)
 }
 
 fn document_command_from_record(record: CommandRecord) -> Result<DocumentCommand, AppError> {
@@ -1192,6 +1066,10 @@ fn document_command_from_record(record: CommandRecord) -> Result<DocumentCommand
         DocumentCommand::ResetBlock { .. } => "document.resetBlock",
         DocumentCommand::MoveBlock { .. } => "document.moveBlock",
         DocumentCommand::SetPageSetup { .. } => "document.setPageSetup",
+        DocumentCommand::UpsertSection { .. } => "document.upsertSection",
+        DocumentCommand::DeleteSection { .. } => "document.deleteSection",
+        DocumentCommand::UpsertNote { .. } => "document.upsertNote",
+        DocumentCommand::DeleteNote { .. } => "document.deleteNote",
         DocumentCommand::FormatTableCells { .. } => "document.formatTableCells",
         DocumentCommand::SetTableBorders { .. } => "document.setTableBorders",
         DocumentCommand::ApplyTableBorderPreset { .. } => "document.applyTableBorderPreset",
@@ -1201,6 +1079,8 @@ fn document_command_from_record(record: CommandRecord) -> Result<DocumentCommand
         DocumentCommand::SetCodeConfig { .. } => "document.setCodeConfig",
         DocumentCommand::SetImageConfig { .. } => "document.setImageConfig",
         DocumentCommand::ReplaceBlockText { .. } => "document.replaceBlockText",
+        DocumentCommand::ReplaceAllText { .. } => "document.replaceAllText",
+        DocumentCommand::ReplaceTextMatch { .. } => "document.replaceTextMatch",
         DocumentCommand::ConvertBlock { .. } => "document.convertBlock",
         DocumentCommand::ReplaceTableCellText { .. } => "document.replaceTableCellText",
         DocumentCommand::PatchTableCellInlineRange { .. } => "document.patchTableCellInlineRange",
@@ -1378,13 +1258,8 @@ async fn load_owned(
     user: &CurrentUser,
     id: &str,
 ) -> Result<ArtifactMeta, AppError> {
-    let meta = db::get_artifact(&state.pool, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("文档 {id} 不存在")))?;
-    if meta.owner_id != user.id {
-        return Err(AppError::Forbidden);
-    }
-    Ok(meta)
+    // 授权统一走 C4 分层：document 的写路径要求 editor 及以上。
+    authorize(state, user, id, Role::Editor).await
 }
 
 #[cfg(test)]

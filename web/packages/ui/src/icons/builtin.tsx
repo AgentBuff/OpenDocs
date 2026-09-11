@@ -45,6 +45,7 @@ function svg({
 }
 
 export const builtinIcons: Record<IconName, IconRenderer> = {
+  mindmap: (props) => svg({ ...props, children: <><rect x="1.5" y="6" width="4" height="4" rx="1" /><rect x="10.5" y="2" width="4" height="4" rx="1" /><rect x="10.5" y="10" width="4" height="4" rx="1" /><path d="M5.5 8h2.5M8 4v8M8 4h2.5M8 12h2.5" /></> }),
   "arrow-down": (props) => svg({ ...props, children: <path d="m4 6 4 4 4-4" /> }),
   "arrow-left": (props) => svg({ ...props, children: <path d="m9.5 3.5-4.5 4.5 4.5 4.5M5.5 8h7" /> }),
   "arrow-right": (props) => svg({ ...props, children: <path d="m6.5 3.5 4.5 4.5-4.5 4.5M10.5 8h-7" /> }),

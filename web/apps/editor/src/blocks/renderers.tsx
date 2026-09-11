@@ -155,6 +155,8 @@ export function TableBlockView({ block, session, onTableSelection, editorSelecti
                   rowId={row.id}
                   columnId={column?.id ?? ""}
                   cellId={cell.id}
+                  rowIndex={grid.rows.indexOf(row)}
+                  columnIndex={columnIndex}
                   content={cell.content}
                   session={session}
                   selected={selection?.kind !== "cell" && selectionIncludesCell(tablePayload.data, selection, row.id, tablePayload.data.columns[columnIndex]?.id ?? "", cell.id)}
@@ -316,7 +318,7 @@ export function ImageBlockView({ block, session, selected, onSelectObject }: { b
   const [cropDraft, setCropDraft] = useState<Extract<DocumentBlock["data"], { type: "image" }>['data']["transform"] | null>(null);
   const [cropEditing, setCropEditing] = useState(false);
   const imageData = block.data.type === "image" ? block.data.data : null;
-  const alt = imageData?.alt || "图片块";
+  const alt = imageData?.alt ?? "";
   const assetUrl = imageData ? session.assetUrl(imageData.assetId) : "";
   const imageTransform = cropEditing ? cropDraft ?? imageData?.transform : imageData?.transform;
   const appliedCrop = imageData?.transform.crop ?? { top: 0, right: 0, bottom: 0, left: 0 };
@@ -399,7 +401,7 @@ export function ImageBlockView({ block, session, selected, onSelectObject }: { b
         marginLeft: placement.offsetX || undefined,
         marginTop: placement.offsetY ? `${10 + placement.offsetY}px` : undefined,
       }}
-      aria-label={alt}
+      aria-label={alt || "装饰性图片"}
       aria-selected={selected}
       role="group"
       tabIndex={0}

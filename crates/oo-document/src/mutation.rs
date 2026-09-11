@@ -1,6 +1,6 @@
 //! Atomic mutations produced by executing document commands.
 
-use oo_schema::{BlockId, DocumentBlock, PageSetup};
+use oo_schema::{BlockId, DocumentBlock, DocumentPageSemantics, PageSetup};
 use serde::{Deserialize, Serialize};
 
 /// A block together with its original position in the serialized block array.
@@ -63,6 +63,10 @@ pub enum Mutation {
     SetPageSetup {
         before: Option<PageSetup>,
         after: Option<PageSetup>,
+    },
+    SetPageSemantics {
+        before: Box<DocumentPageSemantics>,
+        after: Box<DocumentPageSemantics>,
     },
 }
 
@@ -132,6 +136,10 @@ impl Mutation {
                 to_index: *from_index,
             },
             Self::SetPageSetup { before, after } => Self::SetPageSetup {
+                before: after.clone(),
+                after: before.clone(),
+            },
+            Self::SetPageSemantics { before, after } => Self::SetPageSemantics {
                 before: after.clone(),
                 after: before.clone(),
             },

@@ -31,7 +31,27 @@ pub fn dev_user() -> CurrentUser {
 /// 未来这里要做的是：读取 `Authorization: Bearer <jwt>`，验签、校验过期时间，
 /// 再把 claims 里的用户 id 取出来。目前先无条件返回开发用户，但保留了返回
 /// [`AppError::Unauthorized`] 的能力，调用方的错误处理路径因此是完整的。
-pub fn authenticate(_parts: &Parts) -> Result<CurrentUser, AppError> {
+///
+/// dev 过渡约定：请求可携带 `X-OO-User: <id>` 指定任意 Principal。这让协作
+/// 权限、presence 与审计可以在接入真实认证之前就被测试和演练；该头在接 JWT
+/// 后整体移除——届时本函数仍是唯一需要修改的位置。显示名按 id 稳定派生，
+/// 避免引入用户表。
+pub fn authenticate(parts: &Parts) -> Result<CurrentUser, AppError> {
+    if let Some(id) = parts
+        .headers
+        .get("x-oo-user")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if id.len() > 128 {
+            return Err(AppError::BadRequest("X-OO-User 过长".into()));
+        }
+        return Ok(CurrentUser {
+            id: id.to_string(),
+            display_name: format!("用户-{id}"),
+        });
+    }
     Ok(dev_user())
 }
 
