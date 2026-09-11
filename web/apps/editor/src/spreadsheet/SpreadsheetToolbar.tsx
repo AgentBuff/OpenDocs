@@ -5,6 +5,7 @@ import { SpreadsheetTableStyles } from "./SpreadsheetTableStyles.js";
 import { Popover } from "@open-office/ui";
 import {
   NUMBER_FORMAT_PRESETS,
+  type SpreadsheetSemanticCommand,
   type TableStyleOptions,
   type TableStylePreset,
   RIBBON_TABS,
@@ -20,6 +21,8 @@ export interface SpreadsheetToolbarProps {
   onClearTableStyle: () => void;
   onTableStyle: (preset: TableStylePreset, options: TableStyleOptions) => void;
   disabled: boolean; styleState: ToolbarStyleState; selectionActive: boolean; canMergeToggle: boolean; mergeActive: boolean; filterActive: boolean; frozen: boolean; canUndo: boolean; canRedo: boolean; clipboardHasContent: boolean; tab: RibbonTab; onTabChange: (tab: RibbonTab) => void;
+  /** 服务端 `/api/capabilities` 发布的 spreadsheet typeId 集合。缺席即不可调度。 */
+  availableCapabilities: ReadonlySet<string>;
   onUndo: () => void; onRedo: () => void; onCopy: () => void; onCut: () => void; onPaste: () => void; onClearContents: () => void; onClearFormatting: () => void; onFontFamily: (family: string) => void; onFontSize: (size: number) => void; onBold: () => void; onItalic: () => void; onStrikethrough: () => void; onUnderline: () => void; onFontColor: (color: string) => void; onFillColor: (color: string) => void; onBorderPreset: (preset: BorderPreset) => void; onAlignHorizontal: (value: "left" | "center" | "right") => void; onAlignVertical: (value: "top" | "middle" | "bottom") => void; onWrap: () => void; onMergeToggle: () => void; onMergeCenter: () => void; onNumberFormat: (format: string) => void; onInsertRowAbove: () => void; onInsertRowBelow: () => void; onDeleteRow: () => void; onInsertColumnLeft: () => void; onInsertColumnRight: () => void; onDeleteColumn: () => void; onFindReplace: () => void; onSort: (direction: "ascending" | "descending") => void; onFilterToggle: () => void; onFreezeToggle: () => void;
   /** AutoSum：引擎级 =SUM 插入。 */
   onAutoSum: () => void;
@@ -42,8 +45,22 @@ export interface SpreadsheetToolbarProps {
 }
 
 type Icon = "fill" | "undo" | "redo" | "paste" | "copy" | "cut" | "table" | "cell" | "chart" | "spark" | "shape" | "link" | "pin" | "image" | "comment" | "filter" | "sort" | "columns" | "group" | "validate" | "check" | "shield" | "history" | "import" | "sum" | "formula" | "search" | "eye" | "freeze" | "moon" | "tool" | "eraser" | "pdf" | "magic" | "print" | "grid" | "more" | "alignLeft" | "alignCenter" | "alignRight" | "alignTop" | "alignMiddle" | "alignBottom" | "wrap" | "merge" | "currency" | "percent" | "thousands";
-type Action = { label: string; icon: Icon; menu?: boolean; disabled?: boolean; onClick?: () => void; pressed?: boolean };
+type Action = {
+  label: string;
+  icon: Icon;
+  menu?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  pressed?: boolean;
+  /** 该动作对应的语义命令；缺席表示纯占位/尚未接入引擎。 */
+  capability?: SpreadsheetSemanticCommand["typeId"];
+};
 type Group = { actions: Action[]; className?: string };
+
+/** 过滤掉服务端未发布对应命令的动作，避免渲染必然 400 的按钮。 */
+function gateActions(actions: Action[], available: ReadonlySet<string>): Action[] {
+  return actions.filter((action) => !action.capability || available.has(action.capability));
+}
 
 function Glyph({ name }: { name: Icon }) {
   const p = { fill: "none", stroke: "currentColor", strokeWidth: 1.45, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
@@ -80,12 +97,12 @@ function HomeText({ label, children, disabled, onClick, active }: { label: strin
 
 function rowColumnActions(props: SpreadsheetToolbarProps): Action[] {
   return [
-    { label: "在上方插入行", icon: "table", onClick: props.onInsertRowAbove },
-    { label: "在下方插入行", icon: "table", onClick: props.onInsertRowBelow },
-    { label: "在左侧插入列", icon: "columns", onClick: props.onInsertColumnLeft },
-    { label: "在右侧插入列", icon: "columns", onClick: props.onInsertColumnRight },
-    { label: "删除所选行", icon: "table", onClick: props.onDeleteRow },
-    { label: "删除所选列", icon: "columns", onClick: props.onDeleteColumn },
+    { label: "在上方插入行", icon: "table", capability: "spreadsheet.insertRows", onClick: props.onInsertRowAbove },
+    { label: "在下方插入行", icon: "table", capability: "spreadsheet.insertRows", onClick: props.onInsertRowBelow },
+    { label: "在左侧插入列", icon: "columns", capability: "spreadsheet.insertColumns", onClick: props.onInsertColumnLeft },
+    { label: "在右侧插入列", icon: "columns", capability: "spreadsheet.insertColumns", onClick: props.onInsertColumnRight },
+    { label: "删除所选行", icon: "table", capability: "spreadsheet.deleteRows", onClick: props.onDeleteRow },
+    { label: "删除所选列", icon: "columns", capability: "spreadsheet.deleteColumns", onClick: props.onDeleteColumn },
   ];
 }
 
@@ -194,7 +211,7 @@ function ConditionalFormatPanel({ props, inactive }: { props: SpreadsheetToolbar
         {['高亮重复值', '高亮空值', '最前/最后/平均值', '自定义公式', '色阶', '数据条', '图标集'].map(label => <button key={label} type="button" disabled title="暂未支持">{label}</button>)}
         <hr /><button type="button" onClick={() => setView("new")}>新建条件格式</button>
         <button type="button" onClick={() => setView("manage")}>管理条件格式</button>
-        <button type="button" disabled={inactive || !props.conditionalFormatRules.length} onClick={props.onClearConditionalFormats}>清除本工作表规则</button>
+        <button type="button" disabled={inactive || !props.conditionalFormatRules.length || !props.availableCapabilities.has("spreadsheet.deleteConditionalFormat")} onClick={props.onClearConditionalFormats}>清除本工作表规则</button>
       </div>
       }
       {view !== "menu" && <div className="ssr__condition-editor">
@@ -215,7 +232,7 @@ function ConditionalFormatPanel({ props, inactive }: { props: SpreadsheetToolbar
         <button
           type="button"
           className="ssr__home-mini"
-          disabled={inactive || !valid}
+          disabled={inactive || !valid || !props.availableCapabilities.has("spreadsheet.upsertConditionalFormat")}
           title="对选区应用条件格式"
           onClick={() => props.onUpsertConditionalFormat({ id: `cf-${Date.now()}`, threshold: parsed, operator })}
         >应用</button>
@@ -231,6 +248,7 @@ function ConditionalFormatPanel({ props, inactive }: { props: SpreadsheetToolbar
                 type="button"
                 className="ssr__cformat-delete"
                 title="删除规则"
+                disabled={!props.availableCapabilities.has("spreadsheet.deleteConditionalFormat")}
                 onClick={() => props.onDeleteConditionalFormat(rule.id)}
               >×</button>
             </div>
@@ -245,26 +263,30 @@ function ConditionalFormatPanel({ props, inactive }: { props: SpreadsheetToolbar
 function HomeRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inactive: boolean }) {
   const [borderOpen, setBorderOpen] = useState(false);
   const [tableOpen, setTableOpen] = useState(false);
+  // 服务端未发布对应命令时，控件置灰而不是伪装成可用。
+  const can = (typeId: string) => props.availableCapabilities.has(typeId);
+  const canFormat = can("spreadsheet.formatRange");
+  const canMerge = can("spreadsheet.mergeCells") && can("spreadsheet.unmergeCells");
   const sizeLabel = props.styleState.size != null ? String(Math.round(props.styleState.size)) : "10";
   const formatLabel = props.styleState.numberFormat
     ? (NUMBER_FORMAT_PRESETS.find((preset) => preset.key === props.styleState.numberFormat)?.label ?? props.styleState.numberFormat)
     : "常规";
   return <div className="ssr__homebar" role="toolbar" aria-label="开始">
     <div className="ssr__home-stack">
-      <HomeMini iconOnly label="粘贴" icon="paste" disabled={props.disabled || !props.clipboardHasContent} onClick={props.onPaste} />
-      <div><HomeMini iconOnly label="剪切" icon="cut" disabled={inactive} onClick={props.onCut} /><HomeMini iconOnly label="复制" icon="copy" disabled={inactive} onClick={props.onCopy} /></div>
+      <HomeMini iconOnly label="粘贴" icon="paste" disabled={props.disabled || !props.clipboardHasContent || !can("spreadsheet.pasteRange")} onClick={props.onPaste} />
+      <div><HomeMini iconOnly label="剪切" icon="cut" disabled={inactive || !can("spreadsheet.clearRange")} onClick={props.onCut} /><HomeMini iconOnly label="复制" icon="copy" disabled={inactive} onClick={props.onCopy} /></div>
     </div>
     <div className="ssr__home-stack">
-      <div><HomeMini iconOnly label="撤销" icon="undo" disabled={props.disabled || !props.canUndo} onClick={props.onUndo} /><HomeMini iconOnly label="重做" icon="redo" disabled={props.disabled || !props.canRedo} onClick={props.onRedo} /></div>
-      <div><HomeMini iconOnly label="格式刷" icon="tool" disabled={props.disabled || !props.selectionActive} onClick={props.onPaintFormatToggle} active={props.paintFormatArmed} /><HomeMini iconOnly label="清除格式" icon="eraser" disabled={inactive} onClick={props.onClearFormatting} /></div>
+      <div><HomeMini iconOnly label="撤销" icon="undo" disabled={props.disabled || !props.canUndo || !can("spreadsheet.history")} onClick={props.onUndo} /><HomeMini iconOnly label="重做" icon="redo" disabled={props.disabled || !props.canRedo || !can("spreadsheet.history")} onClick={props.onRedo} /></div>
+      <div><HomeMini iconOnly label="格式刷" icon="tool" disabled={props.disabled || !props.selectionActive} onClick={props.onPaintFormatToggle} active={props.paintFormatArmed} /><HomeMini iconOnly label="清除格式" icon="eraser" disabled={inactive || !canFormat} onClick={props.onClearFormatting} /></div>
     </div>
     <div className="ssr__home-font">
       <div className="ssr__home-fontrow">
-        <FontPicker value={props.styleState.family ?? ""} disabled={inactive} onChange={props.onFontFamily} />
+        <FontPicker value={props.styleState.family ?? ""} disabled={inactive || !canFormat} onChange={props.onFontFamily} />
         <StyleSelect
           label="字号"
           current={sizeLabel}
-          disabled={inactive}
+          disabled={inactive || !canFormat}
           options={FONT_SIZES.map((size) => ({ value: String(size), label: String(size) }))}
           onPick={(value) => props.onFontSize(Number(value))}
         />
@@ -292,39 +314,39 @@ function HomeRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inact
             </>
           }
         >
-          <button type="button" className="ssr__home-mini" title="边框" aria-label="边框" disabled={inactive}><Glyph name="grid" /><i className="ssr__chevron" /></button>
+          <button type="button" className="ssr__home-mini" title="边框" aria-label="边框" disabled={inactive || !canFormat}><Glyph name="grid" /><i className="ssr__chevron" /></button>
         </Popover>
         <Popover popupClassName="ssr__wide-popup" open={tableOpen} onOpenChange={setTableOpen} placement="bottom-start" content={<SpreadsheetTableStyles onPick={(preset, options) => { props.onTableStyle(preset, options); setTableOpen(false); }} onClear={() => { props.onClearFormatting(); setTableOpen(false); }} />}>
-          <button type="button" className="ssr__home-mini" title="表格样式" aria-label="表格样式" disabled={inactive}><Glyph name="table" /><span>表格样式</span><i className="ssr__chevron" /></button>
+          <button type="button" className="ssr__home-mini" title="表格样式" aria-label="表格样式" disabled={inactive || !canFormat}><Glyph name="table" /><span>表格样式</span><i className="ssr__chevron" /></button>
         </Popover>
       </div>
-      <div className="ssr__home-fontrow"><HomeText label="加粗" disabled={inactive} onClick={props.onBold} active={props.styleState.bold}><b>B</b></HomeText><HomeText label="斜体" disabled={inactive} onClick={props.onItalic} active={props.styleState.italic}><i>I</i></HomeText><HomeText label="下划线" disabled={inactive} onClick={props.onUnderline} active={props.styleState.underline}><u>U</u></HomeText><HomeText label="删除线" disabled={inactive} onClick={props.onStrikethrough} active={props.styleState.strikethrough}><s>S</s></HomeText>
-        <ColorSwatch label="字体颜色" glyph={<span className="ssr__letter-color">A</span>} current={props.styleState.fontColor} onPick={props.onFontColor} disabled={inactive} />
-        <ColorSwatch label="填充颜色" glyph={<Glyph name="fill" />} current={props.styleState.fillColor} onPick={props.onFillColor} disabled={inactive} />
+      <div className="ssr__home-fontrow"><HomeText label="加粗" disabled={inactive || !canFormat} onClick={props.onBold} active={props.styleState.bold}><b>B</b></HomeText><HomeText label="斜体" disabled={inactive || !canFormat} onClick={props.onItalic} active={props.styleState.italic}><i>I</i></HomeText><HomeText label="下划线" disabled={inactive || !canFormat} onClick={props.onUnderline} active={props.styleState.underline}><u>U</u></HomeText><HomeText label="删除线" disabled={inactive || !canFormat} onClick={props.onStrikethrough} active={props.styleState.strikethrough}><s>S</s></HomeText>
+        <ColorSwatch label="字体颜色" glyph={<span className="ssr__letter-color">A</span>} current={props.styleState.fontColor} onPick={props.onFontColor} disabled={inactive || !canFormat} />
+        <ColorSwatch label="填充颜色" glyph={<Glyph name="fill" />} current={props.styleState.fillColor} onPick={props.onFillColor} disabled={inactive || !canFormat} />
         <Popover
           placement="bottom-start"
           popupClassName="ssr__wide-popup"
           content={<ConditionalFormatPanel props={props} inactive={inactive} />}
         >
-          <button type="button" className="ssr__home-mini" title="条件格式" disabled={props.disabled}><Glyph name="table" /><span>条件格式</span><i className="ssr__mini-chevron" /></button>
+          <button type="button" className="ssr__home-mini" title="条件格式" disabled={props.disabled || !can("spreadsheet.upsertConditionalFormat")}><Glyph name="table" /><span>条件格式</span><i className="ssr__mini-chevron" /></button>
         </Popover>
       </div>
     </div>
     <div className="ssr__home-alignment">
       <div className="ssr__home-aligngrid">
-        <HomeMini iconOnly label="左对齐" icon="alignLeft" disabled={inactive} onClick={() => props.onAlignHorizontal("left")} active={props.styleState.horizontal === "left"} />
-        <HomeMini iconOnly label="居中" icon="alignCenter" disabled={inactive} onClick={() => props.onAlignHorizontal("center")} active={props.styleState.horizontal === "center"} />
-        <HomeMini iconOnly label="右对齐" icon="alignRight" disabled={inactive} onClick={() => props.onAlignHorizontal("right")} active={props.styleState.horizontal === "right"} />
-        <HomeMini iconOnly label="顶端对齐" icon="alignTop" disabled={inactive} onClick={() => props.onAlignVertical("top")} active={props.styleState.vertical === "top"} />
-        <HomeMini iconOnly label="垂直居中" icon="alignMiddle" disabled={inactive} onClick={() => props.onAlignVertical("middle")} active={props.styleState.vertical === "middle"} />
-        <HomeMini iconOnly label="底端对齐" icon="alignBottom" disabled={inactive} onClick={() => props.onAlignVertical("bottom")} active={props.styleState.vertical === "bottom"} />
+        <HomeMini iconOnly label="左对齐" icon="alignLeft" disabled={inactive || !canFormat} onClick={() => props.onAlignHorizontal("left")} active={props.styleState.horizontal === "left"} />
+        <HomeMini iconOnly label="居中" icon="alignCenter" disabled={inactive || !canFormat} onClick={() => props.onAlignHorizontal("center")} active={props.styleState.horizontal === "center"} />
+        <HomeMini iconOnly label="右对齐" icon="alignRight" disabled={inactive || !canFormat} onClick={() => props.onAlignHorizontal("right")} active={props.styleState.horizontal === "right"} />
+        <HomeMini iconOnly label="顶端对齐" icon="alignTop" disabled={inactive || !canFormat} onClick={() => props.onAlignVertical("top")} active={props.styleState.vertical === "top"} />
+        <HomeMini iconOnly label="垂直居中" icon="alignMiddle" disabled={inactive || !canFormat} onClick={() => props.onAlignVertical("middle")} active={props.styleState.vertical === "middle"} />
+        <HomeMini iconOnly label="底端对齐" icon="alignBottom" disabled={inactive || !canFormat} onClick={() => props.onAlignVertical("bottom")} active={props.styleState.vertical === "bottom"} />
       </div>
       <div className="ssr__home-aligncommands">
-        <HomeMini label="自动换行" icon="wrap" disabled={inactive} onClick={props.onWrap} active={props.styleState.wrap} />
-        <div className="ssr__merge-split"><HomeMini label="合并" icon="merge" disabled={props.disabled || !props.canMergeToggle} onClick={props.onMergeToggle} active={props.mergeActive} /><ActionMenu label="合并选项" icon="more" disabled={props.disabled || !props.canMergeToggle} actions={[
+        <HomeMini label="自动换行" icon="wrap" disabled={inactive || !canFormat} onClick={props.onWrap} active={props.styleState.wrap} />
+        <div className="ssr__merge-split"><HomeMini label="合并" icon="merge" disabled={props.disabled || !props.canMergeToggle || !canMerge} onClick={props.onMergeToggle} active={props.mergeActive} /><ActionMenu label="合并选项" icon="more" disabled={props.disabled || !props.canMergeToggle || !canMerge} actions={[
           { label: props.mergeActive ? "取消合并" : "合并单元格", icon: "merge", onClick: props.onMergeToggle },
           { label: "合并相同单元格", icon: "merge", disabled: true },
-          { label: "合并并居中", icon: "merge", disabled: props.mergeActive, onClick: props.onMergeCenter },
+          { label: "合并并居中", icon: "merge", disabled: props.mergeActive || !canMerge, onClick: props.onMergeCenter },
         ]} /></div>
       </div>
     </div>
@@ -334,25 +356,25 @@ function HomeRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inact
         current={formatLabel}
         value={props.styleState.numberFormat ?? "General"}
         wide
-        disabled={inactive}
+        disabled={inactive || !canFormat}
         options={NUMBER_FORMAT_PRESETS.map((preset) => ({ value: preset.key, label: `${preset.label}（${preset.sample}）` }))}
         onPick={props.onNumberFormat}
       />
-      <div className="ssr__home-numberrow"><HomeMini iconOnly label="货币" icon="currency" disabled={inactive} onClick={() => props.onNumberFormat("¥#,##0.00")} /><HomeMini iconOnly label="百分比" icon="percent" disabled={inactive} onClick={() => props.onNumberFormat("0.00%")} /><HomeMini iconOnly label="千分位" icon="thousands" disabled={inactive} onClick={() => props.onNumberFormat("#,##0")} /></div>
+      <div className="ssr__home-numberrow"><HomeMini iconOnly label="货币" icon="currency" disabled={inactive || !canFormat} onClick={() => props.onNumberFormat("¥#,##0.00")} /><HomeMini iconOnly label="百分比" icon="percent" disabled={inactive || !canFormat} onClick={() => props.onNumberFormat("0.00%")} /><HomeMini iconOnly label="千分位" icon="thousands" disabled={inactive || !canFormat} onClick={() => props.onNumberFormat("#,##0")} /></div>
     </div>
     <div className="ssr__home-pairgrid ssr__home-data-grid">
-      <HomeMini label="筛选" icon="filter" disabled={props.disabled} onClick={props.onFilterToggle} active={props.filterActive} />
-      <ActionMenu label="排序" icon="sort" disabled={inactive} actions={[
+      <HomeMini label="筛选" icon="filter" disabled={props.disabled || !can("spreadsheet.setAutoFilter")} onClick={props.onFilterToggle} active={props.filterActive} />
+      <ActionMenu label="排序" icon="sort" disabled={inactive || !can("spreadsheet.sortRange")} actions={[
         { label: "升序", icon: "sort", onClick: () => props.onSort("ascending") },
         { label: "降序", icon: "sort", onClick: () => props.onSort("descending") },
       ]} />
-      <HomeMini label="冻结" icon="freeze" disabled={props.disabled} onClick={props.onFreezeToggle} active={props.frozen} />
+      <HomeMini label="冻结" icon="freeze" disabled={props.disabled || !can("spreadsheet.setFreezePane")} onClick={props.onFreezeToggle} active={props.frozen} />
       <HomeMini label="保护" icon="shield" disabled />
-      <HomeMini label="求和" icon="sum" disabled={props.disabled} onClick={props.onAutoSum} />
-      <HomeMini label="查找" icon="search" disabled={props.disabled} onClick={props.onFindReplace} />
+      <HomeMini label="求和" icon="sum" disabled={props.disabled || !can("spreadsheet.setCell")} onClick={props.onAutoSum} />
+      <HomeMini label="查找" icon="search" disabled={props.disabled || !can("spreadsheet.replaceRange")} onClick={props.onFindReplace} />
     </div>
     <div className="ssr__home-tiles">
-      <ActionMenu label="插入" icon="more" tile disabled={props.disabled} actions={rowColumnActions(props)} /><span className="ssr__wide-tools"><HomeTile label="图片" icon="image" disabled menu /><HomeTile label="图表" icon="chart" disabled menu /><HomeTile label="透视表" icon="table" disabled menu /></span><HomeTile label="快捷工具" icon="magic" disabled menu /><span className="ssr__wide-tools"><HomeTile label="生成图片" icon="image" disabled /><HomeTile label="图片转表格" icon="table" disabled /><HomeTile label="PDF转换" icon="pdf" disabled menu /></span><HomeTile label="打印" icon="print" disabled />
+      <ActionMenu label="插入" icon="more" tile disabled={props.disabled} actions={gateActions(rowColumnActions(props), props.availableCapabilities)} /><span className="ssr__wide-tools"><HomeTile label="图片" icon="image" disabled menu /><HomeTile label="图表" icon="chart" disabled menu /><HomeTile label="透视表" icon="table" disabled menu /></span><HomeTile label="快捷工具" icon="magic" disabled menu /><span className="ssr__wide-tools"><HomeTile label="生成图片" icon="image" disabled /><HomeTile label="图片转表格" icon="table" disabled /><HomeTile label="PDF转换" icon="pdf" disabled menu /></span><HomeTile label="打印" icon="print" disabled />
     </div>
   </div>;
 }
@@ -376,7 +398,7 @@ function InsertRibbon({ props }: { props: SpreadsheetToolbarProps }) {
     <RibbonGroup {...unit([["透视表", "table", true]])} />
     <div className="ssr__group">
       <ActionButton {...quiet("单元格", "cell", true)} />
-      <ActionMenu label="行列" icon="columns" tile disabled={props.disabled} actions={rowColumnActions(props)} />
+      <ActionMenu label="行列" icon="columns" tile disabled={props.disabled} actions={gateActions(rowColumnActions(props), props.availableCapabilities)} />
       {unit([["图表", "chart", true], ["迷你图", "spark", true], ["形状", "shape", true], ["链接", "link"], ["位置", "pin"], ["切片器", "table"]]).actions.map(action => <ActionButton key={action.label} {...action} />)}
     </div>
     <RibbonGroup {...unit([["单元格图片", "image", true], ["浮动图片", "image"], ["批量插入图片", "image"]])} />
@@ -386,6 +408,7 @@ function InsertRibbon({ props }: { props: SpreadsheetToolbarProps }) {
 }
 
 function DataRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inactive: boolean }) {
+  const can = (typeId: string) => props.availableCapabilities.has(typeId);
   const [filterType, setFilterType] = useState<"contains" | "equals" | "greaterThan" | "lessThan">("contains");
   const [filterValue, setFilterValue] = useState("");
   const [validationType, setValidationType] = useState<"list" | "wholeNumber" | "decimal" | "date">("list");
@@ -400,11 +423,11 @@ function DataRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inact
         <option value="contains">包含</option><option value="equals">等于</option><option value="greaterThan">大于</option><option value="lessThan">小于</option>
       </select>
       <input aria-label="筛选值" value={filterValue} onChange={event => setFilterValue(event.target.value)} />
-      <button type="button" disabled={inactive || !filterValue} onClick={() => props.onApplyFilterRule(filterType, filterValue)}>应用筛选</button>
-      <button type="button" disabled={props.disabled || !props.filterRule} onClick={props.onClearFilterRule}>清除{props.filterRule ? `（${props.filterRule.label}）` : ""}</button>
-      <button type="button" disabled={inactive} onClick={() => props.onSort("ascending")}>升序</button>
-      <button type="button" disabled={inactive} onClick={() => props.onSort("descending")}>降序</button>
-      <button type="button" disabled={props.disabled} aria-pressed={props.filterActive} onClick={props.onFilterToggle}>{props.filterActive ? "关闭筛选" : "启用筛选"}</button>
+      <button type="button" disabled={inactive || !filterValue || !can("spreadsheet.upsertFilterColumn")} onClick={() => props.onApplyFilterRule(filterType, filterValue)}>应用筛选</button>
+      <button type="button" disabled={props.disabled || !props.filterRule || !can("spreadsheet.clearFilter")} onClick={props.onClearFilterRule}>清除{props.filterRule ? `（${props.filterRule.label}）` : ""}</button>
+      <button type="button" disabled={inactive || !can("spreadsheet.sortRange")} onClick={() => props.onSort("ascending")}>升序</button>
+      <button type="button" disabled={inactive || !can("spreadsheet.sortRange")} onClick={() => props.onSort("descending")}>降序</button>
+      <button type="button" disabled={props.disabled || !can("spreadsheet.setAutoFilter")} aria-pressed={props.filterActive} onClick={props.onFilterToggle}>{props.filterActive ? "关闭筛选" : "启用筛选"}</button>
     </div>
     <div className="ssr__data-card">
       <strong>数据验证</strong>
@@ -415,11 +438,11 @@ function DataRibbon({ props, inactive }: { props: SpreadsheetToolbarProps; inact
       {validationType !== "list" && <input aria-label="最大值" value={second} onChange={event => setSecond(event.target.value)} />}
       <label><input type="checkbox" checked={allowBlank} onChange={event => setAllowBlank(event.target.checked)} />允许空白</label>
       <input aria-label="错误提示" placeholder="可选错误提示" value={errorMessage} onChange={event => setErrorMessage(event.target.value)} />
-      <button type="button" disabled={inactive || !first || (validationType !== "list" && !second)} onClick={() => props.onApplyDataValidation({ type: validationType, first, second, allowBlank, errorMessage })}>应用验证</button>
+      <button type="button" disabled={inactive || !first || (validationType !== "list" && !second) || !can("spreadsheet.upsertDataValidation")} onClick={() => props.onApplyDataValidation({ type: validationType, first, second, allowBlank, errorMessage })}>应用验证</button>
     </div>
     <div className="ssr__data-card" aria-label="现有数据验证">
       <strong>现有规则</strong>
-      {props.dataValidationRules.length === 0 ? <span>无</span> : props.dataValidationRules.map(rule => <span key={rule.id}>{rule.label}<button type="button" aria-label={`删除 ${rule.label}`} onClick={() => props.onDeleteDataValidation(rule.id)}>×</button></span>)}
+      {props.dataValidationRules.length === 0 ? <span>无</span> : props.dataValidationRules.map(rule => <span key={rule.id}>{rule.label}<button type="button" aria-label={`删除 ${rule.label}`} disabled={!can("spreadsheet.deleteDataValidation")} onClick={() => props.onDeleteDataValidation(rule.id)}>×</button></span>)}
     </div>
   </div>;
 }
@@ -428,13 +451,13 @@ export function SpreadsheetToolbar(props: SpreadsheetToolbarProps) {
   const inactive = props.disabled || !props.selectionActive;
   const panels: Record<Exclude<RibbonTab, "home" | "tableStyle">, Group[]> = {
     insert: [unit([["透视表", "table", true], ["单元格", "cell", true], ["图表", "chart", true], ["迷你图", "spark", true], ["形状", "shape", true], ["链接", "link"], ["位置", "pin"], ["切片器", "table"], ["单元格图片", "image", true], ["浮动图片", "image"], ["批量插入图片", "image"], ["腾讯文档", "pdf"], ["本地文件", "pdf"], ["微云文件", "pdf"], ["批注", "comment"]])],
-    data: [{ actions: [quiet("透视表", "table"), { label: "筛选", icon: "filter", disabled: props.disabled, onClick: props.onFilterToggle, pressed: props.filterActive, menu: true }, { label: "排序", icon: "sort", disabled: inactive, onClick: () => props.onSort("ascending"), menu: true }, ...unit([["条件格式", "table", true], ["分列", "columns", true], ["分组", "group", true], ["数据验证", "validate", true], ["下拉选项", "more"], ["复选框", "check"], ["保护", "shield", true], ["生成查询", "search"], ["修订记录", "history"], ["单元格修订记录", "history"], ["订阅更新", "table"], ["导入数据", "import"]]).actions] }],
+    data: [{ actions: [quiet("透视表", "table"), { label: "筛选", icon: "filter", capability: "spreadsheet.setAutoFilter", disabled: props.disabled, onClick: props.onFilterToggle, pressed: props.filterActive, menu: true }, { label: "排序", icon: "sort", capability: "spreadsheet.sortRange", disabled: inactive, onClick: () => props.onSort("ascending"), menu: true }, ...unit([["条件格式", "table", true], ["分列", "columns", true], ["分组", "group", true], ["数据验证", "validate", true], ["下拉选项", "more"], ["复选框", "check"], ["保护", "shield", true], ["生成查询", "search"], ["修订记录", "history"], ["单元格修订记录", "history"], ["订阅更新", "table"], ["导入数据", "import"]]).actions] }],
     formula: [unit([["求和", "sum", true], ["财务", "formula", true], ["文本", "formula", true], ["统计", "formula", true], ["信息", "formula", true], ["查找与引用", "search", true], ["兼容性", "formula", true], ["逻辑", "formula", true], ["日期", "formula", true], ["工程", "formula", true], ["数据库", "table", true], ["数学与三角", "formula", true], ["特色函数", "magic", true], ["名称管理", "formula"], ["快速创建", "formula"], ["跨文件引用", "table"], ["计算选项", "cell"]])],
     collaborate: [unit([["邀请协作", "comment", true], ["共享", "link", true], ["评论", "comment"], ["保护", "shield", true], ["修订记录", "history"], ["订阅更新", "table"]])],
-    view: [{ actions: [...unit([["高亮所在行列", "grid", true], ["行高列宽", "columns", true]]).actions, { label: "冻结窗格", icon: "freeze", disabled: props.disabled, onClick: props.onFreezeToggle, pressed: props.frozen, menu: true }, ...unit([["深色显示", "moon", true], ["显示网格线", "grid"], ["显示比例", "eye", true], ["显示零值", "eye"], ["新建筛选视图", "filter"], ["切换筛选视图", "table", true]]).actions] }],
+    view: [{ actions: [...unit([["高亮所在行列", "grid", true], ["行高列宽", "columns", true]]).actions, { label: "冻结窗格", icon: "freeze", capability: "spreadsheet.setFreezePane", disabled: props.disabled, onClick: props.onFreezeToggle, pressed: props.frozen, menu: true }, ...unit([["深色显示", "moon", true], ["显示网格线", "grid"], ["显示比例", "eye", true], ["显示零值", "eye"], ["新建筛选视图", "filter"], ["切换筛选视图", "table", true]]).actions] }],
     efficiency: [unit([["重复项", "copy", true], ["批量清除", "tool", true], ["批量图片处理", "image", true], ["身份证工具", "cell", true], ["单元格处理", "cell", true], ["合并表格", "table"], ["生成目录", "pdf"], ["PDF转换", "pdf", true], ["生成图片", "image"], ["生成智能表", "magic"], ["关联收集表", "check"], ["图片转表格", "table"], ["订阅更新", "table", true], ["插件", "tool", true]])],
     membership: [unit([["会员权益", "magic"], ["智能表格", "table"], ["高级图表", "chart"], ["更多功能", "more", true]])],
   };
   const groups = props.tab === "home" || props.tab === "tableStyle" ? [] : panels[props.tab];
-  return <section className="ssr" aria-label="电子表格功能区"><div className="ssr__tabs" role="tablist" aria-label="功能区标签页">{[...RIBBON_TABS, ...(props.tableStyleContext ? [{ id: "tableStyle" as const, label: "表格样式" }] : [])].map((entry) => <button key={entry.id} type="button" role="tab" aria-selected={props.tab === entry.id} className={`ssr__tab${props.tab === entry.id ? " is-active" : ""}`} onClick={() => props.onTabChange(entry.id)}>{entry.label}</button>)}</div>{props.tab === "tableStyle" && props.tableStyleContext ? <div className="ssr__bar" role="toolbar" aria-label="表格样式"><SpreadsheetTableStyles ribbon currentOptions={props.tableStyleContext.options} currentPreset={props.tableStyleContext.preset} disabled={props.disabled} onPick={props.onContextTableStyle} onClear={props.onClearTableStyle} /></div> : props.tab === "home" ? <HomeRibbon props={props} inactive={inactive} /> : props.tab === "insert" ? <InsertRibbon props={props} /> : props.tab === "formula" ? <FormulaRibbon /> : props.tab === "data" ? <DataRibbon props={props} inactive={inactive} /> : <div className="ssr__bar">{groups.map((group, index) => <RibbonGroup key={index} {...group} />)}</div>}</section>;
+  return <section className="ssr" aria-label="电子表格功能区"><div className="ssr__tabs" role="tablist" aria-label="功能区标签页">{[...RIBBON_TABS, ...(props.tableStyleContext ? [{ id: "tableStyle" as const, label: "表格样式" }] : [])].map((entry) => <button key={entry.id} type="button" role="tab" aria-selected={props.tab === entry.id} className={`ssr__tab${props.tab === entry.id ? " is-active" : ""}`} onClick={() => props.onTabChange(entry.id)}>{entry.label}</button>)}</div>{props.tab === "tableStyle" && props.tableStyleContext ? <div className="ssr__bar" role="toolbar" aria-label="表格样式"><SpreadsheetTableStyles ribbon currentOptions={props.tableStyleContext.options} currentPreset={props.tableStyleContext.preset} disabled={props.disabled} onPick={props.onContextTableStyle} onClear={props.onClearTableStyle} /></div> : props.tab === "home" ? <HomeRibbon props={props} inactive={inactive} /> : props.tab === "insert" ? <InsertRibbon props={props} /> : props.tab === "formula" ? <FormulaRibbon /> : props.tab === "data" ? <DataRibbon props={props} inactive={inactive} /> : <div className="ssr__bar">{groups.map((group, index) => <RibbonGroup key={index} {...group} actions={gateActions(group.actions, props.availableCapabilities)} />)}</div>}</section>;
 }

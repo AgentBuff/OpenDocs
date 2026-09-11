@@ -102,6 +102,8 @@ export function SpreadsheetStudio({ id, title, onBack }: Props) {
     projectRange,
     canUndo,
     canRedo,
+    availableCapabilities,
+    capabilitiesLoaded,
   } = session;
   const [selection, setSelection] = useState<CellSelection | null>(null);
   const [activeCell, setActiveCell] = useState<CellCoordinate>({ row: 0, column: 0 });
@@ -834,7 +836,10 @@ export function SpreadsheetStudio({ id, title, onBack }: Props) {
     ? `${cellRef(range.startRow, range.startColumn)}:${cellRef(range.endRow, range.endColumn)}`
     : null;
 
-  if (loading) return <MainShell onBack={onBack} title={title}><p className="ss-status">正在加载表格…</p></MainShell>;
+  // Wait for the capability catalog before the first paint: both requests hit the
+  // same server, and rendering the ribbon before the catalog arrives would flash
+  // engine-backed controls in and out as the gate settles.
+  if (loading || !capabilitiesLoaded) return <MainShell onBack={onBack} title={title}><p className="ss-status">正在加载表格…</p></MainShell>;
   if (!model) return <MainShell onBack={onBack} title={title}><p className="ss-status">{error ?? "无法加载表格。"}</p></MainShell>;
 
   return (
@@ -855,6 +860,7 @@ export function SpreadsheetStudio({ id, title, onBack }: Props) {
 
       <SpreadsheetToolbar
         disabled={saving}
+        availableCapabilities={availableCapabilities}
         styleState={toolbarStyleState(currentStyle(focusedCell.row, focusedCell.column))}
         selectionActive={selection !== null}
         canMergeToggle={canMerge || activeCellInsideMerge !== null}

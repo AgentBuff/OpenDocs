@@ -13,7 +13,11 @@ import {
   NUMBER_FORMAT_PRESETS,
   toolbarStyleState,
 } from "../src/toolbar.js";
-import { SPREADSHEET_CAPABILITY_MATRIX, capabilitiesByToolbarGroup } from "../src/capabilities.js";
+import {
+  SPREADSHEET_CAPABILITY_MATRIX,
+  capabilitiesByToolbarGroup,
+  capabilitiesForSelection,
+} from "../src/capabilities.js";
 import type { CellStyle } from "@open-office/schema/artifact";
 
 const EMPTY: CellStyle = { numberFormat: null, font: null, fill: null, alignment: null, borders: null };
@@ -128,6 +132,29 @@ describe("capability matrix grouping", () => {
     expect(joined).not.toContain("border");
     expect(joined).not.toContain("chart");
     expect(joined).not.toContain("protect");
+  });
+
+  it("filters out commands the server catalog does not publish", () => {
+    const selection = { isRange: true, isCell: false, intersectsMerge: false };
+    // 服务端只发布了一个命令：其余矩阵条目必须被过滤掉，而不是伪装成可用。
+    const available = capabilitiesForSelection(selection, new Set(["spreadsheet.setCell"]));
+    expect(available.map((descriptor) => descriptor.typeId)).toEqual(["spreadsheet.setCell"]);
+    // 空目录（服务端不可达）时不得放行任何命令。
+    expect(capabilitiesForSelection(selection, new Set())).toEqual([]);
+    // 默认参数只用于测试/无服务端场景，等于矩阵全集。
+    expect(capabilitiesForSelection(selection)).toHaveLength(SPREADSHEET_CAPABILITY_MATRIX.length);
+  });
+
+  it("requires the selection shape the matrix declares", () => {
+    const all = new Set(SPREADSHEET_CAPABILITY_MATRIX.map((descriptor) => descriptor.typeId));
+    const singleCell = capabilitiesForSelection({ isRange: false, isCell: true, intersectsMerge: false }, all);
+    const rangeOnly = capabilitiesForSelection({ isRange: true, isCell: false, intersectsMerge: false }, all);
+    const typeIds = (list: typeof singleCell) => list.map((descriptor) => descriptor.typeId);
+    // range 专属命令在单格选区下不可用。
+    expect(typeIds(singleCell)).not.toContain("spreadsheet.sortRange");
+    expect(typeIds(rangeOnly)).toContain("spreadsheet.sortRange");
+    // 合并是矩阵里唯一允许单格进入的 range 命令（用于取消已有合并）。
+    expect(typeIds(singleCell)).toContain("spreadsheet.mergeCells");
   });
 
   it("number format presets carry unique keys and samples", () => {
