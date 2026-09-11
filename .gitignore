@@ -71,6 +71,10 @@
 *.swp
 *.swo
 
+# Vitest writes a throwaway config shim next to vitest.config.ts and does not
+# always clean it up when the run is interrupted.
+/web/vitest.config.ts.timestamp-*.mjs
+
 # Reproducible font download metadata cache
 /web/scripts/fonts/.cache/
 

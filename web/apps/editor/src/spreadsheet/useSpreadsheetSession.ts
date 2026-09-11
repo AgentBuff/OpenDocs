@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { OpenOfficeSdk, isVersionConflict } from "@open-office/sdk";
 import type { SpreadsheetModel } from "@open-office/schema/artifact";
 
+import { useArtifactCapabilities } from "../hooks/useArtifactCapabilities.js";
+
 const sdk = new OpenOfficeSdk();
 const ACTOR_ID = "spreadsheet-web";
 
@@ -46,21 +48,12 @@ export function useSpreadsheetSession(id: string) {
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
   /**
-   * The server-owned command catalog for the `spreadsheet` namespace.
-   *
-   * The ribbon must not offer a control whose command the server cannot
-   * dispatch. `GET /api/capabilities` is the only machine-readable source of
-   * that set, so the UI is gated on it rather than on a hardcoded list that
-   * would silently drift from the engine's registry.
-   *
-   * Fail-closed: an empty set hides the engine-backed controls instead of
-   * offering buttons that always 400. The catalog is built in memory by the
-   * server and shares the transport with the structure fetch, so a failure
-   * here means the server is already unreachable and the studio is showing its
-   * error page anyway.
+   * The server-owned command catalog for the `spreadsheet` namespace. The
+   * ribbon must not offer a control whose command the server cannot dispatch,
+   * so it is gated on the published catalog rather than on a hardcoded list
+   * that would silently drift from the engine's registry.
    */
-  const [availableCapabilities, setAvailableCapabilities] = useState<ReadonlySet<string>>(() => new Set());
-  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
+  const { availableCapabilities, capabilitiesLoaded, capabilitiesError } = useArtifactCapabilities("spreadsheet");
 
   const refresh = useCallback(async (options?: { silent?: boolean; historyState?: { canUndo: boolean; canRedo: boolean } }) => {
     // 提交后的刷新走 silent：模型已在浏览器中，静默换数据即可。
@@ -92,23 +85,6 @@ export function useSpreadsheetSession(id: string) {
     void refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    let disposed = false;
-    void sdk.capabilities().then((catalog) => {
-      if (disposed) return;
-      const spreadsheet = catalog.artifacts.find((artifact) => artifact.kind === "spreadsheet");
-      setAvailableCapabilities(new Set(spreadsheet?.commands.map((command) => command.typeId) ?? []));
-      setCapabilitiesLoaded(true);
-    }).catch((reason: unknown) => {
-      if (disposed) return;
-      // Surface the failure instead of silently rendering an ungated ribbon.
-      setCapabilitiesLoaded(true);
-      setError(message(reason));
-    });
-    return () => {
-      disposed = true;
-    };
-  }, []);
 
   const applyHistoryState = useCallback(
     (result: { canUndo: boolean; canRedo: boolean }) => {
@@ -247,7 +223,8 @@ export function useSpreadsheetSession(id: string) {
     revision,
     loading,
     saving,
-    error,
+    // 目录读取失败也必须可见：否则功能区会静默地少掉一半控件。
+    error: error ?? capabilitiesError,
     reportError: setError,
     activeSheetId,
     setActiveSheetId,

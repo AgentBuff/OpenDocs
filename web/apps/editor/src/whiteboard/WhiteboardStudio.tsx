@@ -3,6 +3,7 @@ import { OpenOfficeSdk } from "@open-office/sdk";
 import type { SceneElement, WhiteboardModel } from "@open-office/schema/artifact";
 import { api } from "../api.js";
 import { FontPicker } from "../typography/FontPicker.js";
+import { useArtifactCapabilities } from "../hooks/useArtifactCapabilities.js";
 import "./whiteboard.css";
 const sdk = new OpenOfficeSdk();
 
@@ -15,6 +16,9 @@ export function WhiteboardStudio({ id, title, onBack }: { id: string; title: str
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [text, setText] = useState("");
+  // 白板的编辑能力由服务端目录决定：只渲染真的能提交的命令。
+  const { availableCapabilities, capabilitiesLoaded, capabilitiesError } = useArtifactCapabilities("whiteboard");
+  const can = (typeId: string) => availableCapabilities.has(typeId);
   const selected = model?.elements.find(element => element.id === selectedId);
   const textSelected = selected?.typeId === "whiteboard.text";
   const refresh = useCallback(async () => {
@@ -52,11 +56,12 @@ export function WhiteboardStudio({ id, title, onBack }: { id: string; title: str
     if (await submit([{ typeId: "whiteboard.addElement", payload: { type: "addElement", element, index: model.elements.length } }])) setSelectedId(element.id);
   };
   return <main className="wb-studio" aria-label="白板编辑器">
-    <header><button onClick={onBack}>‹ 所有文件</button><strong>{title || "未命名白板"}</strong><span>{saving ? "保存中…" : error ? "保存失败" : model ? "已保存" : "加载中…"}</span></header>
-    <div role="toolbar" aria-label="白板文字工具栏"><button disabled={saving || !model} onClick={() => void addText()}>添加文字</button><FontPicker disabled={saving || !textSelected} value={typeof selected?.attrs.fontFamily === "string" ? selected.attrs.fontFamily : ""} onChange={fontFamily => updateText({ fontFamily })} /><label>字号<select aria-label="字号" disabled={saving || !textSelected} value={Number(selected?.attrs.fontSize) || 24} onChange={event => updateText({ fontSize: Number(event.target.value) })}>{[12,16,18,24,32,48,64,96].map(size => <option key={size}>{size}</option>)}</select></label><button disabled={saving || !selected} onClick={() => { if (selected) void submit([{ typeId: "whiteboard.deleteElement", payload: { type: "deleteElement", elementId: selected.id } }]); }}>删除</button></div>
+    <header><button onClick={onBack}>‹ 所有文件</button><strong>{title || "未命名白板"}</strong><span>{saving ? "保存中…" : error ? "保存失败" : capabilitiesError ? "能力目录不可用" : model && capabilitiesLoaded ? "已保存" : "加载中…"}</span></header>
+    <div role="toolbar" aria-label="白板文字工具栏"><button disabled={saving || !model || !can("whiteboard.addElement")} onClick={() => void addText()}>添加文字</button><FontPicker disabled={saving || !textSelected || !can("whiteboard.updateElement")} value={typeof selected?.attrs.fontFamily === "string" ? selected.attrs.fontFamily : ""} onChange={fontFamily => updateText({ fontFamily })} /><label>字号<select aria-label="字号" disabled={saving || !textSelected || !can("whiteboard.updateElement")} value={Number(selected?.attrs.fontSize) || 24} onChange={event => updateText({ fontSize: Number(event.target.value) })}>{[12,16,18,24,32,48,64,96].map(size => <option key={size}>{size}</option>)}</select></label><button disabled={saving || !selected || !can("whiteboard.deleteElement")} onClick={() => { if (selected) void submit([{ typeId: "whiteboard.deleteElement", payload: { type: "deleteElement", elementId: selected.id } }]); }}>删除</button></div>
     {error && <p role="alert">{error}</p>}
+    {capabilitiesError && <p role="alert">读取白板能力目录失败：{capabilitiesError}</p>}
     <div className="wb-canvas" aria-label="白板画布" onPointerDown={event => { if (event.target === event.currentTarget) { updateText({ text }); setSelectedId(null); } }}>
-      {!model && !error && <p>正在加载白板…</p>}
+      {(!model || !capabilitiesLoaded) && !error && <p>正在加载白板…</p>}
       <div className="wb-scene" style={{ transform: `translate(${model?.camera.x ?? 0}px, ${model?.camera.y ?? 0}px) scale(${model?.camera.scale ?? 1})` }}>
         {model?.elements.map(element => <div key={element.id} data-element-id={element.id} className={`wb-element${selectedId === element.id ? " is-selected" : ""}`} style={{ left: element.transform.x, top: element.transform.y, width: element.transform.width, height: element.transform.height, transform: `rotate(${element.transform.rotation}deg)`, fontFamily: typeof element.attrs.fontFamily === "string" ? element.attrs.fontFamily : undefined, fontSize: Number(element.attrs.fontSize) || 24 }} onClick={() => setSelectedId(element.id)}>
           {element.typeId === "whiteboard.text" ? selectedId === element.id ? <textarea aria-label="白板文字" value={text} disabled={saving} onChange={event => setText(event.target.value)} onBlur={() => updateText({ text })} /> : <span>{String(element.attrs.text ?? "")}</span> : <span>暂不支持的对象：{element.typeId}</span>}
