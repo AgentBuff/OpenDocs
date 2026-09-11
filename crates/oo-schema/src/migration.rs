@@ -6,13 +6,16 @@
 
 use serde_json::{Map, Value};
 
-use crate::{ArtifactEnvelope, ArtifactKind, BlockPresentation, CURRENT_SCHEMA_VERSION};
+use crate::{
+    ArtifactEnvelope, BlockPresentation, MindmapConnectorStyle, MindmapNodeStyle,
+    MindmapNodeSupplement, MindmapSettings, CURRENT_SCHEMA_VERSION,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArtifactMigrationError {
     #[error("迁移输入必须是 Artifact object")]
     InvalidEnvelope,
-    #[error("仅支持从 schema v1/v2/v3/v4 迁移，实际为 {0}")]
+    #[error("仅支持从 schema v1/v2/v3/v4/v5/v6/v7/v8/v9 迁移，实际为 {0}")]
     UnsupportedSourceVersion(u64),
     #[error("schema v4 的 Presentation 必须使用专用的 v4→v5 staging migration")]
     PresentationRequiresDedicatedMigration,
@@ -149,11 +152,9 @@ pub fn migrate_artifact_v3_to_v4(
     }
     envelope.insert(
         "schemaVersion".into(),
-        Value::Number(serde_json::Number::from(CURRENT_SCHEMA_VERSION)),
+        Value::Number(serde_json::Number::from(4)),
     );
-    let artifact: ArtifactEnvelope = serde_json::from_value(raw)?;
-    artifact.validate()?;
-    Ok(artifact)
+    migrate_artifact_v4_to_v5(raw)
 }
 
 /// Promote an already strict v4 Document envelope to the current v5 Artifact
@@ -181,14 +182,249 @@ pub fn migrate_artifact_v4_to_v5(raw: Value) -> Result<ArtifactEnvelope, Artifac
     }
     envelope.insert(
         "schemaVersion".into(),
+        Value::Number(serde_json::Number::from(5)),
+    );
+    migrate_artifact_v5_to_v6(Value::Object(envelope))
+}
+
+/// Offline v5 → v6 cutover. v6 introduces first-class Mindmap settings and
+/// typed node/connector style. Other Artifact kinds only advance their
+/// envelope version; Mindmap defaults are materialized explicitly so online
+/// readers never need a v5 compatibility branch.
+pub fn migrate_artifact_v5_to_v6(
+    mut raw: Value,
+) -> Result<ArtifactEnvelope, ArtifactMigrationError> {
+    let envelope = raw
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let version = envelope
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if version != 5 {
+        return Err(ArtifactMigrationError::UnsupportedSourceVersion(version));
+    }
+    if envelope.get("kind").and_then(Value::as_str) == Some("mindmap") {
+        let data = envelope
+            .get_mut("payload")
+            .and_then(Value::as_object_mut)
+            .and_then(|payload| payload.get_mut("data"))
+            .and_then(Value::as_object_mut)
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        data.entry("settings")
+            .or_insert(serde_json::to_value(MindmapSettings::default())?);
+        let nodes = data
+            .get_mut("nodes")
+            .and_then(Value::as_array_mut)
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        for node in nodes {
+            let node = node
+                .as_object_mut()
+                .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+            node.entry("style")
+                .or_insert(serde_json::to_value(MindmapNodeStyle::default())?);
+            node.entry("supplement")
+                .or_insert(serde_json::to_value(MindmapNodeSupplement::default())?);
+        }
+        let edges = data
+            .get_mut("edges")
+            .and_then(Value::as_array_mut)
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        for edge in edges {
+            let edge = edge
+                .as_object_mut()
+                .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+            edge.entry("label").or_insert(Value::Null);
+            edge.entry("style")
+                .or_insert(serde_json::to_value(MindmapConnectorStyle::default())?);
+        }
+    }
+    envelope.insert(
+        "schemaVersion".into(),
+        Value::Number(serde_json::Number::from(6)),
+    );
+    migrate_artifact_v6_to_v7(raw)
+}
+
+/// Offline v6 → v7 cutover. v7 adds typed Document page semantics. Existing
+/// documents materialize an empty page-semantics envelope; other Artifact
+/// domains only advance the global schema envelope version.
+pub fn migrate_artifact_v6_to_v7(
+    mut raw: Value,
+) -> Result<ArtifactEnvelope, ArtifactMigrationError> {
+    let envelope = raw
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let version = envelope
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if version != 6 {
+        return Err(ArtifactMigrationError::UnsupportedSourceVersion(version));
+    }
+    if let Some(document) = document_data_mut(envelope) {
+        document.entry("pageSemantics").or_insert_with(|| {
+            serde_json::json!({
+                "sections": [],
+                "footnotes": [],
+                "endnotes": []
+            })
+        });
+    }
+    envelope.insert("schemaVersion".into(), Value::Number(7.into()));
+    migrate_artifact_v7_to_v8(raw)
+}
+
+/// Offline v7 → v8 cutover. v8 adds workbook-level typed named ranges.
+/// Existing spreadsheets materialize an empty collection; other Artifact
+/// domains only advance the global envelope version.
+pub fn migrate_artifact_v7_to_v8(
+    mut raw: Value,
+) -> Result<ArtifactEnvelope, ArtifactMigrationError> {
+    let envelope = raw
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let version = envelope
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if version != 7 {
+        return Err(ArtifactMigrationError::UnsupportedSourceVersion(version));
+    }
+    if envelope.get("kind").and_then(Value::as_str) == Some("spreadsheet") {
+        let metadata = envelope
+            .get_mut("payload")
+            .and_then(Value::as_object_mut)
+            .and_then(|payload| payload.get_mut("data"))
+            .and_then(Value::as_object_mut)
+            .and_then(|data| data.get_mut("metadata"))
+            .and_then(Value::as_object_mut)
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        metadata
+            .entry("namedRanges")
+            .or_insert_with(|| Value::Array(Vec::new()));
+    }
+    envelope.insert("schemaVersion".into(), Value::Number(8.into()));
+    migrate_artifact_v8_to_v9(raw)
+}
+
+/// Offline v8 → v9 cutover. Presentation rich text gains required typed
+/// paragraph ranges, alignment and list semantics. Runtime parsing stays
+/// strict; only this offline path materializes defaults for old snapshots.
+pub fn migrate_artifact_v8_to_v9(
+    mut raw: Value,
+) -> Result<ArtifactEnvelope, ArtifactMigrationError> {
+    let envelope = raw
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let version = envelope
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if version != 8 {
+        return Err(ArtifactMigrationError::UnsupportedSourceVersion(version));
+    }
+    if envelope.get("kind").and_then(Value::as_str) == Some("presentation") {
+        let deck = envelope
+            .get_mut("payload")
+            .and_then(Value::as_object_mut)
+            .and_then(|payload| payload.get_mut("data"))
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        add_presentation_paragraphs(deck)?;
+    }
+    envelope.insert("schemaVersion".into(), Value::Number(9.into()));
+    migrate_artifact_v9_to_v10(raw)
+}
+
+/// Offline v9 → v10 cutover. Mindmap advanced graph entities become explicit
+/// typed collections. Other Artifact domains only advance the global version.
+pub fn migrate_artifact_v9_to_v10(
+    mut raw: Value,
+) -> Result<ArtifactEnvelope, ArtifactMigrationError> {
+    let envelope = raw
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let version = envelope
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if version != 9 {
+        return Err(ArtifactMigrationError::UnsupportedSourceVersion(version));
+    }
+    if envelope.get("kind").and_then(Value::as_str) == Some("mindmap") {
+        let model = envelope
+            .get_mut("payload")
+            .and_then(Value::as_object_mut)
+            .and_then(|payload| payload.get_mut("data"))
+            .and_then(Value::as_object_mut)
+            .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+        for field in ["summaries", "boundaries", "formulas"] {
+            model
+                .entry(field)
+                .or_insert_with(|| Value::Array(Vec::new()));
+        }
+    }
+    envelope.insert(
+        "schemaVersion".into(),
         Value::Number(serde_json::Number::from(CURRENT_SCHEMA_VERSION)),
     );
-    let artifact: ArtifactEnvelope = serde_json::from_value(Value::Object(envelope))?;
-    if artifact.kind != ArtifactKind::Document {
-        return Err(ArtifactMigrationError::InvalidEnvelope);
-    }
+    let artifact: ArtifactEnvelope = serde_json::from_value(raw)?;
     artifact.validate()?;
     Ok(artifact)
+}
+
+fn add_presentation_paragraphs(value: &mut Value) -> Result<(), ArtifactMigrationError> {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                add_presentation_paragraphs(value)?;
+            }
+        }
+        Value::Object(object) => {
+            let extension_payload = object.get("type").and_then(Value::as_str) == Some("extension");
+            for (key, value) in object.iter_mut() {
+                if extension_payload && key == "data" {
+                    continue;
+                }
+                if matches!(key.as_str(), "body" | "content" | "defaultText") && value.is_object() {
+                    add_paragraphs_to_rich_text(value)?;
+                }
+                add_presentation_paragraphs(value)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn add_paragraphs_to_rich_text(value: &mut Value) -> Result<(), ArtifactMigrationError> {
+    let object = value
+        .as_object_mut()
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    if !object.contains_key("text")
+        || !object.contains_key("runs")
+        || object.contains_key("paragraphs")
+    {
+        return Ok(());
+    }
+    let text = object
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or(ArtifactMigrationError::InvalidEnvelope)?;
+    let mut paragraphs = Vec::new();
+    let mut start = 0usize;
+    for (index, character) in text.chars().enumerate() {
+        if character == '\n' {
+            paragraphs.push(serde_json::json!({ "start": start, "end": index + 1, "alignment": "left", "list": null, "indentLevel": 0 }));
+            start = index + 1;
+        }
+    }
+    let len = text.chars().count();
+    if start < len {
+        paragraphs.push(serde_json::json!({ "start": start, "end": len, "alignment": "left", "list": null, "indentLevel": 0 }));
+    }
+    object.insert("paragraphs".into(), Value::Array(paragraphs));
+    Ok(())
 }
 
 fn migrate_v3_block_to_v4(value: &mut Value) -> Result<(), ArtifactMigrationError> {
@@ -857,7 +1093,7 @@ mod tests {
         raw["schemaVersion"] = serde_json::json!(4);
         let migrated = migrate_artifact_v4_to_v5(raw).unwrap();
         assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
-        assert_eq!(migrated.kind, ArtifactKind::Document);
+        assert_eq!(migrated.kind, crate::ArtifactKind::Document);
 
         let presentation = serde_json::json!({
             "format": "open-office-artifact", "schemaVersion": 4,
@@ -868,5 +1104,170 @@ mod tests {
             migrate_artifact_v4_to_v5(presentation),
             Err(ArtifactMigrationError::PresentationRequiresDedicatedMigration)
         ));
+    }
+
+    #[test]
+    fn migrates_v5_mindmap_to_typed_v6_defaults() {
+        let raw = serde_json::json!({
+            "format": "open-office-artifact", "schemaVersion": 5,
+            "artifactId": "map-v5", "revision": 9, "kind": "mindmap",
+            "payload": { "kind": "mindmap", "data": {
+                "root": "root",
+                "nodes": [{
+                    "id": "root", "parentId": null, "content": null,
+                    "attrs": {}, "collapsed": false
+                }],
+                "edges": []
+            }}
+        });
+        let migrated = migrate_artifact_v5_to_v6(raw).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        let crate::ArtifactPayload::Mindmap(model) = migrated.payload else {
+            panic!("expected mindmap")
+        };
+        assert_eq!(model.settings, MindmapSettings::default());
+        assert_eq!(model.nodes[0].style, MindmapNodeStyle::default());
+    }
+
+    #[test]
+    fn migrates_v6_document_to_typed_v7_page_semantics() {
+        let current = crate::ArtifactEnvelope::new(
+            "doc-v6",
+            crate::ArtifactPayload::Document(crate::DocumentModel::empty()),
+        );
+        let mut raw = serde_json::to_value(current).unwrap();
+        raw["schemaVersion"] = serde_json::json!(6);
+        raw["payload"]["data"]
+            .as_object_mut()
+            .unwrap()
+            .remove("pageSemantics");
+        let migrated = migrate_artifact_v6_to_v7(raw).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        let crate::ArtifactPayload::Document(document) = migrated.payload else {
+            panic!("expected document")
+        };
+        assert_eq!(
+            document.page_semantics,
+            crate::DocumentPageSemantics::default()
+        );
+    }
+
+    #[test]
+    fn migrates_v7_spreadsheet_to_typed_v8_named_ranges() {
+        let current = crate::ArtifactEnvelope::new(
+            "sheet-v7",
+            crate::ArtifactPayload::Spreadsheet(crate::SpreadsheetModel::default()),
+        );
+        let mut raw = serde_json::to_value(current).unwrap();
+        raw["schemaVersion"] = serde_json::json!(7);
+        raw["payload"]["data"]["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("namedRanges");
+        let migrated = migrate_artifact_v7_to_v8(raw).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        let crate::ArtifactPayload::Spreadsheet(spreadsheet) = migrated.payload else {
+            panic!("expected spreadsheet")
+        };
+        assert!(spreadsheet.metadata.named_ranges.is_empty());
+    }
+
+    #[test]
+    fn migrates_v8_presentation_to_typed_paragraph_ranges() {
+        let mut deck: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/presentation/v5/minimal-deck.json"
+        ))
+        .unwrap();
+        deck["slides"][0]["nodes"][0]["kind"]["data"]["frame"]["body"]
+            .as_object_mut()
+            .unwrap()
+            .remove("paragraphs");
+        let raw = serde_json::json!({
+            "format": "open-office-artifact", "schemaVersion": 8,
+            "artifactId": "deck-v8", "revision": 0, "kind": "presentation",
+            "payload": { "kind": "presentation", "data": deck }
+        });
+        let migrated = migrate_artifact_v8_to_v9(raw).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        let crate::ArtifactPayload::Presentation(deck) = migrated.payload else {
+            panic!("expected presentation")
+        };
+        let crate::presentation_v5::SceneNodeKind::Text(text) = &deck.slides[0].nodes[0].kind
+        else {
+            panic!("expected text")
+        };
+        assert_eq!(text.frame.body.paragraphs.len(), 1);
+        assert_eq!(
+            (
+                text.frame.body.paragraphs[0].start,
+                text.frame.body.paragraphs[0].end
+            ),
+            (0, 5)
+        );
+    }
+
+    #[test]
+    fn presentation_v9_migration_preserves_opaque_extension_payloads() {
+        let mut deck: Value = serde_json::from_str(include_str!(
+            "../../../fixtures/presentation/v5/minimal-deck.json"
+        ))
+        .unwrap();
+        deck["slides"][0]["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "id": "extension-1", "parentId": null, "orderKey": "z", "name": null,
+                "altText": null, "layoutPlaceholderId": null,
+                "transform": { "x": 0, "y": 0, "width": 10, "height": 10, "rotation": 0 },
+                "visible": true, "locked": false, "opacity": 1,
+                "kind": { "type": "extension", "data": {
+                    "namespace": "example", "version": "1", "typeId": "opaque",
+                    "data": { "text": "private", "runs": [] }
+                }}
+            }));
+        let raw = serde_json::json!({
+            "format": "open-office-artifact", "schemaVersion": 8,
+            "artifactId": "deck-extension-v8", "revision": 0, "kind": "presentation",
+            "payload": { "kind": "presentation", "data": deck }
+        });
+        let migrated = migrate_artifact_v8_to_v9(raw).unwrap();
+        let crate::ArtifactPayload::Presentation(deck) = migrated.payload else {
+            panic!("expected presentation")
+        };
+        let crate::presentation_v5::SceneNodeKind::Extension(extension) = &deck.slides[0]
+            .nodes
+            .iter()
+            .find(|node| node.id == "extension-1")
+            .expect("extension node")
+            .kind
+        else {
+            panic!("expected extension")
+        };
+        assert_eq!(
+            serde_json::to_value(&extension.data).unwrap(),
+            serde_json::json!({ "text": "private", "runs": [] })
+        );
+    }
+
+    #[test]
+    fn migrates_v9_mindmap_to_typed_advanced_entity_collections() {
+        let artifact = crate::ArtifactEnvelope::new(
+            "mindmap-v9",
+            crate::ArtifactPayload::Mindmap(crate::MindmapModel::default()),
+        );
+        let mut raw = serde_json::to_value(artifact).unwrap();
+        raw["schemaVersion"] = Value::Number(9.into());
+        let data = raw["payload"]["data"].as_object_mut().unwrap();
+        data.remove("summaries");
+        data.remove("boundaries");
+        data.remove("formulas");
+        let migrated = migrate_artifact_v9_to_v10(raw).unwrap();
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        let crate::ArtifactPayload::Mindmap(model) = migrated.payload else {
+            panic!("expected mindmap")
+        };
+        assert!(model.summaries.is_empty());
+        assert!(model.boundaries.is_empty());
+        assert!(model.formulas.is_empty());
     }
 }

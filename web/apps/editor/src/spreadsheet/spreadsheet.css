@@ -1,0 +1,593 @@
+@import "./spreadsheet-ribbon.css";
+/* Spreadsheet studio — a projection-first grid for the spreadsheet Artifact.
+ * Cell data, freeze and merged ranges are read from the canonical snapshot /
+ * projection; the DOM is only a view. */
+
+.ss {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--oo-color-canvas, #f3f5f7);
+  overflow: hidden;
+}
+
+.ss__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+  padding: 0 20px;
+  background: var(--oo-color-surface, #fff);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+}
+
+.ss__back {
+  border: 0;
+  background: none;
+  color: var(--oo-color-accent, #165dff);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+
+.ss__back:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+.ss__title { display: flex; flex-direction: column; min-width: 0; }
+.ss__eyebrow { font-size: 11px; color: var(--oo-color-text-muted, #86909c); text-transform: uppercase; letter-spacing: 0.04em; }
+.ss__title strong { font-size: 15px; color: var(--oo-color-text, #1d2129); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.ss__status { margin-left: auto; font-size: 12px; color: var(--oo-color-text-muted, #86909c); }
+.ss__status.is-saving { color: var(--oo-color-warning, #d99000); }
+
+.ss__refresh {
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  background: var(--oo-color-surface, #fff);
+  color: var(--oo-color-text, #1d2129);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+}
+.ss__refresh:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+.ss__error {
+  margin: 8px 20px 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--oo-color-danger-soft, #fff0ef);
+  color: var(--oo-color-danger, #c94b45);
+  font-size: 13px;
+}
+
+.ss__formula-bar {
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  gap: 8px;
+  background: var(--oo-color-surface, #fff);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+}
+
+.ss__formula-cell {
+  min-width: 64px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--oo-color-text-secondary, #4e5969);
+  text-align: center;
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+.ss__formula-fn { color: var(--oo-color-text-muted, #86909c); font-style: italic; font-size: 12px; }
+
+.ss__formula-input {
+  flex: 1;
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  border-radius: 4px;
+  font-size: 13px;
+  padding: 4px 8px;
+  color: var(--oo-color-text, #1d2129);
+  background: var(--oo-color-surface, #fff);
+}
+.ss__formula-input:focus { outline: none; border-color: var(--oo-color-border-focus, #165dff); }
+
+/* Tencent Docs inspired spreadsheet ribbon. Kept separate from the document
+ * toolbar primitives because this is a high-density application chrome. */
+.ssr { flex: 0 0 auto; color: #20242b; background: #fff; border-bottom: 1px solid #dfe2e6; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; user-select: none; }
+.ss__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 62px;
+  padding: 4px 14px;
+  background: var(--oo-color-surface, #fff);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  overflow-x: auto;
+}
+
+/* Ribbon 功能区：标签页行 + 分组工具行 */
+.ss__ribbon {
+  background: var(--oo-color-surface, #fff);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  box-shadow: 0 1px 2px rgb(31 35 41 / 4%);
+}
+.ss__ribbon-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 35px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  background: #f7f8fa;
+}
+/* 快速访问工具栏：标签行最左（Excel QAT 位置） */
+.ss__ribbon-qat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 10px;
+  padding-right: 10px;
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+}
+.ss__ribbon-tab {
+  border: 0;
+  background: none;
+  align-self: stretch;
+  padding: 0 11px;
+  font-size: 13px;
+  color: var(--oo-color-text-secondary, #4e5969);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.ss__ribbon-tab.is-active {
+  color: var(--oo-color-accent, #165dff);
+  border-bottom-color: var(--oo-color-accent, #165dff);
+  font-weight: 600;
+}
+.ss__ribbon-tab:hover { color: var(--oo-color-text, #1d2129); }
+.ss__ribbon-empty {
+  font-size: 12px;
+  color: var(--oo-color-text-muted, #86909c);
+  padding: 0 8px;
+}
+
+/* Non-modal search panel keeps the grid available while navigating matches. */
+.ss__find-replace { position:absolute; top:164px; right:20px; z-index:40; width:350px; max-width:calc(100% - 40px); box-sizing:border-box; padding:16px; background:#fff; border:1px solid #e1e4e8; border-radius:8px; box-shadow:0 8px 28px #1f232922; color:#30343b; font-size:13px; }
+.ss__find-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+.ss__find-replace button { padding:6px 10px; border:1px solid #dce0e6; border-radius:4px; background:#fff; color:#3d434b; cursor:pointer; }
+.ss__find-replace button:hover:not(:disabled) { background:#edf4ff; }
+.ss__find-replace button:disabled { color:#a0a7b2; cursor:default; }
+.ss__find-heading button { border:0; }
+.ss__find-heading [aria-selected="true"] { color:#165dff; background:#edf4ff; }
+.ss__find-replace > label { display:grid; grid-template-columns:68px 1fr; align-items:center; gap:8px; margin:10px 0; }
+.ss__find-replace input:not([type="checkbox"]),.ss__find-replace select { width:100%; min-width:0; box-sizing:border-box; height:32px; padding:0 8px; border:1px solid #dce0e6; border-radius:4px; background:#fff; font:inherit; }
+.ss__find-options { display:flex; gap:12px; margin:12px 0; font-size:12px; }
+.ss__find-options label { display:flex; align-items:center; gap:4px; }
+.ss__find-options input { accent-color:#3478f6; }
+.ss__find-notice { color:#86909c; min-height:20px; font-size:12px; }
+.ss__find-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:6px; margin-top:12px; }
+
+/* 单元格右键菜单 */
+.ss__ctxmenu-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+}
+.ss__ctxmenu {
+  position: fixed;
+  z-index: 50;
+  min-width: 160px;
+  padding: 6px 0;
+  background: var(--oo-color-surface, #fff);
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+  display: flex;
+  flex-direction: column;
+}
+.ss__ctxmenu button {
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 6px 16px;
+  font-size: 13px;
+  color: var(--oo-color-text, #1d2129);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ss__ctxmenu button:disabled { color: var(--oo-color-text-disabled, #c9cdd4); cursor: default; }
+.ss__ctxmenu button:not(:disabled):hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+.ss__ctxmenu .ss__separator { display: block; width: auto; height: 1px; margin: 4px 0; }
+
+.ss__tool {
+  border: 1px solid transparent;
+  background: none;
+  color: var(--oo-color-text, #1d2129);
+  min-width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ss__tool:disabled { color: var(--oo-color-text-disabled, #c9cdd4); cursor: default; }
+.ss__tool:not(:disabled):hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+.ss__tool--italic { font-style: italic; font-family: Georgia, serif; }
+.ss__tool input[type="color"] { width: 22px; height: 22px; border: 0; padding: 0; background: none; cursor: pointer; }
+.ss__tool input[type="color"]:disabled { opacity: 0.4; cursor: default; }
+.ss__tool--wide { min-width: 88px; }
+.ss__tool--narrow { min-width: 52px; }
+
+/* 分组工具栏（腾讯文档/Excel 风格）：组内紧凑、组间留白由分隔符承担 */
+.ss__toolbar-group { display: inline-flex; align-items: center; gap: 2px; }
+.ss__tool-wrap { display: inline-flex; align-items: center; }
+.ss__color-a {
+  font-weight: 700;
+  color: var(--oo-color-text, #1d2129);
+  border-bottom: 3px solid var(--oo-color-text, #d13f28);
+  line-height: 1;
+}
+.ss__color-fill { font-size: 12px; line-height: 1; color: #d13f28; }
+.ss__color-popover { padding: 8px; }
+.ss__color-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 24px);
+  gap: 6px;
+}
+.ss__color-cell {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  cursor: pointer;
+  padding: 0;
+}
+.ss__color-cell:hover { outline: 2px solid var(--oo-color-border-focus, #165dff); outline-offset: 1px; }
+.ss__menu-item {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: none;
+  text-align: left;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--oo-color-text, #1d2129);
+  cursor: pointer;
+}
+.ss__menu-item:disabled { color: var(--oo-color-text-disabled, #c9cdd4); cursor: default; }
+.ss__menu-item:not(:disabled):hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+.ss__separator { width: 1px; height: 20px; background: var(--oo-color-border, #e5e6eb); margin: 0 4px; }
+
+/* A ribbon is a dense work surface, not an icon strip. Small labels below
+ * product-level entries preserve the Tencent-document scanning rhythm while
+ * keeping direct cell commands compact. */
+.ss__toolbar--ribbon { gap: 0; align-items: stretch; }
+.ss__ribbon-action {
+  width: 76px;
+  min-width: 76px;
+  height: 54px;
+  padding: 5px 4px 3px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--oo-color-text-secondary, #4e5969);
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.ss__ribbon-action svg { width: 19px; height: 19px; }
+.ss__ribbon-action:not(:disabled):hover { background: #f2f6ff; color: var(--oo-color-accent, #165dff); }
+.ss__ribbon-action:disabled { color: #a9afb8; cursor: default; opacity: .72; }
+
+@media (max-width: 900px) {
+  .ss__ribbon-tabs { padding: 0 8px; gap: 0; }
+  .ss__ribbon-tab { padding: 0 8px; }
+  .ss__ribbon-qat { display: none; }
+}
+
+.ss__workspace { flex: 1; min-height: 0; position: relative; }
+
+.ss-status { padding: 24px; color: var(--oo-color-text-muted, #86909c); }
+
+/* Grid */
+.ss-grid { position: absolute; inset: 0; overflow: hidden; background: var(--oo-color-surface, #fff); }
+
+.ss-grid__corner {
+  position: absolute;
+  top: 0; left: 0;
+  width: 48px;
+  height: 28px;
+  background: var(--oo-color-surface-muted, #f7f8fa);
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  z-index: 30;
+}
+
+.ss-grid__colhead {
+  position: absolute;
+  top: 0; left: 48px; right: 0;
+  height: 28px;
+  overflow: hidden;
+  background: var(--oo-color-surface-muted, #f7f8fa);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  z-index: 20;
+}
+
+.ss-grid__colhead-cell {
+  position: absolute;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--oo-color-text-secondary, #4e5969);
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+/* 表头平移层：铺满条带并承担滚动偏移，条带容器只负责剪裁。 */
+.ss-grid__headlayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+}
+
+.ss-grid__rowhead {
+  position: absolute;
+  top: 28px; left: 0; bottom: 0;
+  width: 48px;
+  overflow: hidden;
+  background: var(--oo-color-surface-muted, #f7f8fa);
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+  z-index: 20;
+}
+
+.ss-grid__rowhead-cell {
+  position: absolute;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--oo-color-text-secondary, #4e5969);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  box-sizing: border-box;
+  user-select: none;
+}
+
+.ss-grid__viewport {
+  position: absolute;
+  top: 28px; left: 48px; right: 0; bottom: 0;
+  overflow: auto;
+  background: var(--oo-color-surface, #fff);
+  outline: none;
+}
+
+.ss-grid__canvas {
+  position: relative;
+}
+
+.ss-grid__cell {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  position: absolute;
+  box-sizing: border-box;
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+  border-bottom: 1px solid var(--oo-color-border, #e5e6eb);
+  font-size: 13px;
+  color: var(--oo-color-text, #1d2129);
+  padding: 0 4px;
+  line-height: 28px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: cell;
+}
+
+.ss-grid__cell.is-selected { background: color-mix(in srgb, var(--oo-color-accent, #165dff) 16%, transparent); }
+.ss-grid__cell.is-active { outline: 2px solid var(--oo-color-accent, #165dff); outline-offset: -2px; }
+
+.ss-grid__selection {
+  position: absolute;
+  pointer-events: none;
+  border: 2px solid var(--oo-color-accent, #165dff);
+  z-index: 5;
+}
+
+.ss-grid__editor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 2px solid var(--oo-color-accent, #165dff);
+  box-sizing: border-box;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: inherit;
+  padding: 0 4px;
+  color: inherit;
+  background: var(--oo-color-surface, #fff);
+  z-index: 10;
+}
+.ss-grid__editor:focus { outline: none; }
+
+.ss-grid__error { color: var(--oo-color-danger, #c94b45); }
+
+.ss__sheetbar {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  height: 34px;
+  padding: 2px 8px;
+  background: var(--oo-color-surface-muted, #f7f8fa);
+  border-top: 1px solid var(--oo-color-border, #e5e6eb);
+  overflow-x: auto;
+}
+
+.ss__sheet-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 14px;
+  min-width: 96px;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--oo-color-text-secondary, #4e5969);
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.ss__sheet-tab:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+.ss__sheet-tab.is-active { background: var(--oo-color-surface, #fff); color: var(--oo-color-accent, #165dff); font-weight: 600; border-bottom: 2px solid var(--oo-color-accent, #165dff); }
+
+.ss__sheet-rename { width: 96px; font-size: 13px; border: 1px solid var(--oo-color-border-focus, #165dff); border-radius: 4px; padding: 2px 4px; }
+
+.ss__sheet-close { border: 0; background: none; color: var(--oo-color-text-muted, #86909c); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 2px; }
+.ss__sheet-close:hover { color: var(--oo-color-danger, #c94b45); }
+
+.ss__sheet-add { border: 0; background: none; color: var(--oo-color-accent, #165dff); cursor: pointer; font-size: 16px; width: 32px; border-radius: 6px; }
+.ss__sheet-add:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+.ss-grid__colhead-cell,
+.ss-grid__rowhead-cell { cursor: pointer; }
+.ss-grid__colhead-cell:hover,
+.ss-grid__rowhead-cell:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+.ss-grid__colhead-cell.is-highlighted,
+.ss-grid__rowhead-cell.is-highlighted { background: var(--oo-color-accent-soft, #eaf1ff); color: var(--oo-color-accent, #165dff); }
+.ss-grid__corner { cursor: pointer; }
+.ss-grid__corner:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+.ss__statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 26px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--oo-color-text-muted, #86909c);
+  background: var(--oo-color-surface, #fff);
+  border-top: 1px solid var(--oo-color-border, #e5e6eb);
+}
+.ss__statusbar-spacer { flex: 1; }
+
+.ss__popover button, .ss__structure-popover button {
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+  color: var(--oo-color-text, #1d2129);
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ss__structure-popover button:hover { background: var(--oo-color-surface-hover, #f2f3f5); }
+
+/* Ribbon 下拉与面板（ssr 命名空间，配合并行版工具栏） */
+.ssr__optionlist { min-width: 140px; max-height: 260px; overflow: auto; padding: 4px; }
+.ssr__option {
+  display: block; width: 100%; border: 0; background: none; text-align: left;
+  padding: 6px 12px; font-size: 13px; color: #1d2129; cursor: pointer; white-space: nowrap;
+}
+.ssr__option:hover { background: #f2f3f5; }
+.ssr__option.is-active { background: #eaf1ff; color: #165dff; }
+.ssr__colorgrid { display: grid; grid-template-columns: repeat(5, 24px); gap: 6px; padding: 8px; }
+.ssr__colorcell { width: 24px; height: 24px; border-radius: 4px; border: 1px solid #e5e6eb; cursor: pointer; padding: 0; }
+.ssr__colorcell:hover { outline: 2px solid #165dff; outline-offset: 1px; }
+
+.ssr__cformat-row { display: flex; align-items: center; gap: 8px; }
+.ssr__cformat-label { font-size: 13px; color: #1d2129; white-space: nowrap; }
+.ssr__cformat-input { width: 90px; height: 26px; border: 1px solid #e5e6eb; border-radius: 6px; padding: 0 8px; font-size: 13px; }
+.ssr__cformat-rules { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow: auto; }
+.ssr__cformat-rule { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: #4e5969; padding: 4px 6px; border: 1px solid #e5e6eb; border-radius: 6px; }
+.ssr__cformat-delete { border: 0; background: none; color: #f53f3f; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 4px; }
+.ssr__home-mini.is-active { background: #eaf1ff; color: #165dff; }
+
+.ssr__data-tools {
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 6px 10px;
+}
+.ssr__data-card {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: max-content;
+  padding: 4px 8px;
+  border-right: 1px solid var(--oo-color-border, #e5e6eb);
+  font-size: 12px;
+  color: var(--oo-color-text-secondary, #4e5969);
+}
+.ssr__data-card:last-child { border-right: 0; }
+.ssr__data-card strong { color: var(--oo-color-text, #1d2129); white-space: nowrap; }
+.ssr__data-card select,
+.ssr__data-card input:not([type="checkbox"]) {
+  box-sizing: border-box;
+  height: 28px;
+  max-width: 132px;
+  padding: 0 7px;
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  border-radius: 4px;
+  background: var(--oo-color-surface, #fff);
+  color: var(--oo-color-text, #1d2129);
+  font: inherit;
+}
+.ssr__data-card label,
+.ssr__data-card > span { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.ssr__data-card button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--oo-color-border, #e5e6eb);
+  border-radius: 4px;
+  background: var(--oo-color-surface, #fff);
+  color: var(--oo-color-text, #1d2129);
+  cursor: pointer;
+}
+.ssr__data-card button:hover:not(:disabled) { border-color: var(--oo-color-accent, #165dff); color: var(--oo-color-accent, #165dff); }
+.ssr__data-card button:disabled { cursor: not-allowed; opacity: .45; }
+
+.ss-grid__value {
+  display: block;
+  width: 100%;
+  flex: 0 0 auto;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss__rowmenu { width: 240px; max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border-radius: 6px; }
+.ss__rowmenu button { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 7px 10px; min-height: 30px; border-radius: 3px; }
+.ss__rowmenu kbd { color: var(--oo-color-text-secondary, #86909c); font: inherit; font-size: 11px; }
+.ss__rowmenu hr { width: 100%; border: 0; border-top: 1px solid var(--oo-color-border, #e5e6eb); margin: 5px 0; }
+.ss__rowmenu-caption { color: var(--oo-color-text-secondary, #86909c); padding: 4px 10px 6px; font-size: 11px; }
+.ss__rowmenu-count { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; }
+.ss__rowmenu-count input { margin-left: auto; width: 54px; border: 1px solid var(--oo-color-border, #e5e6eb); border-radius: 3px; background: var(--oo-color-surface, #fff); color: inherit; padding: 2px 4px; }
+.ss__rowmenu details button { width: 100%; padding-left: 22px; }
+.ss__rowmenu summary { cursor: pointer; padding: 7px 10px; font-size: 13px; }
+.ss__rowmenu :focus-visible { outline: 2px solid #3370ff; outline-offset: -2px; }
+.ss-grid__unhide { position: absolute; right: 0; top: -1px; font-size: 12px; line-height: 14px; height: 16px; padding: 0 3px; border: 0; color: #3370ff; background: var(--oo-color-surface, #fff); cursor: pointer; z-index: 2; }
+.ss__row-dialog { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; background: rgb(0 0 0 / 20%); }
+.ss__row-dialog form { width: 320px; padding: 24px; background: var(--oo-color-surface, #fff); color: var(--oo-color-text, #1d2129); border: 1px solid var(--oo-color-border, #e5e6eb); border-radius: 8px; box-shadow: 0 8px 32px #0002; }
+.ss__row-dialog h2 { margin: 0 0 20px; font-size: 16px; }
+.ss__row-dialog label { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.ss__row-dialog input, .ss__row-dialog select { width: 150px; padding: 6px; color: inherit; background: inherit; border: 1px solid var(--oo-color-border, #e5e6eb); border-radius: 4px; }
+.ss__row-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.ss__row-dialog button { padding: 6px 16px; border: 1px solid var(--oo-color-border, #e5e6eb); border-radius: 4px; cursor: pointer; }
+.ss__row-dialog button[type=submit] { color: white; background: #3370ff; }

@@ -56,6 +56,7 @@ fn table_document(merged_ranges: Vec<TableRange>) -> DocumentModel {
         root: vec![table.id.clone()],
         blocks: vec![table],
         page_setup: None,
+        page_semantics: Default::default(),
     }
 }
 

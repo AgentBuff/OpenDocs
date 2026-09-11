@@ -5,6 +5,10 @@ import {
   loadWasmDocumentEngine,
   type DocumentEngineAdapter,
   type DocumentEngineSession,
+  type DocumentSearchMatch,
+  type DocumentSearchOptions,
+  type DocumentTocItem,
+  type DocumentPrintProjection,
 } from "@open-office/document-engine";
 import type {
   CodeBlockConfig,
@@ -16,6 +20,8 @@ import type {
   DocumentBlockKind,
   DocumentModel,
   DocumentCommand,
+  DocumentSection,
+  DocumentNote,
   InlineStylePatch,
   InlineStyle,
   RichText,
@@ -71,6 +77,16 @@ export interface BlockSessionApi {
   state: BlockSessionState;
   setActiveBlock: (id: string | null) => void;
   updateContent: (id: string, content: RichText) => void;
+  findText: (query: string, options?: DocumentSearchOptions) => DocumentSearchMatch[];
+  tableOfContents: () => DocumentTocItem[];
+  printProjection: () => DocumentPrintProjection | null;
+  replaceAllText: (query: string, replacement: string, options?: DocumentSearchOptions) => boolean;
+  replaceTextMatch: (
+    match: DocumentSearchMatch,
+    query: string,
+    replacement: string,
+    options?: DocumentSearchOptions,
+  ) => boolean;
   convertBlock: (id: string, kind: DocumentBlockKind) => void;
   setBlockPresentation: (id: string, presentation: Record<string, unknown | null>) => void;
   insertAfter: (
@@ -131,6 +147,10 @@ export interface BlockSessionApi {
   mergeTableCells: (blockId: string, range: Extract<DocumentCommand, { type: "mergeTableCells" }>['range']) => void;
   splitTableCells: (blockId: string, range: Extract<DocumentCommand, { type: "splitTableCells" }>['range']) => void;
   setPageSetup: (pageSetup: ArtifactPageSetup | null) => void;
+  upsertSection: (section: DocumentSection, index: number) => void;
+  deleteSection: (sectionId: string) => void;
+  upsertNote: (noteKind: "footnote" | "endnote", note: DocumentNote) => void;
+  deleteNote: (noteKind: "footnote" | "endnote", noteId: string) => void;
   deleteBlock: (id: string) => void;
   /** Delete a native selection, including a selection spanning sibling blocks. */
   deleteTextSelection: () => string | null;
@@ -847,6 +867,22 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     dispatchCommand({ type: "setPageSetup", pageSetup });
   }, [dispatchCommand]);
 
+  const upsertSection = useCallback((section: DocumentSection, index: number) => {
+    dispatchCommand({ type: "upsertSection", section, index });
+  }, [dispatchCommand]);
+
+  const deleteSection = useCallback((sectionId: string) => {
+    dispatchCommand({ type: "deleteSection", sectionId });
+  }, [dispatchCommand]);
+
+  const upsertNote = useCallback((noteKind: "footnote" | "endnote", note: DocumentNote) => {
+    dispatchCommand({ type: "upsertNote", noteKind, note });
+  }, [dispatchCommand]);
+
+  const deleteNote = useCallback((noteKind: "footnote" | "endnote", noteId: string) => {
+    dispatchCommand({ type: "deleteNote", noteKind, noteId });
+  }, [dispatchCommand]);
+
   const deleteBlock = useCallback((id: string) => {
     const current = snapshotRef.current;
     if (!current || current.artifact.payload.kind !== "document") return;
@@ -1036,12 +1072,45 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     setState((current) => ({ ...current, activeBlockId: id }));
   }, []);
 
+  const findText = useCallback((query: string, options: DocumentSearchOptions = {}) => (
+    engineRef.current?.findText(query, options) ?? []
+  ), []);
+
+  const tableOfContents = useCallback(() => engineRef.current?.tableOfContents() ?? [], []);
+
+  const printProjection = useCallback(() => engineRef.current?.printProjection() ?? null, []);
+
+  const replaceAllText = useCallback((
+    query: string,
+    replacement: string,
+    options: DocumentSearchOptions = {},
+  ) => dispatchCommand({ type: "replaceAllText", query, replacement, options }), [dispatchCommand]);
+
+  const replaceTextMatch = useCallback((
+    match: DocumentSearchMatch,
+    query: string,
+    replacement: string,
+    options: DocumentSearchOptions = {},
+  ) => dispatchCommand({
+    type: "replaceTextMatch",
+    target: match.target,
+    range: { start: match.start, end: match.end },
+    query,
+    replacement,
+    options,
+  }), [dispatchCommand]);
+
   return {
     snapshot,
     projection,
     state,
     setActiveBlock,
     updateContent,
+    findText,
+    tableOfContents,
+    printProjection,
+    replaceAllText,
+    replaceTextMatch,
     convertBlock,
     setBlockPresentation,
     insertAfter,
@@ -1070,6 +1139,10 @@ export function useBlockSession(documentId: string): BlockSessionApi {
     mergeTableCells,
     splitTableCells,
     setPageSetup,
+    upsertSection,
+    deleteSection,
+    upsertNote,
+    deleteNote,
     deleteBlock,
     deleteTextSelection,
     clearDocument,

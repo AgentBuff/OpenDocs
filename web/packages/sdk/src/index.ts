@@ -2,12 +2,16 @@ import {
   ArtifactApiClient,
   ArtifactApiError,
   type ArtifactApiClientOptions,
+  type ArtifactExportOptions,
+  type ArtifactImportResult,
   type ArtifactTransactionHistoryState,
   type ArtifactTransactionResult,
   type BlockProjectionItem,
   type CitationRef,
   type EventPage,
   type EventRecord,
+  type DocumentTocItem,
+  type DocumentPrintProjection,
   type ProjectionEnvelope,
   type ProjectionItem,
   type ProjectionRequest,
@@ -19,6 +23,16 @@ import {
   type PresentationSlideRequest,
   type PresentationPresencePage,
   type PresentationPresenceUpdate,
+  type DocumentPresencePage,
+  type DocumentPresenceUpdate,
+  type DocumentReviewPage,
+  type DocumentReviewThread,
+  type CreateDocumentReview,
+  type CreateDocumentSuggestion,
+  type MindmapProjection,
+  type SpreadsheetGridProjection,
+  type SpreadsheetProjectionRequest,
+  type SpreadsheetStructureProjection,
 } from "@open-office/schema/api";
 import type {
   ArtifactCommandEnvelope,
@@ -78,6 +92,14 @@ export class OpenOfficeSdk {
     return this.api.listArtifacts();
   }
 
+  importArtifact(file: Blob, fileName: string, mode: "audit" | "strict" = "audit"): Promise<ArtifactImportResult> {
+    return this.api.importArtifact(file, fileName, mode);
+  }
+
+  exportArtifact(artifactId: string, format: "json" | "md" | "svg" | "pdf", options: ArtifactExportOptions = {}): Promise<Blob> {
+    return this.api.exportArtifact(artifactId, format, options);
+  }
+
   /** Read bounded structure/content and citation refs without downloading a full snapshot. */
   async context(artifactId: string, options: AgentContextOptions = {}): Promise<AgentContext> {
     const include = options.include ?? ["content", "headingPath", "refs"];
@@ -99,6 +121,17 @@ export class OpenOfficeSdk {
     return this.api.outline(artifactId, options);
   }
 
+  tableOfContents(
+    artifactId: string,
+    options: ProjectionRequest = {},
+  ): Promise<ProjectionEnvelope<{ items: DocumentTocItem[] }>> {
+    return this.api.tableOfContents(artifactId, options);
+  }
+
+  documentPrint(artifactId: string): Promise<ProjectionEnvelope<DocumentPrintProjection>> {
+    return this.api.documentPrint(artifactId);
+  }
+
   blocks(artifactId: string, options: ProjectionRequest = {}) {
     return this.api.blocks(artifactId, options);
   }
@@ -116,6 +149,11 @@ export class OpenOfficeSdk {
     return this.api.presentation(artifactId);
   }
 
+  /** Derived graph geometry for a Mindmap renderer; command writes stay on submit(). */
+  mindmap(artifactId: string, theme?: MindmapProjection["theme"]): Promise<ProjectionEnvelope<MindmapProjection>> {
+    return this.api.mindmap(artifactId, theme);
+  }
+
   /** Ephemeral collaborator state; this intentionally bypasses transactions. */
   presentationPresence(artifactId: string): Promise<PresentationPresencePage> {
     return this.api.presentationPresence(artifactId);
@@ -123,6 +161,30 @@ export class OpenOfficeSdk {
 
   updatePresentationPresence(artifactId: string, sessionId: string, update: PresentationPresenceUpdate): Promise<void> {
     return this.api.updatePresentationPresence(artifactId, sessionId, update);
+  }
+
+  documentPresence(artifactId: string): Promise<DocumentPresencePage> {
+    return this.api.documentPresence(artifactId);
+  }
+
+  updateDocumentPresence(artifactId: string, sessionId: string, update: DocumentPresenceUpdate): Promise<void> {
+    return this.api.updateDocumentPresence(artifactId, sessionId, update);
+  }
+
+  documentReviews(artifactId: string): Promise<DocumentReviewPage> {
+    return this.api.documentReviews(artifactId);
+  }
+
+  createDocumentReview(artifactId: string, review: CreateDocumentReview): Promise<DocumentReviewPage> {
+    return this.api.createDocumentReview(artifactId, review);
+  }
+
+  createDocumentSuggestion(artifactId: string, suggestion: CreateDocumentSuggestion): Promise<DocumentReviewPage> {
+    return this.api.createDocumentSuggestion(artifactId, suggestion);
+  }
+
+  updateDocumentReview(artifactId: string, threadId: string, state: DocumentReviewThread["state"]): Promise<void> {
+    return this.api.updateDocumentReview(artifactId, threadId, state);
   }
 
   history(artifactId: string): Promise<ArtifactTransactionHistoryState> {
@@ -151,6 +213,22 @@ export class OpenOfficeSdk {
     options: PresentationNodeRequest = {},
   ): Promise<ProjectionEnvelope<PresentationNodeProjection>> {
     return this.api.presentationNode(artifactId, slideId, nodeId, options);
+  }
+
+  /** Read a bounded, read-only spreadsheet grid window. Spreadsheet writes remain
+   * capability-gated: callers must first discover `spreadsheet: stable` and submit
+   * only an advertised semantic command type id. */
+  spreadsheet(
+    artifactId: string,
+    options: SpreadsheetProjectionRequest,
+  ): Promise<ProjectionEnvelope<SpreadsheetGridProjection>> {
+    return this.api.spreadsheet(artifactId, options);
+  }
+
+  spreadsheetStructure(
+    artifactId: string,
+  ): Promise<ProjectionEnvelope<SpreadsheetStructureProjection>> {
+    return this.api.spreadsheetStructure(artifactId);
   }
 
   /**
@@ -291,6 +369,10 @@ export function buildTransaction(input: TransactionInput): ArtifactCommandEnvelo
 
 export function isVersionConflict(error: unknown): error is ArtifactApiError {
   return error instanceof ArtifactApiError && error.status === 409 && error.envelope?.code === "version_conflict";
+}
+
+export function isRetryableApiError(error: unknown): error is ArtifactApiError {
+  return error instanceof ArtifactApiError && error.envelope?.retryable === true;
 }
 
 export function conflictDetails(error: unknown): Record<string, unknown> | null {

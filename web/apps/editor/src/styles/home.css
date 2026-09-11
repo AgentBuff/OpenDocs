@@ -71,6 +71,23 @@
   height: 36px;
 }
 
+.sidebar__import-mode {
+  display: grid;
+  gap: 5px;
+  padding: 0 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.sidebar__import-mode select {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--surface-primary);
+  color: var(--text-primary);
+}
+
 .create-menu {
   position: relative;
 }

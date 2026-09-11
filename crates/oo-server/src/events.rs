@@ -5,9 +5,12 @@
 //! idempotency and cursor replay.
 
 use axum::extract::{Path, Query, State};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::convert::Infallible;
+use std::time::Duration;
 
 use crate::artifact_routes::load_artifact;
 use crate::auth::CurrentUser;
@@ -61,6 +64,63 @@ pub struct PublicArtifactEvent {
     pub revision: u64,
     pub type_id: String,
     pub payload: Value,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RevisionNotice {
+    kind: &'static str,
+    artifact_id: String,
+    revision: u64,
+    changed_entities: Vec<String>,
+    structure_changed: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EventStreamQuery {
+    since_revision: Option<u64>,
+}
+
+/// Server-sent stream for durable revisions and ephemeral presence. The
+/// durable cursor is a revision and can always be replayed through `/events`;
+/// presence snapshots are intentionally transient and never enter history.
+pub async fn stream(
+    State(state): State<AppState>,
+    user: CurrentUser,
+    Path(id): Path<String>,
+    Query(query): Query<EventStreamQuery>,
+) -> Result<Sse<impl futures_core::Stream<Item = Result<Event, Infallible>>>, AppError> {
+    let (_, artifact) = load_artifact(&state, &user, &id).await?;
+    let mut revision = query.since_revision.unwrap_or(artifact.revision);
+    let output = async_stream::stream! {
+        let mut last_presence = String::new();
+        loop {
+            let Some(meta) = db::get_artifact(&state.pool, &id).await.ok().flatten() else { break; };
+            let current_revision = u64::try_from(meta.version).unwrap_or_default();
+            if current_revision > revision {
+                let Ok((changed_entities, structure_changed)) = db::artifact_change_summary_since(&state.pool, &id, revision).await else { break; };
+                revision = current_revision;
+                let notice = RevisionNotice { kind: "revision", artifact_id: id.clone(), revision, changed_entities, structure_changed };
+                if let Ok(event) = Event::default().event("revision").id(revision.to_string()).json_data(notice) {
+                    yield Ok(event);
+                }
+            }
+            let Ok(presence) = crate::presence::page(&state, &user, &id).await else { break; };
+            if let Ok(encoded) = serde_json::to_string(&presence) {
+                if encoded != last_presence {
+                    last_presence = encoded.clone();
+                    yield Ok(Event::default().event("presence").data(encoded));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    };
+    Ok(Sse::new(output).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(10))
+            .text("keep-alive"),
+    ))
 }
 
 /// `GET /api/artifacts/{id}/events?sinceRevision=&cursor=&limit=`.

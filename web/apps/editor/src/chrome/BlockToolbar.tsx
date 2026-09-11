@@ -10,7 +10,7 @@ import { PageSetupPanel } from "./PageSetupPanel.js";
 import { ColorPalette, type ColorRole, type ColorValue } from "./ColorPalette.js";
 import { ParagraphSettingsDialog, type ParagraphSettingsValue } from "./ParagraphSettingsDialog.js";
 import type { ToolbarSelectionState } from "../toolbar/selectionState.js";
-import { FONT_OPTIONS } from "../typography/fonts.js";
+import { FontPicker } from "../typography/FontPicker.js";
 
 type ActionToolbarItem = ToolbarItem & { kind: "button" | "toggle" };
 
@@ -160,15 +160,11 @@ export function BlockToolbar({
 
   const renderFontControls = () => (
     <>
-      <ToolbarSelect
+      <FontPicker
         className="toolbar-select--font"
         value={toolbarSelection.fontFamily ?? ""}
         disabled={!actionContext.hasTextSelection}
-        onValueChange={(nextValue) => {
-          if (nextValue) onInlineAttrs({ fontFamily: nextValue });
-        }}
-        aria-label="字体"
-        options={FONT_OPTIONS}
+        onChange={nextValue => onInlineAttrs({ fontFamily: nextValue })}
       />
       <ToolbarSelect
         className="toolbar-select--size"

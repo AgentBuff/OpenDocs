@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { changedNodeTransforms, dragPreview, MIN_PRESENTATION_NODE_SIZE, nextNodeSelection } from "./interactions.js";
+import { changedNodeTransforms, dragPreview, MIN_PRESENTATION_NODE_SIZE, nextNodeSelection, snapMovePreview } from "./interactions.js";
 
 const transform = { x: 100, y: 200, width: 120_000, height: 80_000, rotation: 0 };
 
@@ -31,6 +31,45 @@ describe("presentation stage interaction primitives", () => {
     });
     expect(preview.one).toEqual({ ...transform, width: MIN_PRESENTATION_NODE_SIZE, height: MIN_PRESENTATION_NODE_SIZE });
     expect(preview.two).toEqual({ ...transform, x: 300 });
+  });
+
+  it("resizes from every edge without moving the opposite anchor", () => {
+    const preview = dragPreview({
+      nodeIds: ["one"],
+      mode: "resize:northWest",
+      origins: { one: transform },
+      deltaClientX: 20,
+      deltaClientY: 30,
+      scale: 1,
+    });
+    expect(preview.one).toEqual({ ...transform, x: 120, y: 230, width: 119_980, height: 79_970 });
+  });
+
+  it("previews rotation without changing the object's box", () => {
+    const preview = dragPreview({
+      nodeIds: ["one"],
+      mode: "rotate",
+      origins: { one: transform },
+      deltaClientX: 0,
+      deltaClientY: 0,
+      scale: 1,
+      rotationDelta: 45,
+    });
+    expect(preview.one).toEqual({ ...transform, rotation: 45 });
+  });
+
+  it("snaps a moving selection to page and sibling guides as view-only geometry", () => {
+    const moving = { id: "moving", visible: true, transform: { ...transform, x: 79, y: 40, width: 20, height: 20 } };
+    const sibling = { id: "sibling", visible: true, transform: { ...transform, x: 100, y: 100, width: 20, height: 20 } };
+    const snapped = snapMovePreview({
+      preview: { moving: moving.transform },
+      movingNodeIds: ["moving"],
+      nodes: [moving, sibling] as never[],
+      page: { width: 200, height: 200 },
+      threshold: 2,
+    });
+    expect(snapped.preview.moving).toMatchObject({ x: 80, y: 40 });
+    expect(snapped.guides).toEqual([{ axis: "x", position: 100 }]);
   });
 
   it("emits no persisted mutation for an unchanged preview", () => {

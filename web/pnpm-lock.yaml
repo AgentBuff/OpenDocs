@@ -32,6 +32,9 @@ importers:
       '@open-office/document-engine':
         specifier: workspace:*
         version: link:../../packages/document-engine
+      '@open-office/mindmap-engine':
+        specifier: workspace:*
+        version: link:../../packages/mindmap-engine
       '@open-office/presentation-ui':
         specifier: workspace:*
         version: link:../../packages/presentation-ui
@@ -41,6 +44,9 @@ importers:
       '@open-office/sdk':
         specifier: workspace:*
         version: link:../../packages/sdk
+      '@open-office/spreadsheet-ui':
+        specifier: workspace:*
+        version: link:../../packages/spreadsheet-ui
       '@open-office/toolbar-core':
         specifier: workspace:*
         version: link:../../packages/toolbar-core
@@ -79,6 +85,12 @@ importers:
         specifier: workspace:*
         version: link:../schema
 
+  packages/mindmap-engine:
+    dependencies:
+      '@open-office/schema':
+        specifier: workspace:*
+        version: link:../schema
+
   packages/presentation-ui:
     dependencies:
       '@open-office/schema':
@@ -95,6 +107,15 @@ importers:
       '@open-office/schema':
         specifier: workspace:*
         version: link:../schema
+
+  packages/spreadsheet-ui:
+    dependencies:
+      '@open-office/schema':
+        specifier: workspace:*
+        version: link:../schema
+      '@open-office/sdk':
+        specifier: workspace:*
+        version: link:../sdk
 
   packages/toolbar-core: {}
 

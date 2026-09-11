@@ -66,6 +66,9 @@ struct ErrorBody {
     code: &'static str,
     /// 可供日志、SDK 和 agent 关联一次失败请求的稳定标识。
     request_id: String,
+    /// Stable retry guidance for SDKs. A client may retry only after applying
+    /// the code-specific precondition (for example refreshing on 409).
+    retryable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<ConflictDetails>,
 }
@@ -115,6 +118,17 @@ impl AppError {
             Self::Database(_) | Self::Internal(_) => "服务暂时不可用，请稍后重试".into(),
         }
     }
+
+    fn retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::VersionConflict
+                | Self::VersionConflictDetails(_)
+                | Self::Store(_)
+                | Self::Database(_)
+                | Self::Internal(_)
+        )
+    }
 }
 
 impl IntoResponse for AppError {
@@ -128,6 +142,7 @@ impl IntoResponse for AppError {
             _ => None,
         };
         let request_id = format!("err-{}", uuid::Uuid::new_v4());
+        let retryable = self.retryable();
         (
             status,
             [(
@@ -139,6 +154,7 @@ impl IntoResponse for AppError {
                 error: self.public_message(),
                 code,
                 request_id,
+                retryable,
                 details,
             }),
         )
@@ -161,6 +177,8 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(AppError::Unauthorized.parts().0, StatusCode::UNAUTHORIZED);
+        assert!(!AppError::BadRequest("x".into()).retryable());
+        assert!(AppError::VersionConflict.retryable());
     }
 
     #[test]

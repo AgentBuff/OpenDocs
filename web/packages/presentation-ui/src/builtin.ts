@@ -105,7 +105,9 @@ function selectionOutline(context: PresentationNodeContext): readonly Presentati
     // The current semantic command supports a single proportional-free resize
     // gesture from the south-east handle.  Do not advertise handles that the
     // UI has not yet mapped to a real command.
-    handles: context.node.locked || context.node.kind.type === "extension" ? [] : ["southEast"],
+    handles: context.node.locked || context.node.kind.type === "extension"
+      ? []
+      : ["northWest", "north", "northEast", "east", "southEast", "south", "southWest", "west", "rotate"],
   }];
 }
 

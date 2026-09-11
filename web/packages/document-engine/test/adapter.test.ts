@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { DocumentBlock, SnapshotEnvelope } from "@open-office/schema/artifact";
+import { CURRENT_SCHEMA_VERSION, type DocumentBlock, type SnapshotEnvelope } from "@open-office/schema/artifact";
 
 import {
   createDocumentEngine,
@@ -31,13 +31,18 @@ const snapshot: SnapshotEnvelope = {
   protocolVersion: 1,
   artifact: {
     format: "open-office-artifact",
-    schemaVersion: 5,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     artifactId: "doc-1",
     revision: 4,
     kind: "document",
     payload: {
       kind: "document",
-      data: { root: [block.id], blocks: [block], pageSetup: null },
+      data: {
+        root: [block.id],
+        blocks: [block],
+        pageSetup: null,
+        pageSemantics: { sections: [], footnotes: [], endnotes: [] },
+      },
     },
   },
 };
@@ -60,6 +65,14 @@ function fakeBinding(): DocumentEngineBinding {
         canRedo: () => false,
         readBlock: () => JSON.stringify(block),
         readBlocks: (idsJson) => JSON.stringify(JSON.parse(idsJson).map(() => block)),
+        findText: () => JSON.stringify([{ target: { type: "block", blockId: "block-1" }, start: 0, end: 2 }]),
+        tableOfContents: () => JSON.stringify([{ blockId: "block-1", level: 2, text: "标题" }]),
+        printProjection: () => JSON.stringify({
+          revision: 5,
+          sections: [{ sectionId: null, rootBlockIds: ["block-1"], pageSetup: null, header: null, footer: null, pageNumbering: null }],
+          footnotes: [],
+          endnotes: [],
+        }),
         readChangeSet: () => JSON.stringify(change),
         readSnapshot: () => JSON.stringify(snapshot),
         revision: () => 5,
@@ -78,6 +91,9 @@ describe("DocumentEngineAdapter", () => {
     expect(session.readChangeSet()?.changedBlocks).toEqual(["block-1"]);
     expect(session.readBlock("block-1").content?.text).toBe("hello");
     expect(session.readBlocks(["block-1"])[0].id).toBe("block-1");
+    expect(session.findText("标题")[0]?.target).toEqual({ type: "block", blockId: "block-1" });
+    expect(session.tableOfContents()).toEqual([{ blockId: "block-1", level: 2, text: "标题" }]);
+    expect(session.printProjection().sections[0]?.rootBlockIds).toEqual(["block-1"]);
     expect(session.readSnapshot().artifact.revision).toBe(4);
     expect(session.revision()).toBe(5);
     expect(session.canUndo()).toBe(true);

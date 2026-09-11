@@ -7,6 +7,7 @@ import type { PresentationControlSurface, PresentationSelectionRequirement } fro
  * server capability; node renderers never receive this responsibility.
  */
 export type PresentationMultiSelectionAction =
+  | "selection.group"
   | "selection.alignLeft"
   | "selection.alignCenter"
   | "selection.alignRight"
@@ -21,6 +22,7 @@ export type PresentationMultiSelectionAction =
   | "selection.sendToBack";
 
 type MultiSelectionCapability =
+  | "presentation.groupNodes"
   | "presentation.alignNodes"
   | "presentation.distributeNodes"
   | "presentation.reorderNode";
@@ -34,6 +36,7 @@ export interface PresentationMultiSelectionControl {
 }
 
 const MULTI_SELECTION_CONTROLS: readonly PresentationMultiSelectionControl[] = [
+  { action: "selection.group", capability: "presentation.groupNodes", label: "组合对象", icon: "merge-cells", minimumSelection: 2 },
   { action: "selection.alignLeft", capability: "presentation.alignNodes", label: "左对齐", icon: "align-left", minimumSelection: 2 },
   { action: "selection.alignCenter", capability: "presentation.alignNodes", label: "水平居中", icon: "align-center", minimumSelection: 2 },
   { action: "selection.alignRight", capability: "presentation.alignNodes", label: "右对齐", icon: "align-right", minimumSelection: 2 },

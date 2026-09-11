@@ -4,7 +4,7 @@ import { parsePresentationV5Deck } from "../src/presentation-v5.js";
 import sharedFixture from "../../../../fixtures/presentation/v5/minimal-deck.json";
 
 const frame = {
-  body: { text: "Hello", runs: [] },
+  body: { text: "Hello", runs: [], paragraphs: [{ start: 0, end: 5, alignment: "left", list: null, indentLevel: 0 }] },
   verticalAlign: "middle",
   padding: { top: 0, right: 0, bottom: 0, left: 0 },
   autoFit: "none",
@@ -60,12 +60,23 @@ describe("presentation v5 target contract", () => {
     expect(() => parsePresentationV5Deck(invalidPlaceholder)).toThrow(/placeholder/);
   });
 
+  it("requires contiguous paragraph ranges and validates list metadata", () => {
+    const missing = copy(deck); delete (missing.slides[0].nodes[0].kind.data.frame.body as { paragraphs?: unknown }).paragraphs;
+    expect(() => parsePresentationV5Deck(missing)).toThrow(/paragraphs/);
+    const gap = copy(deck); gap.slides[0].nodes[0].kind.data.frame.body.paragraphs = [{ start: 1, end: 5, alignment: "left", list: null, indentLevel: 0 }];
+    expect(() => parsePresentationV5Deck(gap)).toThrow(/paragraph.*区间/);
+    const indent = copy(deck); indent.slides[0].nodes[0].kind.data.frame.body.paragraphs[0].indentLevel = 9;
+    expect(() => parsePresentationV5Deck(indent)).toThrow(/indentLevel/);
+    const ordered = copy(deck); ordered.slides[0].nodes[0].kind.data.frame.body.paragraphs[0].list = { type: "ordered", startAt: 0 } as never;
+    expect(() => parsePresentationV5Deck(ordered)).toThrow(/startAt/);
+  });
+
   it("validates image crop, table coverage, connector and timeline targets", () => {
     const invalidImage = copy(deck); invalidImage.slides[0].nodes[0].kind = { type: "image", data: { assetId: "lost", originalAssetId: null, crop: { top: 0, right: 0, bottom: 0, left: 0 }, flipH: false, flipV: false, caption: null } } as never;
     expect(() => parsePresentationV5Deck(invalidImage)).toThrow(/asset/);
     const invalidTimeline = copy(deck); invalidTimeline.slides[0].timeline.entries = [{ id: "a", targetNodeId: "lost", trigger: "onClick", preset: "appear", durationMs: 0, delayMs: 0, orderKey: "a" }] as never;
     expect(() => parsePresentationV5Deck(invalidTimeline)).toThrow(/timeline/);
-    const invalidTable = copy(deck); invalidTable.slides[0].nodes[0].kind = { type: "table", data: { rows: 1, columns: 2, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } }] } } as never;
+    const invalidTable = copy(deck); invalidTable.slides[0].nodes[0].kind = { type: "table", data: { rows: 1, columns: 2, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "", runs: [], paragraphs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } }] } } as never;
     expect(() => parsePresentationV5Deck(invalidTable)).toThrow(/未覆盖/);
   });
 

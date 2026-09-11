@@ -274,11 +274,12 @@ export const schemas = {
   },
   ErrorEnvelope: {
     type: "object",
-    required: ["error", "code", "requestId"],
+    required: ["error", "code", "requestId", "retryable"],
     properties: {
       error: { type: "string" },
       code: { type: "string" },
       requestId: { type: "string" },
+      retryable: { type: "boolean" },
       details: { type: "object" },
     },
     additionalProperties: false,
@@ -321,6 +322,90 @@ export const schemas = {
     properties: { assets: { type: "array", items: ref("ArtifactAsset") } },
     additionalProperties: false,
   },
+  DocumentReviewAnchor: {
+    type: "object",
+    required: ["blockId", "start", "end", "revision"],
+    properties: {
+      blockId: { type: "string", minLength: 1, maxLength: 128 },
+      rowId: { type: "string", minLength: 1, maxLength: 128 },
+      cellId: { type: "string", minLength: 1, maxLength: 128 },
+      start: { type: "integer", minimum: 0 },
+      end: { type: "integer", minimum: 0 },
+      revision: { type: "integer", minimum: 0 },
+    },
+    additionalProperties: false,
+  },
+  DocumentReviewPage: {
+    type: "object",
+    required: ["artifactId", "revision", "threads"],
+    properties: {
+      artifactId: { type: "string" },
+      revision: { type: "integer", minimum: 0 },
+      threads: { type: "array", items: { type: "object" } },
+    },
+    additionalProperties: false,
+  },
+  CreateDocumentReview: {
+    type: "object",
+    required: ["threadId", "messageId", "anchor", "body", "mentions"],
+    properties: {
+      threadId: { type: "string", minLength: 1, maxLength: 128 },
+      messageId: { type: "string", minLength: 1, maxLength: 128 },
+      anchor: ref("DocumentReviewAnchor"),
+      body: { type: "string", minLength: 1, maxLength: 10000 },
+      mentions: { type: "array", maxItems: 32, uniqueItems: true, items: { type: "string" } },
+    },
+    additionalProperties: false,
+  },
+  CreateDocumentSuggestion: {
+    type: "object",
+    required: ["threadId", "messageId", "anchor", "body", "mentions", "suggestion"],
+    properties: {
+      threadId: { type: "string", minLength: 1, maxLength: 128 },
+      messageId: { type: "string", minLength: 1, maxLength: 128 },
+      anchor: ref("DocumentReviewAnchor"),
+      body: { type: "string", minLength: 1, maxLength: 10000 },
+      mentions: { type: "array", maxItems: 32, uniqueItems: true, items: { type: "string" } },
+      suggestion: {
+        type: "object",
+        required: ["originalText", "replacement"],
+        properties: { originalText: { type: "string" }, replacement: { type: "string", maxLength: 10000 } },
+        additionalProperties: false,
+      },
+    },
+    additionalProperties: false,
+  },
+  CreateDocumentReviewMessage: {
+    type: "object",
+    required: ["messageId", "body", "mentions"],
+    properties: {
+      messageId: { type: "string", minLength: 1, maxLength: 128 },
+      body: { type: "string", minLength: 1, maxLength: 10000 },
+      mentions: { type: "array", maxItems: 32, uniqueItems: true, items: { type: "string" } },
+    },
+    additionalProperties: false,
+  },
+  DocumentPresencePage: {
+    type: "object",
+    required: ["artifactId", "participants", "ttlMs"],
+    properties: {
+      artifactId: { type: "string" },
+      participants: { type: "array", items: { type: "object" } },
+      ttlMs: { type: "integer", minimum: 0 },
+    },
+    additionalProperties: false,
+  },
+  DocumentPresenceUpdate: {
+    type: "object",
+    required: ["revision", "selectedNodeIds"],
+    properties: {
+      revision: { type: "integer", minimum: 0 },
+      blockId: { type: "string", minLength: 1, maxLength: 128 },
+      selectedNodeIds: { type: "array", maxItems: 0 },
+      selection: { type: "object" },
+    },
+    additionalProperties: false,
+  },
 };
 
 const jsonBody = (schema, description = "JSON request") => ({
@@ -342,7 +427,7 @@ export function buildOpenApi() {
       },
     },
     "/api/artifacts/import": {
-      post: { operationId: "importArtifact", requestBody: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } } } }, responses: { "201": artifactResponse, "422": errorResponse } },
+      post: { operationId: "importArtifact", requestBody: { required: true, content: { "multipart/form-data": { schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" }, mode: { type: "string", enum: ["audit", "strict"], default: "audit" } } } } } }, responses: { "201": artifactResponse, "400": errorResponse, "422": errorResponse, "501": errorResponse } },
     },
     "/api/artifacts/{id}": {
       parameters: [artifactId],
@@ -353,7 +438,6 @@ export function buildOpenApi() {
     "/api/artifacts/{id}/snapshot": {
       parameters: [artifactId],
       get: { operationId: "getSnapshot", responses: { "200": json(ref("SnapshotEnvelope")), "404": errorResponse } },
-      put: { operationId: "putSnapshot", parameters: [ifMatch, transactionId], requestBody: jsonBody("SnapshotEnvelope"), responses: { "200": commitResponse, "409": errorResponse } },
     },
     "/api/artifacts/{id}/transactions": {
       parameters: [artifactId],
@@ -362,6 +446,14 @@ export function buildOpenApi() {
     "/api/artifacts/{id}/outline": {
       parameters: [artifactId],
       get: { operationId: "getOutline", parameters: [{ "$ref": "#/components/parameters/ProjectionInclude" }, { "$ref": "#/components/parameters/ProjectionCursor" }, { "$ref": "#/components/parameters/ProjectionMaxBytes" }], responses: { "200": json(ref("ProjectionEnvelope")), "413": errorResponse } },
+    },
+    "/api/artifacts/{id}/toc": {
+      parameters: [artifactId],
+      get: { operationId: "getTableOfContents", parameters: [{ "$ref": "#/components/parameters/ProjectionCursor" }, { "$ref": "#/components/parameters/ProjectionMaxBytes" }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 1000 } }], responses: { "200": json(ref("ProjectionEnvelope")), "400": errorResponse, "413": errorResponse } },
+    },
+    "/api/artifacts/{id}/projection/documentPrint": {
+      parameters: [artifactId],
+      get: { operationId: "getDocumentPrintProjection", responses: { "200": json(ref("ProjectionEnvelope")), "304": { description: "ETag matched current revision" }, "404": errorResponse } },
     },
     "/api/artifacts/{id}/blocks": {
       parameters: [artifactId],
@@ -425,6 +517,35 @@ export function buildOpenApi() {
       parameters: [artifactId],
       get: { operationId: "listEvents", parameters: [{ name: "sinceRevision", in: "query", schema: { type: "integer", minimum: 0 } }, { name: "cursor", in: "query", schema: { type: "string" } }, { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 1000 } }], responses: { "200": json(ref("EventPage")), "400": errorResponse } },
     },
+    "/api/artifacts/{id}/event-stream": {
+      parameters: [artifactId],
+      get: { operationId: "streamArtifactEvents", parameters: [{ name: "sinceRevision", in: "query", description: "Exclusive durable revision cursor used for reconnect.", schema: { type: "integer", minimum: 0 } }], responses: { "200": { description: "Server-sent durable revision notices and ephemeral presence snapshots", content: { "text/event-stream": { schema: { type: "string" } } } }, "404": errorResponse } },
+    },
+    "/api/artifacts/{id}/reviews": {
+      parameters: [artifactId],
+      get: { operationId: "listDocumentReviews", responses: { "200": json(ref("DocumentReviewPage")), "404": errorResponse } },
+      post: { operationId: "createDocumentReview", requestBody: jsonBody("CreateDocumentReview"), responses: { "201": json(ref("DocumentReviewPage")), "400": errorResponse, "409": errorResponse } },
+    },
+    "/api/artifacts/{id}/suggestions": {
+      parameters: [artifactId],
+      post: { operationId: "createDocumentSuggestion", requestBody: jsonBody("CreateDocumentSuggestion"), responses: { "201": json(ref("DocumentReviewPage")), "400": errorResponse, "409": errorResponse } },
+    },
+    "/api/artifacts/{id}/reviews/{threadId}": {
+      parameters: [artifactId, { name: "threadId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+      patch: { operationId: "updateDocumentReview", requestBody: { required: true, ...json({ type: "object", required: ["state"], properties: { state: { enum: ["open", "resolved", "accepted", "rejected"] } }, additionalProperties: false }) }, responses: { "204": { description: "Review state updated" }, "400": errorResponse, "404": errorResponse } },
+    },
+    "/api/artifacts/{id}/reviews/{threadId}/messages": {
+      parameters: [artifactId, { name: "threadId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+      post: { operationId: "replyDocumentReview", requestBody: jsonBody("CreateDocumentReviewMessage"), responses: { "201": { description: "Reply created" }, "400": errorResponse, "404": errorResponse } },
+    },
+    "/api/artifacts/{id}/presence": {
+      parameters: [artifactId],
+      get: { operationId: "getArtifactPresence", responses: { "200": json(ref("DocumentPresencePage")), "404": errorResponse } },
+    },
+    "/api/artifacts/{id}/presence/{sessionId}": {
+      parameters: [artifactId, { name: "sessionId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }],
+      put: { operationId: "updateArtifactPresence", requestBody: jsonBody("DocumentPresenceUpdate"), responses: { "204": { description: "Ephemeral presence refreshed" }, "400": errorResponse, "409": errorResponse } },
+    },
     "/api/artifacts/{id}/revisions": { parameters: [artifactId], get: { operationId: "listRevisions", responses: { "200": { description: "Revision metadata", content: { "application/json": { schema: { type: "array", items: { type: "object" } } } } } } } },
     "/api/artifacts/{id}/revisions/{version}": { parameters: [artifactId, version], get: { operationId: "getRevision", responses: { "200": json(ref("SnapshotEnvelope")), "404": errorResponse } } },
     "/api/artifacts/{id}/revisions/{version}/restore": { parameters: [artifactId, version], post: { operationId: "restoreRevision", parameters: [ifMatch, transactionId], responses: { "200": commitResponse, "409": errorResponse } } },
@@ -436,7 +557,7 @@ export function buildOpenApi() {
       delete: { operationId: "deleteCollaborator", responses: { "204": { description: "Collaborator removed" }, "403": errorResponse } },
     },
     "/api/artifacts/{id}/source": { parameters: [artifactId], get: { operationId: "getOriginalSource", responses: { "200": { description: "Original source bytes" }, "404": errorResponse } } },
-    "/api/artifacts/{id}/export/{format}": { parameters: [artifactId, { name: "format", in: "path", required: true, schema: { type: "string" } }], get: { operationId: "exportArtifact", responses: { "200": { description: "Exported artifact bytes" }, "400": errorResponse } } },
+    "/api/artifacts/{id}/export/{format}": { parameters: [artifactId, { name: "format", in: "path", required: true, schema: { type: "string", enum: ["docx", "xlsx", "pptx", "json", "md", "svg", "pdf"] } }], get: { operationId: "exportArtifact", parameters: [{ name: "paper", in: "query", schema: { type: "string", enum: ["a4", "a3"] } }, { name: "orientation", in: "query", schema: { type: "string", enum: ["portrait", "landscape"] } }, { name: "mode", in: "query", schema: { type: "string", enum: ["fit", "tile"] } }, { name: "margin", in: "query", schema: { type: "number", minimum: 0 } }], responses: { "200": { description: "Exported artifact bytes" }, "400": errorResponse } } },
   };
   return {
     openapi: "3.1.0",

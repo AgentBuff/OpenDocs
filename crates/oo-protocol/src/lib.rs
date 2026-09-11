@@ -16,13 +16,13 @@ pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
 /// This is deliberately separate from `CURRENT_PROTOCOL_VERSION`: a client may
 /// understand the transaction envelope while learning new capabilities without
 /// requiring a protocol migration.
-pub const CAPABILITY_CONTRACT_VERSION: u16 = 1;
+pub const CAPABILITY_CONTRACT_VERSION: u16 = 2;
 pub const CAPABILITIES_PATH: &str = "/api/capabilities";
 /// Version of the read-only Artifact projection response.
-/// Version two adds the strictly read-only Presentation deck/slide/node
-/// projections. It remains independent from the write protocol, whose typed
-/// Presentation commands are discovered through the capability catalog.
-pub const PROJECTION_CONTRACT_VERSION: u16 = 2;
+/// Version two added strictly read-only Presentation projections; version
+/// three adds Document logical print/page-semantics projection. It remains
+/// independent from the write protocol.
+pub const PROJECTION_CONTRACT_VERSION: u16 = 3;
 
 /// Server-authoritative history command type.
 pub const DOCUMENT_HISTORY_TYPE_ID: &str = "document.history";
@@ -32,6 +32,16 @@ pub const DOCUMENT_HISTORY_TYPE_ID: &str = "document.history";
 /// typed Presentation engine journal from the durable semantic transaction
 /// record; clients never send inverse scene mutations or snapshots.
 pub const PRESENTATION_HISTORY_TYPE_ID: &str = "presentation.history";
+/// Server-authoritative Mindmap undo/redo intent. The server reconstructs the
+/// typed graph journal from the durable semantic command record.
+pub const MINDMAP_HISTORY_TYPE_ID: &str = "mindmap.history";
+/// Server-authoritative Spreadsheet history command type.
+///
+/// Same intent-only contract as [`PRESENTATION_HISTORY_TYPE_ID`]: the server
+/// replays the durable semantic command record against the pre-transaction
+/// snapshot and applies the inverse through the grid engine. Clients never
+/// send inverse cell patches.
+pub const SPREADSHEET_HISTORY_TYPE_ID: &str = "spreadsheet.history";
 
 /// The write/read boundary that every Artifact client can use after discovering
 /// the capability catalog. Paths are URI templates rather than a second RPC
@@ -49,7 +59,24 @@ pub struct ArtifactTransportCapability {
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactCapabilityStatus {
     Stable,
+    Preview,
     Planned,
+    Unsupported,
+}
+
+/// Independent product maturity signals. A client must inspect the feature it
+/// intends to use instead of treating one implemented command as proof that
+/// import, history, assets or collaboration are equally mature.
+#[derive(schemars::JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactFeatureCapabilities {
+    pub edit: ArtifactCapabilityStatus,
+    pub history: ArtifactCapabilityStatus,
+    pub projection: ArtifactCapabilityStatus,
+    pub import: ArtifactCapabilityStatus,
+    pub export: ArtifactCapabilityStatus,
+    pub assets: ArtifactCapabilityStatus,
+    pub presence: ArtifactCapabilityStatus,
 }
 
 /// A semantic command accepted by an Artifact engine. `scope` allows a client
@@ -69,9 +96,9 @@ pub struct ArtifactCommandCapability {
 pub struct ArtifactCapability {
     pub kind: ArtifactKind,
     pub namespace: String,
-    pub status: ArtifactCapabilityStatus,
-    /// Empty for planned engines. An empty list is intentional: it is not a
-    /// promise that an unimplemented command exists.
+    pub features: ArtifactFeatureCapabilities,
+    /// Empty when editing is planned or unsupported. An empty list is
+    /// intentional: it is not a promise that an unimplemented command exists.
     pub commands: Vec<ArtifactCommandCapability>,
 }
 
@@ -91,6 +118,10 @@ pub struct CapabilityCatalog {
 #[serde(rename_all = "camelCase")]
 pub enum ArtifactProjectionKind {
     Outline,
+    /// Heading-only navigation projection in canonical tree order.
+    TableOfContents,
+    /// Logical section ranges and page semantics for pagination/print renderers.
+    DocumentPrint,
     Block,
     /// Compact, deck-level Presentation facts such as page geometry and counts.
     Presentation,
@@ -170,11 +201,16 @@ impl CapabilityCatalog {
                     ));
                 }
             }
-            if artifact.status == ArtifactCapabilityStatus::Planned && !artifact.commands.is_empty()
+            if matches!(
+                artifact.features.edit,
+                ArtifactCapabilityStatus::Planned | ArtifactCapabilityStatus::Unsupported
+            ) && !artifact.commands.is_empty()
             {
-                return Err(ProtocolValidationError::PlannedCapabilityHasCommands(
-                    artifact.namespace.clone(),
-                ));
+                return Err(
+                    ProtocolValidationError::UnavailableEditCapabilityHasCommands(
+                        artifact.namespace.clone(),
+                    ),
+                );
             }
         }
         Ok(())
@@ -207,6 +243,8 @@ pub struct ArtifactCommandEnvelope {
     pub transaction_id: String,
     pub intent_id: String,
     pub artifact_id: String,
+    /// Client-local device/session identity for correlation only. Servers must
+    /// derive authorization, audit author and event actor from authentication.
     pub actor_id: String,
     pub base_revision: u64,
     pub origin: TransactionOrigin,
@@ -433,6 +471,50 @@ impl PresentationHistoryOperation {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MindmapHistoryOperation {
+    pub action: HistoryAction,
+}
+
+impl MindmapHistoryOperation {
+    pub fn command_record(&self, command_id: impl Into<String>) -> CommandRecord {
+        CommandRecord {
+            command_id: command_id.into(),
+            type_id: MINDMAP_HISTORY_TYPE_ID.to_string(),
+            payload: serde_json::to_value(self).expect("mindmap history is serializable"),
+        }
+    }
+
+    pub fn from_record(record: &CommandRecord) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(record.payload.clone())
+    }
+}
+
+/// Server-authoritative undo/redo intent for a Spreadsheet Artifact.
+///
+/// Kept separate from the other kinds for the same scoping rule: a discovered
+/// command always belongs to its owning engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpreadsheetHistoryOperation {
+    pub action: HistoryAction,
+}
+
+impl SpreadsheetHistoryOperation {
+    pub fn command_record(&self, command_id: impl Into<String>) -> CommandRecord {
+        CommandRecord {
+            command_id: command_id.into(),
+            type_id: SPREADSHEET_HISTORY_TYPE_ID.to_string(),
+            payload: serde_json::to_value(self).expect("spreadsheet history is serializable"),
+        }
+    }
+
+    pub fn from_record(record: &CommandRecord) -> Result<Self, serde_json::Error> {
+        serde_json::from_value(record.payload.clone())
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolValidationError {
     #[error("不支持的 protocol 版本：{0}")]
@@ -449,8 +531,8 @@ pub enum ProtocolValidationError {
     InvalidCapabilityCommand,
     #[error("capability command 重复：{0}")]
     DuplicateCapabilityCommand(String),
-    #[error("planned capability 不得声明 command：{0}")]
-    PlannedCapabilityHasCommands(String),
+    #[error("planned/unsupported edit capability 不得声明 command：{0}")]
+    UnavailableEditCapabilityHasCommands(String),
     #[error("{0} 不能为空")]
     EmptyId(&'static str),
     #[error("事务不能没有 command")]
@@ -499,6 +581,7 @@ pub fn generate_contract_schemas() -> serde_json::Map<String, serde_json::Value>
         Invalidation,
         CapabilityCatalog,
         ArtifactCapability,
+        ArtifactFeatureCapabilities,
         ArtifactCommandCapability,
         ArtifactTransportCapability,
         ArtifactCapabilityStatus,
@@ -641,6 +724,16 @@ mod tests {
         assert_eq!(
             PresentationHistoryOperation::from_record(&record).unwrap(),
             presentation_operation
+        );
+
+        let mindmap_operation = MindmapHistoryOperation {
+            action: HistoryAction::Undo,
+        };
+        let record = mindmap_operation.command_record("mindmap-history-1");
+        assert_eq!(record.type_id, MINDMAP_HISTORY_TYPE_ID);
+        assert_eq!(
+            MindmapHistoryOperation::from_record(&record).unwrap(),
+            mindmap_operation
         );
     }
 
@@ -795,7 +888,15 @@ mod tests {
                 ArtifactCapability {
                     kind: ArtifactKind::Document,
                     namespace: "document".into(),
-                    status: ArtifactCapabilityStatus::Stable,
+                    features: ArtifactFeatureCapabilities {
+                        edit: ArtifactCapabilityStatus::Stable,
+                        history: ArtifactCapabilityStatus::Stable,
+                        projection: ArtifactCapabilityStatus::Stable,
+                        import: ArtifactCapabilityStatus::Stable,
+                        export: ArtifactCapabilityStatus::Preview,
+                        assets: ArtifactCapabilityStatus::Stable,
+                        presence: ArtifactCapabilityStatus::Planned,
+                    },
                     commands: vec![ArtifactCommandCapability {
                         type_id: "document.insertTableRow".into(),
                         scope: "document.table".into(),
@@ -806,7 +907,15 @@ mod tests {
                 ArtifactCapability {
                     kind: ArtifactKind::Spreadsheet,
                     namespace: "spreadsheet".into(),
-                    status: ArtifactCapabilityStatus::Planned,
+                    features: ArtifactFeatureCapabilities {
+                        edit: ArtifactCapabilityStatus::Planned,
+                        history: ArtifactCapabilityStatus::Planned,
+                        projection: ArtifactCapabilityStatus::Planned,
+                        import: ArtifactCapabilityStatus::Planned,
+                        export: ArtifactCapabilityStatus::Planned,
+                        assets: ArtifactCapabilityStatus::Planned,
+                        presence: ArtifactCapabilityStatus::Planned,
+                    },
                     commands: Vec::new(),
                 },
             ],
@@ -827,7 +936,7 @@ mod tests {
             });
         assert!(matches!(
             invalid.validate(),
-            Err(ProtocolValidationError::PlannedCapabilityHasCommands(namespace))
+            Err(ProtocolValidationError::UnavailableEditCapabilityHasCommands(namespace))
                 if namespace == "spreadsheet"
         ));
     }

@@ -7,7 +7,7 @@
 
 use oo_schema::{CellModel, CellStyle, SpreadsheetModel};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::CellAddress;
 
@@ -61,6 +61,8 @@ pub struct ViewportCell {
     #[serde(default)]
     pub formula: Option<String>,
     #[serde(default)]
+    pub attrs: Map<String, Value>,
+    #[serde(default)]
     pub style: Option<CellStyle>,
 }
 
@@ -74,6 +76,7 @@ impl ViewportCell {
             },
             value: cell.value.clone(),
             formula: cell.formula.clone(),
+            attrs: cell.attrs.clone(),
             style: cell.style.clone(),
         }
     }
@@ -209,8 +212,8 @@ mod perf_bench {
 
     /// R7 budget: 100k sparse cells with a 200x50 viewport must project only the
     /// in-window materialized cells (no DOM/JSON for empty regions).
+    /// Runs in the regular test suite so the budget is enforced in CI.
     #[test]
-    #[ignore = "engine perf harness; run with --release -- --ignored perf_"]
     fn perf_viewport_projects_bounded_window() {
         let model = dense_model(200, 500); // 100k materialized cells
         let viewport = GridViewport::new(40, 90, 20, 70).unwrap(); // 200x50 window

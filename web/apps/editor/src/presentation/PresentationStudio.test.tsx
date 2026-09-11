@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { PresentationV5Node } from "@open-office/schema";
+import { plainPresentationRichText, type PresentationV5Node } from "@open-office/schema";
 
 import { SlideNode } from "./PresentationStudio.js";
 
@@ -39,10 +39,10 @@ const table: PresentationV5Node = {
       rows: 2,
       columns: 2,
       cells: [
-        { row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "A1", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
-        { row: 0, column: 1, rowSpan: 1, columnSpan: 1, content: { text: "B1", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
-        { row: 1, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "A2", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
-        { row: 1, column: 1, rowSpan: 1, columnSpan: 1, content: { text: "B2", runs: [] }, style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: plainPresentationRichText("A1"), style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 0, column: 1, rowSpan: 1, columnSpan: 1, content: plainPresentationRichText("B1"), style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 1, column: 0, rowSpan: 1, columnSpan: 1, content: plainPresentationRichText("A2"), style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
+        { row: 1, column: 1, rowSpan: 1, columnSpan: 1, content: plainPresentationRichText("B2"), style: { fill: { type: "none" }, horizontalAlign: "left", verticalAlign: "middle" } },
       ],
     },
   },
@@ -74,7 +74,7 @@ describe("PresentationStudio node rendering smoke", () => {
     expect(html).toContain("presentation-studio__node--hit-target is-selected");
     expect(html).toContain('data-node-id="image-1"');
     expect(html).toContain('src="/api/artifacts/presentation-1/assets/asset-current"');
-    expect(html).toContain('aria-label="调整对象大小"');
+    expect(html).toContain('aria-label="从右下角调整对象大小"');
     expect(html).toContain('alt="产品封面"');
     expect(html).toContain("scale(-1, 1)");
   });

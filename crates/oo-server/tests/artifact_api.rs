@@ -9,10 +9,14 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{HeaderMap, Request, StatusCode};
 use http_body_util::BodyExt;
-use oo_schema::presentation_v5::{AssetRef, ImageNode, SceneNodeKind};
+use oo_mindmap::parse_mindmap_exchange;
+use oo_schema::presentation_v5::{
+    AnimationEntry, AnimationPreset, AnimationTrigger, AssetRef, DeckTheme, ImageNode,
+    SceneNodeKind, SlideTransition, TransitionKind,
+};
 use oo_schema::{
     ArtifactEnvelope, ArtifactPayload, CellModel, SheetMetadata, SheetModel, SpreadsheetMetadata,
-    SpreadsheetModel,
+    SpreadsheetModel, CURRENT_SCHEMA_VERSION,
 };
 use oo_server::store::{BlobStore, LocalFsStore};
 use oo_server::{build_router, db, AppState};
@@ -72,6 +76,15 @@ impl TestApp {
     }
 
     async fn upload_bytes(&self, file_name: &str, bytes: &[u8]) -> (StatusCode, Value) {
+        self.upload_bytes_with_mode(file_name, bytes, "audit").await
+    }
+
+    async fn upload_bytes_with_mode(
+        &self,
+        file_name: &str,
+        bytes: &[u8],
+        mode: &str,
+    ) -> (StatusCode, Value) {
         const BOUNDARY: &str = "----oo-docx-media";
         let mut body = Vec::new();
         body.extend_from_slice(
@@ -81,7 +94,12 @@ impl TestApp {
             .as_bytes(),
         );
         body.extend_from_slice(bytes);
-        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        body.extend_from_slice(
+            format!(
+                "\r\n--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"mode\"\r\n\r\n{mode}\r\n--{BOUNDARY}--\r\n"
+            )
+            .as_bytes(),
+        );
         self.json(
             Request::post("/api/artifacts/import")
                 .header(
@@ -203,11 +221,40 @@ fn docx_with_image() -> Vec<u8> {
     archive.finish().unwrap().into_inner()
 }
 
+fn xmind_with_image() -> Vec<u8> {
+    let content = include_bytes!("../../../fixtures/mindmap/xmind/content.json");
+    let image = b"xmind-image-bytes";
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in [
+        ("content.json", content.as_slice()),
+        ("resources/topic.png", image.as_slice()),
+    ] {
+        archive
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(bytes).unwrap();
+    }
+    archive.finish().unwrap().into_inner()
+}
+
 fn pptx_with_image() -> Vec<u8> {
     let mut deck: oo_schema::presentation_v5::Deck = serde_json::from_str(include_str!(
         "../../../fixtures/presentation/v5/minimal-deck.json"
     ))
     .unwrap();
+    deck.masters.clear();
+    deck.layouts.clear();
+    deck.theme = DeckTheme {
+        id: "strict-pptx-test".into(),
+        ..DeckTheme::default()
+    };
+    deck.slides[0].name.clear();
+    deck.slides[0].layout_id = None;
+    deck.slides[0].notes = Some("server roundtrip note".into());
+    deck.slides[0].transition = Some(SlideTransition {
+        kind: TransitionKind::Fade,
+        duration_ms: 650,
+    });
     deck.assets.push(AssetRef {
         asset_id: "image-asset".into(),
         digest: "fixture-digest".into(),
@@ -227,6 +274,16 @@ fn pptx_with_image() -> Vec<u8> {
         flip_v: false,
         caption: None,
     });
+    let image_id = image.id.clone();
+    deck.slides[0].timeline.entries = vec![AnimationEntry {
+        id: "image-fade".into(),
+        target_node_id: image_id,
+        trigger: AnimationTrigger::OnClick,
+        preset: AnimationPreset::Fade,
+        duration_ms: 500,
+        delay_ms: 75,
+        order_key: "00000000".into(),
+    }];
     let mut assets = oo_pptx::PptxAssetSource::new();
     // The PPTX writer only emits media relationships for recognized image bytes. A minimal
     // PNG signature is enough here: this test verifies artifact asset ownership, not decoding.
@@ -234,9 +291,9 @@ fn pptx_with_image() -> Vec<u8> {
         "image-asset".into(),
         b"\x89PNG\r\n\x1a\npptx-image-bytes".to_vec(),
     );
-    oo_pptx::write_pptx_with_assets(&deck, &assets)
-        .unwrap()
-        .bytes
+    let exported = oo_pptx::write_pptx_with_assets(&deck, &assets).unwrap();
+    assert!(exported.loss_report.unsupported.is_empty());
+    exported.bytes
 }
 
 #[tokio::test]
@@ -270,7 +327,8 @@ async fn presentation_transactions_and_read_projections_are_revision_safe() {
         .iter()
         .find(|item| item["kind"] == "presentation")
         .unwrap();
-    assert_eq!(presentation["status"], "stable");
+    assert_eq!(presentation["features"]["edit"], "stable");
+    assert_eq!(presentation["features"]["presence"], "preview");
     assert!(presentation["commands"]
         .as_array()
         .unwrap()
@@ -921,6 +979,63 @@ async fn presentation_image_asset_registration_requires_verified_binary_metadata
         deck["slides"][0]["nodes"][2]["kind"]["data"]["assetId"],
         asset_id
     );
+
+    let history_transaction = |action: &str, base_revision: u64| {
+        let transaction_id = format!("presentation-image-{action}");
+        json!({
+            "protocolVersion": 1,
+            "transactionId": transaction_id,
+            "intentId": format!("presentation-image-{action}-intent"),
+            "artifactId": id,
+            "actorId": "local-user",
+            "baseRevision": base_revision,
+            "origin": action,
+            "commands": [{
+                "commandId": format!("presentation-image-{action}-command"),
+                "typeId": "presentation.history",
+                "payload": {"action": action}
+            }]
+        })
+    };
+    for (action, base_revision, expected_ref_count) in
+        [("undo", 2_u64, 0_i64), ("redo", 3_u64, 1_i64)]
+    {
+        let transaction_id = format!("presentation-image-{action}");
+        let (status, history_result) = app
+            .json(
+                Request::post(format!("/api/artifacts/{id}/transactions"))
+                    .header("content-type", "application/json")
+                    .header("if-match", format!("\"{base_revision}\""))
+                    .header("x-transaction-id", &transaction_id)
+                    .body(Body::from(
+                        history_transaction(action, base_revision).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "response: {history_result}");
+        assert_eq!(
+            db::get_artifact_asset(&app.pool, &id, &asset_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .ref_count,
+            expected_ref_count
+        );
+    }
+
+    let (status, protected) = app
+        .json(
+            Request::delete(format!("/api/artifacts/{id}/assets/{asset_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {protected}");
+    assert!(protected["error"]
+        .as_str()
+        .unwrap()
+        .contains("仍被 snapshot 引用"));
 }
 
 #[tokio::test]
@@ -959,7 +1074,10 @@ async fn presentation_created_before_restart_retains_v5_deck_and_read_routes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "response: {snapshot}");
-    assert_eq!(snapshot["artifact"]["schemaVersion"], 5);
+    assert_eq!(
+        snapshot["artifact"]["schemaVersion"],
+        CURRENT_SCHEMA_VERSION
+    );
     assert_eq!(snapshot["artifact"]["kind"], "presentation");
     assert_eq!(snapshot["artifact"]["payload"]["kind"], "presentation");
     assert_eq!(
@@ -1028,13 +1146,34 @@ async fn artifact_events_feed_is_revision_ordered_and_replayable() {
                 .unwrap(),
         )
         .await;
+    let block_id = snapshot["artifact"]["payload"]["data"]["blocks"][0]["id"]
+        .as_str()
+        .unwrap();
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": "events-transaction",
+        "intentId": "events-intent",
+        "artifactId": id,
+        "actorId": "dev-user",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [{
+            "commandId": "events-command",
+            "typeId": "document.replaceBlockText",
+            "payload": {
+                "type": "replaceBlockText",
+                "blockId": block_id,
+                "content": {"text": "event revision", "runs": []}
+            }
+        }]
+    });
     let (status, _) = app
         .json(
-            Request::put(format!("/api/artifacts/{id}/snapshot"))
+            Request::post(format!("/api/artifacts/{id}/transactions"))
                 .header("content-type", "application/json")
                 .header("if-match", "\"1\"")
-                .header("x-transaction-id", "events-snapshot")
-                .body(Body::from(snapshot.to_string()))
+                .header("x-transaction-id", "events-transaction")
+                .body(Body::from(transaction.to_string()))
                 .unwrap(),
         )
         .await;
@@ -1065,10 +1204,7 @@ async fn artifact_events_feed_is_revision_ordered_and_replayable() {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        next_page["events"][0]["typeId"],
-        "document.artifactImported"
-    );
+    assert_eq!(next_page["events"][0]["typeId"], "document.blockUpdated");
 
     let (status, empty) = app
         .json(
@@ -1254,6 +1390,26 @@ async fn asset_routes_verify_bytes_and_delete_unreferenced() {
         )
         .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, corruptible) = app
+        .upload_artifact_asset(id, "corrupt.bin", "application/octet-stream", b"verified")
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let corruptible_id = corruptible["assetId"].as_str().unwrap();
+    tokio::fs::write(
+        app.dir.join(format!("{id}/assets/{corruptible_id}")),
+        b"tampered",
+    )
+    .await
+    .unwrap();
+    let (status, _) = app
+        .send(
+            Request::get(format!("/api/artifacts/{id}/assets/{corruptible_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 #[tokio::test]
@@ -1312,9 +1468,10 @@ async fn docx_import_registers_media_as_referenced_assets() {
 #[tokio::test]
 async fn pptx_import_persists_media_assets_and_export_resolves_them() {
     let app = TestApp::new().await;
-    let (status, imported) = app
-        .upload_bytes("with-image.pptx", &pptx_with_image())
-        .await;
+    let source_bytes = pptx_with_image();
+    let source = oo_pptx::parse_pptx_with_report(&source_bytes).unwrap();
+    assert!(source.loss_report.unsupported.is_empty());
+    let (status, imported) = app.upload_bytes("with-image.pptx", &source_bytes).await;
     assert_eq!(status, StatusCode::CREATED, "响应：{imported}");
     let id = imported["id"].as_str().unwrap();
     let (status, listed) = app
@@ -1354,6 +1511,21 @@ async fn pptx_import_persists_media_assets_and_export_resolves_them() {
         String::from_utf8_lossy(&exported)
     );
     let roundtrip = oo_pptx::parse_pptx_with_report(&exported).unwrap();
+    assert!(roundtrip.loss_report.unsupported.is_empty());
+    assert!(oo_pptx::semantic_diff(&source.deck, &roundtrip.deck).is_equivalent());
+    assert_eq!(
+        roundtrip.deck.slides[0].notes.as_deref(),
+        Some("server roundtrip note")
+    );
+    assert_eq!(
+        roundtrip.deck.slides[0]
+            .transition
+            .as_ref()
+            .unwrap()
+            .duration_ms,
+        650
+    );
+    assert_eq!(roundtrip.deck.slides[0].timeline.entries.len(), 1);
     assert_eq!(roundtrip.assets.len(), 1);
     assert_eq!(
         roundtrip.assets[0].bytes,
@@ -1375,6 +1547,53 @@ async fn document_projections_are_bounded_and_keep_canonical_block_refs() {
     assert_eq!(status, StatusCode::CREATED);
     let id = created["id"].as_str().unwrap();
 
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": "toc-heading-transaction",
+        "intentId": "toc-heading-intent",
+        "artifactId": id,
+        "actorId": "browser-client",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [
+            {
+                "commandId": "toc-heading-kind",
+                "typeId": "document.convertBlock",
+                "payload": {"type": "convertBlock", "blockId": "block-1", "kind": {"type": "heading", "level": 2}}
+            },
+            {
+                "commandId": "toc-heading-text",
+                "typeId": "document.replaceBlockText",
+                "payload": {"type": "replaceBlockText", "blockId": "block-1", "content": {"text": "路线图 😀", "runs": []}}
+            }
+        ]
+    });
+    let (status, commit) = app
+        .json(
+            Request::post(format!("/api/artifacts/{id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", "toc-heading-transaction")
+                .body(Body::from(transaction.to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "响应：{commit}");
+
+    let (status, toc) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/toc?limit=1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "响应：{toc}");
+    assert_eq!(toc["projection"], "tableOfContents");
+    assert_eq!(toc["revision"], 2);
+    assert_eq!(toc["data"]["items"][0]["blockId"], "block-1");
+    assert_eq!(toc["data"]["items"][0]["level"], 2);
+    assert_eq!(toc["data"]["items"][0]["text"], "路线图 😀");
+
     let (status, outline) = app
         .json(
             Request::get(format!("/api/artifacts/{id}/outline?include=headingPath"))
@@ -1385,7 +1604,7 @@ async fn document_projections_are_bounded_and_keep_canonical_block_refs() {
     assert_eq!(status, StatusCode::OK, "响应：{outline}");
     assert_eq!(outline["projection"], "outline");
     assert_eq!(outline["data"]["items"][0]["blockId"], "block-1");
-    assert_eq!(outline["data"]["items"][0]["kind"], "paragraph");
+    assert_eq!(outline["data"]["items"][0]["kind"], "heading");
     assert!(outline["data"]["items"][0]["parentId"].is_null());
 
     let (status, block_refs) = app
@@ -1618,4 +1837,537 @@ async fn presentation_presence_is_ephemeral_and_never_creates_a_transaction() {
         .await
         .unwrap()
         .is_none());
+}
+
+#[tokio::test]
+async fn mindmap_markdown_json_and_verified_assets_round_trip() {
+    let app = TestApp::new().await;
+    let markdown = b"# Product roadmap\n\n> Shared note\n\n## Milestone one\n\n## Milestone two\n";
+    let (status, imported) = app.upload_bytes("roadmap.md", markdown).await;
+    assert_eq!(status, StatusCode::CREATED, "response: {imported}");
+    assert_eq!(imported["kind"], "mindmap");
+    let id = imported["id"].as_str().unwrap();
+
+    let (status, exported_markdown) = app
+        .send(
+            Request::get(format!("/api/artifacts/{id}/export/md"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let exported_markdown = String::from_utf8(exported_markdown).unwrap();
+    assert!(exported_markdown.contains("# Product roadmap"));
+    assert!(exported_markdown.contains("> Shared note"));
+
+    let (status, json_headers, exported_json) = app
+        .send_with_headers(
+            Request::get(format!("/api/artifacts/{id}/export/json"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        json_headers["content-type"],
+        "application/vnd.open-office.mindmap+json"
+    );
+    assert!(json_headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains(".mindmap.json"));
+    let package = parse_mindmap_exchange(&exported_json).unwrap();
+    assert_eq!(package.format, "open-office-mindmap");
+    assert!(package.assets.is_empty());
+    let (status, json_copy) = app
+        .upload_bytes("roadmap.mindmap.json", &exported_json)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "response: {json_copy}");
+    assert_eq!(json_copy["kind"], "mindmap");
+
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "mindmap", "title": "Images"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let image_map_id = created["id"].as_str().unwrap();
+    let (status, asset) = app
+        .upload_artifact_asset(image_map_id, "topic.png", "image/png", b"verified-image")
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let asset_id = asset["assetId"].as_str().unwrap();
+    let transaction_id = "mindmap-image-1";
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": transaction_id,
+        "intentId": "mindmap-image-intent",
+        "artifactId": image_map_id,
+        "actorId": "dev-user",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [
+            {"commandId": "add-root", "typeId": "mindmap.addNode", "payload": {
+                "type": "addNode", "nodeId": "root", "parentId": null,
+                "content": {"text": "Image topic", "runs": []}, "attrs": {}, "index": 0
+            }},
+            {"commandId": "set-image", "typeId": "mindmap.setNodeSupplement", "payload": {
+                "type": "setNodeSupplement", "nodeId": "root", "supplement": {
+                    "note": null, "hyperlink": null, "markers": [],
+                    "image": {"assetId": asset_id, "alt": "topic", "width": null, "height": null}
+                }
+            }},
+            {"commandId": "add-boundary", "typeId": "mindmap.addBoundary", "payload": {
+                "type": "addBoundary", "boundary": {
+                    "id": "boundary", "rootNodeId": "root", "label": {"text": "Scope", "runs": []}
+                }
+            }},
+            {"commandId": "add-formula", "typeId": "mindmap.addFormula", "payload": {
+                "type": "addFormula", "formula": {
+                    "id": "formula", "nodeId": "root", "source": "x^2", "display": "block"
+                }
+            }}
+        ]
+    });
+    let (status, committed) = app
+        .json(
+            Request::post(format!("/api/artifacts/{image_map_id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", transaction_id)
+                .body(Body::from(transaction.to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {committed}");
+    assert_eq!(
+        db::get_artifact_asset(&app.pool, image_map_id, asset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ref_count,
+        1
+    );
+
+    let (status, markdown_headers, _) = app
+        .send_with_headers(
+            Request::get(format!("/api/artifacts/{image_map_id}/export/md"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        markdown_headers["x-mindmap-losses"],
+        "boundary:1,formula:1,nodeImage:1"
+    );
+
+    let (status, svg_headers, exported_svg) = app
+        .send_with_headers(
+            Request::get(format!("/api/artifacts/{image_map_id}/export/svg"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(svg_headers["content-type"], "image/svg+xml; charset=utf-8");
+    assert!(svg_headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains(".svg"));
+    let exported_svg = String::from_utf8(exported_svg).unwrap();
+    assert!(exported_svg.starts_with("<svg xmlns="));
+    assert!(exported_svg.contains("data-kind=\"node-image\""));
+    assert!(exported_svg.contains("data-kind=\"boundary\""));
+    assert!(exported_svg.contains("data-kind=\"formula\""));
+    assert!(exported_svg.contains("data:image/png;base64,"));
+    assert!(!exported_svg.contains("selection"));
+    assert!(!exported_svg.contains("presence"));
+
+    let (status, pdf_headers, exported_pdf) = app
+        .send_with_headers(
+            Request::get(format!(
+                "/api/artifacts/{id}/export/pdf?paper=a4&orientation=landscape&mode=fit"
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(pdf_headers["content-type"], "application/pdf");
+    assert_eq!(pdf_headers["x-mindmap-losses"], "fontSubstitution:1");
+    assert!(pdf_headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains(".pdf"));
+    assert!(exported_pdf.starts_with(b"%PDF-"));
+
+    let (status, exported_with_asset) = app
+        .send(
+            Request::get(format!("/api/artifacts/{image_map_id}/export/json"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let package = parse_mindmap_exchange(&exported_with_asset).unwrap();
+    assert_eq!(package.assets.len(), 1);
+    assert_eq!(package.assets[0].asset_id, asset_id);
+    let (status, imported_copy) = app
+        .upload_bytes("portable-asset.mindmap.json", &exported_with_asset)
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "response: {imported_copy}");
+    let copy_id = imported_copy["id"].as_str().unwrap();
+    let (_, copy_snapshot) = app
+        .json(
+            Request::get(format!("/api/artifacts/{copy_id}/snapshot"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    let remapped_asset_id = copy_snapshot["artifact"]["payload"]["data"]["nodes"][0]["supplement"]
+        ["image"]["assetId"]
+        .as_str()
+        .unwrap();
+    assert_ne!(remapped_asset_id, asset_id);
+    assert_eq!(
+        copy_snapshot["artifact"]["payload"]["data"]["boundaries"][0]["id"],
+        "boundary"
+    );
+    assert_eq!(
+        copy_snapshot["artifact"]["payload"]["data"]["formulas"][0]["source"],
+        "x^2"
+    );
+    let copy_artifact: ArtifactEnvelope =
+        serde_json::from_value(copy_snapshot["artifact"].clone()).unwrap();
+    let ArtifactPayload::Mindmap(mut copied_model) = copy_artifact.payload else {
+        panic!("copy must remain a Mindmap");
+    };
+    let mut exported_model = package.model.clone();
+    exported_model.nodes[0]
+        .supplement
+        .image
+        .as_mut()
+        .unwrap()
+        .asset_id = "normalized-asset".into();
+    copied_model.nodes[0]
+        .supplement
+        .image
+        .as_mut()
+        .unwrap()
+        .asset_id = "normalized-asset".into();
+    assert_eq!(copied_model, exported_model);
+    let (status, copied_asset) = app
+        .send(
+            Request::get(format!(
+                "/api/artifacts/{copy_id}/assets/{remapped_asset_id}"
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(copied_asset, b"verified-image");
+    assert_eq!(
+        db::get_artifact_asset(&app.pool, copy_id, remapped_asset_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .ref_count,
+        1
+    );
+
+    let mut tampered: Value = serde_json::from_slice(&exported_with_asset).unwrap();
+    tampered["assets"][0]["checksum"] = Value::String("0".repeat(64));
+    let (status, rejected) = app
+        .upload_bytes(
+            "tampered.mindmap.json",
+            &serde_json::to_vec(&tampered).unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {rejected}");
+    assert!(rejected["error"]
+        .as_str()
+        .unwrap()
+        .contains("checksum 不匹配"));
+}
+
+#[tokio::test]
+async fn freemind_import_is_streamed_validated_and_preserves_original_source_type() {
+    let app = TestApp::new().await;
+    let fixture = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/mindmap/freemind/basic.mm"
+    ))
+    .unwrap();
+    let (status, imported) = app.upload_bytes("basic.mm", &fixture).await;
+    assert_eq!(status, StatusCode::CREATED, "response: {imported}");
+    assert_eq!(imported["kind"], "mindmap");
+    assert!(imported["warnings"][0]
+        .as_str()
+        .unwrap()
+        .contains("unsupportedFeature:1"));
+    let id = imported["id"].as_str().unwrap();
+    let (_, snapshot) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/snapshot"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    let data = &snapshot["artifact"]["payload"]["data"];
+    assert_eq!(data["nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(data["nodes"][0]["content"]["text"], "产品路线图");
+    assert_eq!(
+        data["nodes"][0]["supplement"]["note"]["text"],
+        "共享说明\n第二行"
+    );
+    assert_eq!(data["edges"][0]["sourceId"], "node-2");
+    assert_eq!(data["edges"][0]["targetId"], "node-3");
+
+    let (status, headers, source) = app
+        .send_with_headers(
+            Request::get(format!("/api/artifacts/{id}/source"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers["content-type"],
+        "application/x-freemind; charset=utf-8"
+    );
+    assert!(headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains(".mm"));
+    assert!(String::from_utf8(source).unwrap().contains("<map version="));
+
+    let (status, rejected) = app
+        .upload_bytes(
+            "malicious.mm",
+            br#"<!DOCTYPE map [<!ENTITY x "boom">]><map><node TEXT="&x;"/></map>"#,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {rejected}");
+    assert!(rejected["error"].as_str().unwrap().contains("禁止 DTD"));
+
+    let (status, strict_rejected) = app
+        .upload_bytes_with_mode("basic.mm", &fixture, "strict")
+        .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    assert!(strict_rejected["error"]
+        .as_str()
+        .unwrap()
+        .contains("strict 导入拒绝有损内容"));
+}
+
+#[tokio::test]
+async fn xmind_import_validates_package_remaps_assets_and_preserves_source_type() {
+    let app = TestApp::new().await;
+    let fixture = xmind_with_image();
+    let (status, imported) = app.upload_bytes("roadmap.xmind", &fixture).await;
+    assert_eq!(status, StatusCode::CREATED, "response: {imported}");
+    assert_eq!(imported["kind"], "mindmap");
+    assert_eq!(imported["warnings"], json!([]));
+    let id = imported["id"].as_str().unwrap();
+
+    let (_, snapshot) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/snapshot"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    let data = &snapshot["artifact"]["payload"]["data"];
+    assert_eq!(data["nodes"].as_array().unwrap().len(), 3);
+    assert_eq!(data["nodes"][0]["content"]["text"], "产品路线图");
+    assert_eq!(data["nodes"][0]["supplement"]["note"]["text"], "共享说明");
+    assert_eq!(data["nodes"][0]["supplement"]["markers"][0], "priority-1");
+    assert_eq!(data["edges"][0]["sourceId"], "node-2");
+    assert_eq!(data["edges"][0]["targetId"], "node-3");
+    assert_eq!(data["edges"][0]["label"]["text"], "依赖");
+    let asset_id = data["nodes"][0]["supplement"]["image"]["assetId"]
+        .as_str()
+        .unwrap();
+    assert_ne!(asset_id, "asset-1");
+
+    let (status, listed) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/assets"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "response: {listed}");
+    assert_eq!(listed["assets"][0]["assetId"], asset_id);
+    assert_eq!(listed["assets"][0]["fileName"], "topic.png");
+    assert_eq!(listed["assets"][0]["contentType"], "image/png");
+    assert_eq!(listed["assets"][0]["refCount"], 1);
+    let (status, bytes) = app
+        .send(
+            Request::get(format!("/api/artifacts/{id}/assets/{asset_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, b"xmind-image-bytes");
+
+    let (status, headers, source) = app
+        .send_with_headers(
+            Request::get(format!("/api/artifacts/{id}/source"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "application/vnd.xmind.workbook");
+    assert!(headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .contains(".xmind"));
+    assert_eq!(source, fixture);
+
+    let empty_package = {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        archive
+            .start_file("manifest.json", SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(b"{}").unwrap();
+        archive.finish().unwrap().into_inner()
+    };
+    let (status, rejected) = app
+        .upload_bytes("missing-content.xmind", &empty_package)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "response: {rejected}");
+    assert!(rejected["error"]
+        .as_str()
+        .unwrap()
+        .contains("缺少 content.json"));
+}
+
+#[tokio::test]
+async fn mindmap_presence_is_ephemeral_graph_state() {
+    let app = TestApp::new().await;
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "mindmap", "title": "Presence map"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap();
+    let (status, _) = app
+        .send(
+            Request::put(format!("/api/artifacts/{id}/presence/map-browser"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"selectedNodeIds": ["root"], "cursor": {"x": 10, "y": 20}}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, page) = app
+        .json(
+            Request::get(format!("/api/artifacts/{id}/presence"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["participants"][0]["selectedNodeIds"][0], "root");
+    assert_eq!(page["participants"][0]["cursor"]["y"], 20.0);
+    assert!(db::get_artifact_history(&app.pool, id, false)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn mindmap_event_stream_pushes_durable_revision_and_ephemeral_presence() {
+    let app = TestApp::new().await;
+    let (status, created) = app
+        .json(
+            Request::post("/api/artifacts")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"kind": "mindmap", "title": "Stream map"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = created["id"].as_str().unwrap();
+    let response = app
+        .router
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/artifacts/{id}/event-stream?sinceRevision=1"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+
+    let transaction = json!({
+        "protocolVersion": 1,
+        "transactionId": "stream-add-root",
+        "intentId": "stream-add-root-intent",
+        "artifactId": id,
+        "actorId": "dev-user",
+        "baseRevision": 1,
+        "origin": "local",
+        "commands": [{
+            "commandId": "add-root",
+            "typeId": "mindmap.addNode",
+            "payload": {"type": "addNode", "nodeId": "root", "parentId": null, "content": {"text": "Root", "runs": []}, "attrs": {}, "index": 0}
+        }]
+    });
+    let (status, _) = app
+        .json(
+            Request::post(format!("/api/artifacts/{id}/transactions"))
+                .header("content-type", "application/json")
+                .header("if-match", "\"1\"")
+                .header("x-transaction-id", "stream-add-root")
+                .body(Body::from(transaction.to_string()))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut body = response.into_body();
+    let streamed = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let mut output = String::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.unwrap();
+            if let Some(data) = frame.data_ref() {
+                output.push_str(&String::from_utf8_lossy(data));
+            }
+            if output.contains("event: revision") && output.contains("event: presence") {
+                return output;
+            }
+        }
+        output
+    })
+    .await
+    .expect("event stream did not deliver within budget");
+    assert!(streamed.contains("\"revision\":2"), "stream: {streamed}");
+    assert!(streamed.contains("mindmap.node"), "stream: {streamed}");
+    assert!(
+        streamed.contains("\"structureChanged\":true"),
+        "stream: {streamed}"
+    );
 }

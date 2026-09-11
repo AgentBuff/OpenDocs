@@ -10,9 +10,11 @@
   },
   "dependencies": {
     "@open-office/document-engine": "workspace:*",
+    "@open-office/mindmap-engine": "workspace:*",
     "@open-office/presentation-ui": "workspace:*",
     "@open-office/sdk": "workspace:*",
     "@open-office/schema": "workspace:*",
+    "@open-office/spreadsheet-ui": "workspace:*",
     "@open-office/toolbar-core": "workspace:*",
     "@open-office/ui": "workspace:*",
     "react": "^18.3.1",

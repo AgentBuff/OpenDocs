@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { resolveMultiSelectionControls, selectionRequirement, selectionSurfaces } from "../src/index.js";
-import type { PresentationV5Node } from "@open-office/schema";
+import { plainPresentationRichText, type PresentationV5Node } from "@open-office/schema";
 
 const node = (type: PresentationV5Node["kind"]["type"]): PresentationV5Node => ({
   id: `node-${type}`, parentId: null, orderKey: "a", name: null, altText: null, layoutPlaceholderId: null,
   transform: { x: 0, y: 0, width: 1, height: 1, rotation: 0 }, visible: true, locked: false, opacity: 1,
   kind: type === "text"
-    ? { type, data: { frame: { body: { text: "", runs: [] }, verticalAlign: "top", padding: { top: 0, right: 0, bottom: 0, left: 0 }, autoFit: "none" } } }
+    ? { type, data: { frame: { body: plainPresentationRichText(""), verticalAlign: "top", padding: { top: 0, right: 0, bottom: 0, left: 0 }, autoFit: "none" } } }
     : type === "shape"
       ? { type, data: { geometry: "rectangle", style: { fill: { type: "none" }, stroke: null } } }
       : { type: "image", data: { assetId: "asset", originalAssetId: null, crop: { top: 0, right: 0, bottom: 0, left: 0 }, flipH: false, flipV: false, caption: null } },
@@ -35,6 +35,8 @@ describe("Presentation selection derivation", () => {
   });
 
   it("only exposes multi-object controls after the server grants each semantic capability", () => {
+    expect(resolveMultiSelectionControls(new Set(["presentation.groupNodes"]), 2).map((control) => control.action))
+      .toEqual(["selection.group"]);
     const alignOnly = resolveMultiSelectionControls(new Set(["presentation.alignNodes"]), 2);
     expect(alignOnly.map((control) => control.action)).toEqual([
       "selection.alignLeft", "selection.alignCenter", "selection.alignRight",
@@ -47,8 +49,9 @@ describe("Presentation selection derivation", () => {
   it("adds layer ordering only for a compatible, unlocked sibling selection", () => {
     const first = node("shape");
     const second = { ...node("image"), id: "node-image", parentId: null };
-    const available = new Set(["presentation.alignNodes", "presentation.distributeNodes", "presentation.reorderNode"]);
+    const available = new Set(["presentation.groupNodes", "presentation.alignNodes", "presentation.distributeNodes", "presentation.reorderNode"]);
     expect(resolveMultiSelectionControls(available, [first, second]).map((control) => control.action)).toEqual([
+      "selection.group",
       "selection.alignLeft", "selection.alignCenter", "selection.alignRight",
       "selection.alignTop", "selection.alignMiddle", "selection.alignBottom",
       "selection.bringForward", "selection.sendBackward", "selection.bringToFront", "selection.sendToBack",

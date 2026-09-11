@@ -8,10 +8,17 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    include: [
+      "apps/*/test/**/*.{test,spec}.{ts,tsx}",
+      "apps/editor/src/presentation/**/*.{test,spec}.{ts,tsx}",
+      "packages/*/test/**/*.{test,spec}.{ts,tsx}",
+    ],
     exclude: [
       "apps/editor/e2e/**",
-      "test-results/**",
-      "node_modules/**",
+      "**/test-results/**",
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/wasm/**",
     ],
   },
 });

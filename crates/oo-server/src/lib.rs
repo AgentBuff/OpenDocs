@@ -16,8 +16,10 @@ pub mod presentation_migration;
 pub mod presentation_support;
 pub mod projection;
 pub mod request_context;
+pub mod review;
 pub mod spreadsheet_support;
 pub mod store;
+pub mod transaction_kernel;
 pub mod whiteboard_support;
 
 use std::sync::Arc;
@@ -84,12 +86,33 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(document_support::health))
         .route(CAPABILITIES_PATH, get(artifact_routes::capabilities))
         .route("/api/artifacts/{id}/events", get(events::list))
+        .route("/api/artifacts/{id}/event-stream", get(events::stream))
         .route("/api/artifacts/{id}/presence", get(presence::list))
         .route(
             "/api/artifacts/{id}/presence/{session_id}",
             axum::routing::put(presence::put),
         )
+        .route(
+            "/api/artifacts/{id}/reviews",
+            get(review::list).post(review::create_comment),
+        )
+        .route(
+            "/api/artifacts/{id}/suggestions",
+            post(review::create_suggestion),
+        )
+        .route(
+            "/api/artifacts/{id}/reviews/{thread_id}",
+            axum::routing::patch(review::update),
+        )
+        .route(
+            "/api/artifacts/{id}/reviews/{thread_id}/messages",
+            post(review::reply),
+        )
         .route("/api/artifacts/{id}/outline", get(projection::outline))
+        .route(
+            "/api/artifacts/{id}/toc",
+            get(projection::table_of_contents),
+        )
         .route("/api/artifacts/{id}/blocks", get(projection::blocks))
         .route(
             "/api/artifacts/{id}/presentation/outline",
@@ -148,9 +171,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             artifact_routes::ARTIFACT_SNAPSHOT_PATH,
-            get(artifact_routes::snapshot)
-                .put(artifact_routes::put_snapshot)
-                .layer(DefaultBodyLimit::max(MAX_JSON_BODY_BYTES)),
+            get(artifact_routes::snapshot),
         )
         .route(
             artifact_routes::ARTIFACT_REVISIONS_PATH,

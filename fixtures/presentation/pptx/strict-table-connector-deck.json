@@ -32,10 +32,10 @@
               "rows": 2,
               "columns": 2,
               "cells": [
-                { "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "任务", "runs": [] }, "style": { "fill": { "type": "solid", "value": { "type": "rgba", "value": { "r": 1, "g": 2, "b": 3, "a": 255 } } }, "horizontalAlign": "center", "verticalAlign": "middle" } },
-                { "row": 0, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "负责人", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "top" } },
-                { "row": 1, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "完成", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "right", "verticalAlign": "bottom" } },
-                { "row": 1, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "", "runs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "middle" } }
+                { "row": 0, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "任务", "runs": [], "paragraphs": [{ "start": 0, "end": 2, "alignment": "left", "list": null, "indentLevel": 0 }] }, "style": { "fill": { "type": "solid", "value": { "type": "rgba", "value": { "r": 1, "g": 2, "b": 3, "a": 255 } } }, "horizontalAlign": "center", "verticalAlign": "middle" } },
+                { "row": 0, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "负责人", "runs": [], "paragraphs": [{ "start": 0, "end": 3, "alignment": "left", "list": null, "indentLevel": 0 }] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "top" } },
+                { "row": 1, "column": 0, "rowSpan": 1, "columnSpan": 1, "content": { "text": "完成", "runs": [], "paragraphs": [{ "start": 0, "end": 2, "alignment": "left", "list": null, "indentLevel": 0 }] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "right", "verticalAlign": "bottom" } },
+                { "row": 1, "column": 1, "rowSpan": 1, "columnSpan": 1, "content": { "text": "", "runs": [], "paragraphs": [] }, "style": { "fill": { "type": "none" }, "horizontalAlign": "left", "verticalAlign": "middle" } }
               ]
             }
           }

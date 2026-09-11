@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createChartNode, createConnectorNode, createImageNode, createLayoutCommand, createMasterCommand, createRectangleNode, createShapeNode, createSlideCommand, createTextNode, deckPageSpecCommand, deckThemeCommand, deleteAnimationCommand, deleteLayoutCommand, deleteMasterCommand, deleteSlideCommand, duplicatePresentationNode, duplicateSlideCommand, insertNodeCommand, moveAnimationCommand, moveSlideCommand, multiNodeArrangeCommands, nodeTransformCommand, presentationHistoryCommand, presentationHistoryTransaction, presentationSemanticInputs, registerPresentationAssetCommand, slideBackgroundCommand, slideLayoutCommand, slideNotesCommand, slideTransitionCommand, tableStructureCommand, textContentCommand, updateLayoutCommand, updateMasterCommand, upsertAnimationCommand } from "./commands.js";
+import { createChartNode, createConnectorNode, createImageNode, createLayoutCommand, createMasterCommand, createRectangleNode, createShapeNode, createSlideCommand, createTextNode, deckPageSpecCommand, deckThemeCommand, deleteAnimationCommand, deleteLayoutCommand, deleteMasterCommand, deleteSlideCommand, duplicatePresentationNode, duplicateSlideCommand, groupNodesCommand, insertNodeCommand, moveAnimationCommand, moveSlideCommand, multiNodeArrangeCommands, nodeTransformCommand, presentationHistoryCommand, presentationHistoryTransaction, presentationSemanticInputs, registerPresentationAssetCommand, slideBackgroundCommand, slideLayoutCommand, slideNotesCommand, slideTransitionCommand, tableStructureCommand, textContentCommand, updateLayoutCommand, updateMasterCommand, upsertAnimationCommand } from "./commands.js";
 
 describe("Presentation semantic UI commands", () => {
   it("does not serialize a DOM gesture or a writable deck when moving a node", () => {
@@ -25,7 +25,7 @@ describe("Presentation semantic UI commands", () => {
     });
     expect(textContentCommand("slide-1", "node-1", "hello").payload).toMatchObject({
       type: "setTextContent",
-      body: { text: "hello", runs: [] },
+      body: { text: "hello", runs: [], paragraphs: [{ start: 0, end: 5 }] },
     });
   });
 
@@ -120,6 +120,25 @@ describe("Presentation semantic UI commands", () => {
     expect(multiNodeArrangeCommands("slide-1", [{ ...nodes[0], locked: true }, ...nodes.slice(1)], ["a", "b"], "selection.bringToFront")).toEqual([]);
   });
 
+  it("builds a group from compatible sibling bounds and stable ids", () => {
+    const first = { ...createTextNode("a", "0001"), transform: { x: 10, y: 20, width: 30, height: 40, rotation: 0 } };
+    const second = { ...createTextNode("b", "0002"), transform: { x: 60, y: 50, width: 20, height: 10, rotation: 0 } };
+    expect(groupNodesCommand("slide-1", [first, second], ["a", "b"], "group-1", "0003")).toEqual({
+      type: "groupNodes",
+      slideId: "slide-1",
+      childIds: ["a", "b"],
+      index: 0,
+      group: expect.objectContaining({
+        id: "group-1",
+        parentId: null,
+        kind: { type: "group", data: {} },
+        transform: { x: 10, y: 20, width: 70, height: 40, rotation: 0 },
+      }),
+    });
+    expect(groupNodesCommand("slide-1", [{ ...first, locked: true }, second], ["a", "b"], "group-1", "0003")).toBeNull();
+    expect(groupNodesCommand("slide-1", [{ ...first, kind: { type: "connector", data: { start: { type: "free", value: { x: 0, y: 0 } }, end: { type: "free", value: { x: 1, y: 1 } } } } }, second], ["a", "b"], "group-1", "0003")).toBeNull();
+  });
+
   it("creates the first slide through the engine command rather than local view state", () => {
     expect(createSlideCommand("slide-1", "0001", 0)).toMatchObject({
       typeId: "presentation.createSlide",
@@ -212,9 +231,11 @@ describe("Presentation semantic UI commands", () => {
   it("adapts node-registry intents to real server command type ids", () => {
     expect(presentationSemanticInputs([
       { type: "deleteNode", slideId: "slide-1", nodeId: "node-1" },
+      { type: "groupNodes", slideId: "slide-1", group: createTextNode("group-1", "0002"), childIds: ["node-1", "node-2"], index: 0 },
       { type: "ungroupNodes", slideId: "slide-1", groupId: "group-1" },
     ])).toEqual([
       { typeId: "presentation.deleteNode", payload: { type: "deleteNode", slideId: "slide-1", nodeId: "node-1" } },
+      { typeId: "presentation.groupNodes", payload: { type: "groupNodes", slideId: "slide-1", group: createTextNode("group-1", "0002"), childIds: ["node-1", "node-2"], index: 0 } },
       { typeId: "presentation.ungroupNodes", payload: { type: "ungroupNodes", slideId: "slide-1", groupId: "group-1" } },
     ]);
   });
