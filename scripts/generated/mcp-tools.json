@@ -1,0 +1,133 @@
+{
+  "manifestVersion": 1,
+  "contract": "scripts/generated/openapi.json",
+  "capabilitiesEndpoint": "GET /api/capabilities",
+  "transport": {
+    "baseUrl": "http://127.0.0.1:8787",
+    "revisionHeader": "If-Match",
+    "idempotencyHeader": "x-transaction-id",
+    "revisionRule": "If-Match must equal envelope.baseRevision",
+    "transactionRule": "x-transaction-id must equal envelope.transactionId"
+  },
+  "tools": [
+    {
+      "name": "artifact_capabilities",
+      "method": "GET",
+      "path": "/api/capabilities",
+      "readOnly": true,
+      "resultSchema": "CapabilityCatalog"
+    },
+    {
+      "name": "artifact_outline",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/outline",
+      "readOnly": true,
+      "query": [
+        "cursor",
+        "limit",
+        "maxBytes",
+        "include"
+      ],
+      "resultSchema": "ProjectionEnvelope"
+    },
+    {
+      "name": "artifact_blocks",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/blocks",
+      "readOnly": true,
+      "query": [
+        "parentId",
+        "cursor",
+        "limit",
+        "maxBytes",
+        "include=content,headingPath,refs"
+      ],
+      "resultSchema": "ProjectionEnvelope",
+      "citationRule": "When refs is requested, persist sourceRef/citation fields with artifactId, blockId and revision."
+    },
+    {
+      "name": "artifact_block",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/blocks/{blockId}",
+      "readOnly": true,
+      "query": [
+        "cursor",
+        "maxBytes",
+        "include=content,headingPath,refs"
+      ],
+      "resultSchema": "ProjectionEnvelope"
+    },
+    {
+      "name": "presentation_deck",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/projection/presentation",
+      "readOnly": true,
+      "resultSchema": "ProjectionEnvelope",
+      "capabilityRule": "This tool observes canonical Deck facts. Presentation writes require a fresh capability lookup and one of the advertised typed commands."
+    },
+    {
+      "name": "presentation_outline",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/presentation/outline",
+      "readOnly": true,
+      "query": [
+        "cursor",
+        "limit",
+        "maxBytes"
+      ],
+      "resultSchema": "ProjectionEnvelope",
+      "cursorRule": "Cursor is opaque and revision-bound; on expiration restart from the latest outline."
+    },
+    {
+      "name": "presentation_slide",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/presentation/slides/{slideId}",
+      "readOnly": true,
+      "query": [
+        "include=nodes,notes,timeline",
+        "maxBytes"
+      ],
+      "resultSchema": "ProjectionEnvelope",
+      "includeRule": "The default is metadata-only. Request large sections explicitly and preserve the response revision."
+    },
+    {
+      "name": "presentation_node",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/presentation/slides/{slideId}/nodes/{nodeId}",
+      "readOnly": true,
+      "query": [
+        "maxBytes"
+      ],
+      "resultSchema": "ProjectionEnvelope",
+      "identityRule": "A node is addressed by (slideId,nodeId); never resolve a bare nodeId across slides."
+    },
+    {
+      "name": "artifact_events",
+      "method": "GET",
+      "path": "/api/artifacts/{artifactId}/events",
+      "readOnly": true,
+      "query": [
+        "sinceRevision",
+        "cursor",
+        "limit"
+      ],
+      "resultSchema": "EventPage",
+      "delivery": "at-least-once",
+      "dedupeKey": "eventId",
+      "gapRule": "A consumer that observes a revision gap must re-read a projection or snapshot."
+    },
+    {
+      "name": "artifact_transaction",
+      "method": "POST",
+      "path": "/api/artifacts/{artifactId}/transactions",
+      "readOnly": false,
+      "headers": [
+        "If-Match",
+        "x-transaction-id"
+      ],
+      "requestSchema": "ArtifactCommandEnvelope",
+      "resultSchema": "CommitResult",
+      "conflictRule": "409 version_conflict is re-read/rebase; reusing the same transactionId is idempotent."
+    }
+  ]
+}

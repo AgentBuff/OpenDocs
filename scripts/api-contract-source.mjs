@@ -584,10 +584,185 @@ export function buildOpenApi() {
   };
 }
 
+// ---------------------------------------------------------------------------
+// MCP tool manifest.
+//
+// The tool surface is curated: tool names, agent-facing rules and query hints
+// are editorial, and there is no way to derive them from an HTTP schema. What
+// *is* mechanical — the method, the path, the result schema and the required
+// headers — is read back out of `buildOpenApi()` and cross-checked against the
+// declaration below. A renamed path or a changed response type therefore fails
+// the drift check instead of silently leaving a stale manifest behind.
+// ---------------------------------------------------------------------------
+
+const MCP_MECHANICAL_KEYS = new Set([
+  "name",
+  "method",
+  "path",
+  "resultSchema",
+  "requestSchema",
+  "query",
+  "headers",
+  "readOnly",
+]);
+
+const MCP_TOOLS = [
+  {
+    name: "artifact_capabilities",
+    method: "GET",
+    path: "/api/capabilities",
+    resultSchema: "CapabilityCatalog",
+  },
+  {
+    name: "artifact_outline",
+    method: "GET",
+    path: "/api/artifacts/{id}/outline",
+    resultSchema: "ProjectionEnvelope",
+    query: ["cursor", "limit", "maxBytes", "include"],
+  },
+  {
+    name: "artifact_blocks",
+    method: "GET",
+    path: "/api/artifacts/{id}/blocks",
+    resultSchema: "ProjectionEnvelope",
+    query: ["parentId", "cursor", "limit", "maxBytes", "include=content,headingPath,refs"],
+    citationRule:
+      "When refs is requested, persist sourceRef/citation fields with artifactId, blockId and revision.",
+  },
+  {
+    name: "artifact_block",
+    method: "GET",
+    path: "/api/artifacts/{id}/blocks/{blockId}",
+    resultSchema: "ProjectionEnvelope",
+    query: ["cursor", "maxBytes", "include=content,headingPath,refs"],
+  },
+  {
+    name: "presentation_deck",
+    method: "GET",
+    path: "/api/artifacts/{id}/projection/presentation",
+    resultSchema: "ProjectionEnvelope",
+    capabilityRule:
+      "This tool observes canonical Deck facts. Presentation writes require a fresh capability lookup and one of the advertised typed commands.",
+  },
+  {
+    name: "presentation_outline",
+    method: "GET",
+    path: "/api/artifacts/{id}/presentation/outline",
+    resultSchema: "ProjectionEnvelope",
+    query: ["cursor", "limit", "maxBytes"],
+    cursorRule:
+      "Cursor is opaque and revision-bound; on expiration restart from the latest outline.",
+  },
+  {
+    name: "presentation_slide",
+    method: "GET",
+    path: "/api/artifacts/{id}/presentation/slides/{slideId}",
+    resultSchema: "ProjectionEnvelope",
+    query: ["include=nodes,notes,timeline", "maxBytes"],
+    includeRule:
+      "The default is metadata-only. Request large sections explicitly and preserve the response revision.",
+  },
+  {
+    name: "presentation_node",
+    method: "GET",
+    path: "/api/artifacts/{id}/presentation/slides/{slideId}/nodes/{nodeId}",
+    resultSchema: "ProjectionEnvelope",
+    query: ["maxBytes"],
+    identityRule:
+      "A node is addressed by (slideId,nodeId); never resolve a bare nodeId across slides.",
+  },
+  {
+    name: "artifact_events",
+    method: "GET",
+    path: "/api/artifacts/{id}/events",
+    resultSchema: "EventPage",
+    query: ["sinceRevision", "cursor", "limit"],
+    delivery: "at-least-once",
+    dedupeKey: "eventId",
+    gapRule: "A consumer that observes a revision gap must re-read a projection or snapshot.",
+  },
+  {
+    name: "artifact_transaction",
+    method: "POST",
+    path: "/api/artifacts/{id}/transactions",
+    resultSchema: "CommitResult",
+    requestSchema: "ArtifactCommandEnvelope",
+    conflictRule:
+      "409 version_conflict is re-read/rebase; reusing the same transactionId is idempotent.",
+  },
+];
+
+/** The agent-facing manifest spells the artifact path parameter out in full. */
+function mcpPath(path) {
+  return path.replace("{id}", "{artifactId}");
+}
+
+function mcpResultSchema(operation) {
+  const response = operation.responses?.["200"] ?? operation.responses?.["204"];
+  const schema = response?.content?.["application/json"]?.schema;
+  return schema?.$ref ? schema.$ref.replace("#/components/schemas/", "") : undefined;
+}
+
+export function buildMcpTools() {
+  const { paths } = buildOpenApi();
+  return {
+    manifestVersion: 1,
+    contract: "scripts/generated/openapi.json",
+    capabilitiesEndpoint: "GET /api/capabilities",
+    transport: {
+      baseUrl: "http://127.0.0.1:8787",
+      revisionHeader: "If-Match",
+      idempotencyHeader: "x-transaction-id",
+      revisionRule: "If-Match must equal envelope.baseRevision",
+      transactionRule: "x-transaction-id must equal envelope.transactionId",
+    },
+    tools: MCP_TOOLS.map((tool) => {
+      const item = paths[tool.path];
+      if (!item) {
+        throw new Error(`mcp tool ${tool.name}: ${tool.path} is not in the OpenAPI contract`);
+      }
+      const operation = item[tool.method.toLowerCase()];
+      if (!operation) {
+        throw new Error(
+          `mcp tool ${tool.name}: ${tool.method} ${tool.path} is not in the OpenAPI contract`,
+        );
+      }
+      const declared = mcpResultSchema(operation);
+      if (declared && tool.resultSchema !== declared) {
+        throw new Error(
+          `mcp tool ${tool.name}: declares resultSchema ${tool.resultSchema} but ` +
+            `${tool.method} ${tool.path} returns ${declared}`,
+        );
+      }
+      const entry = {
+        name: tool.name,
+        method: tool.method,
+        path: mcpPath(tool.path),
+        readOnly: tool.method === "GET",
+      };
+      if (tool.query) entry.query = tool.query;
+      const headers = (operation.parameters ?? [])
+        .filter((parameter) => parameter.in === "header")
+        .map((parameter) => parameter.name);
+      if (headers.length > 0) entry.headers = headers;
+      if (tool.requestSchema) entry.requestSchema = tool.requestSchema;
+      entry.resultSchema = tool.resultSchema;
+      for (const [key, value] of Object.entries(tool)) {
+        if (!MCP_MECHANICAL_KEYS.has(key)) entry[key] = value;
+      }
+      return entry;
+    }),
+  };
+}
+
 export function generatedFiles() {
   const openapi = buildOpenApi();
   return {
     "scripts/generated/openapi.json": openapi,
+    // The agent-facing tool manifest is derived from the same contract it
+    // describes, so it cannot advertise a route or a result type that the API
+    // no longer serves.
+    "scripts/generated/mcp-tools.json": buildMcpTools(),
     // Server DTOs and generated protocol types each get one stable file.
     ...Object.fromEntries(
       Object.entries({ ...protocolSchemas, ...schemas }).map(([name, schema]) => [
