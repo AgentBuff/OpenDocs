@@ -44,6 +44,8 @@ impl TestApp {
                 presence: Arc::new(tokio::sync::Mutex::new(
                     oo_server::presence::PresenceStore::default(),
                 )),
+                // 这套测试不声明身份，跑在生产默认配置下（`X-OO-User` 不被信任）。
+                trust_user_header: false,
             }),
             dir,
             pool,
@@ -186,6 +188,7 @@ async fn persistent_router(data_dir: &std::path::Path) -> axum::Router {
         presence: Arc::new(tokio::sync::Mutex::new(
             oo_server::presence::PresenceStore::default(),
         )),
+        trust_user_header: false,
     })
 }
 

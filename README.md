@@ -25,6 +25,12 @@ cd web && pnpm --filter @open-office/editor dev -- --host 127.0.0.1 --port 5174
 - Frontend: `http://127.0.0.1:5174`
 - Backend: `http://127.0.0.1:8787`
 
+All configuration is read from the environment; every variable and its default is listed in
+[`.env.example`](.env.example). To exercise collaboration roles (owner / editor / viewer),
+presence and audit trails before real authentication exists, start the server with
+`OO_TRUST_USER_HEADER=1` and send `X-OO-User: <id>`. That header is untrusted by default and a
+request carrying it is rejected, so the switch has to be explicit.
+
 See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for architecture and
 contribution conventions.
 

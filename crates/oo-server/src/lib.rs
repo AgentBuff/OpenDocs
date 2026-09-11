@@ -44,6 +44,9 @@ pub struct AppState {
     pub write_lock: Arc<tokio::sync::Mutex<()>>,
     /// Ephemeral collaboration state. Never write this into SQLite/blob storage.
     pub presence: Arc<tokio::sync::Mutex<presence::PresenceStore>>,
+    /// 是否信任 `X-OO-User` 请求头。默认 `false`，见 [`auth::TRUST_USER_HEADER_ENV`]。
+    /// 生产入口只从环境变量读取；测试显式传入，不依赖进程环境。
+    pub trust_user_header: bool,
 }
 
 const MAX_UPLOAD_BODY_BYTES: usize = 32 * 1024 * 1024;

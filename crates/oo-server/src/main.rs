@@ -4,10 +4,12 @@
 //! - `OO_BIND`：监听地址，默认 `127.0.0.1:8787`
 //! - `OO_DATA_DIR`：数据目录，默认 `./data`
 //! - `OO_DATABASE_URL`：SQLite 连接串，默认 `sqlite://<数据目录>/open-office.db`
+//! - `OO_TRUST_USER_HEADER`：设为 `1` 才信任 `X-OO-User`（默认关闭，仅限本地开发）
 //! - `RUST_LOG`：日志级别，默认 `info`
 
 use std::sync::Arc;
 
+use oo_server::auth::{trust_user_header_from_env, TRUST_USER_HEADER_ENV};
 use oo_server::store::{remove_unreferenced, LocalFsStore};
 use oo_server::{build_router, db, AppState};
 use tracing_subscriber::EnvFilter;
@@ -39,6 +41,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         tracing::info!("未执行未引用 Blob 回收；完成离线历史登记后设置 OO_ENABLE_BLOB_GC=1");
     }
+    let trust_user_header = trust_user_header_from_env();
+    if trust_user_header {
+        tracing::warn!(
+            "{TRUST_USER_HEADER_ENV}=1：X-OO-User 可指定任意 Principal，仅供本地开发，不要用于生产"
+        );
+    }
     let app = build_router(AppState {
         pool,
         store,
@@ -46,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         presence: Arc::new(tokio::sync::Mutex::new(
             oo_server::presence::PresenceStore::default(),
         )),
+        trust_user_header,
     });
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;

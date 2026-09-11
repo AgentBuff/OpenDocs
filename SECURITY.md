@@ -8,8 +8,15 @@ security advisory / 维护者私下渠道提交，并提供影响范围、复现
 
 ## 安全边界
 
-- 当前版本未实现认证和授权；部署必须放在可信网络和反向代理之后，不能把本地服务直接暴露
-  到公网。Principal/ACL 是后续独立里程碑，不要在业务代码中伪造安全判断。
+- 当前版本未实现认证。授权（owner / editor / viewer 的角色矩阵）已实现，但它的信任锚点
+  是请求所声明的身份，所以**部署必须放在可信网络和反向代理之后**，不能把本地服务直接
+  暴露到公网。
+- 身份声明头 `X-OO-User` **默认不被信任**。只有显式设置 `OO_TRUST_USER_HEADER=1` 时才
+  会决定 Principal；未设置时携带该头的请求会被 400 拒绝，而不是静默降级成开发用户——
+  静默降级会让 ACL 演练得出错误结论。该开关仅用于本地演练协作权限，服务启动时会打 warn。
+  接入真实认证（JWT 校验）时只需替换 `crates/oo-server/src/auth.rs` 的 `authenticate`
+  一处，处理器不用改。
+- 不要在业务代码中伪造安全判断。所有取用户身份的路径都必须走 `auth::authenticate`。
 - API 使用 `If-Match` revision 和 `x-transaction-id` 幂等键；服务端必须校验 artifact kind、
   schema、大小限制和事务边界。
 - 导入 DOCX/XLSX/PPTX 时限制 ZIP/XML 解压大小、路径穿越和外部关系；未知能力必须进入结构化

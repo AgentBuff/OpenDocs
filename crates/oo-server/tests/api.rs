@@ -18,7 +18,15 @@ struct TestApp {
 }
 
 impl TestApp {
+    /// 默认显式信任 `X-OO-User`：ACL、presence 与审计测试需要参数化 Principal。
+    /// 生产默认是关闭的，覆盖那条路径的测试见
+    /// `user_header_is_refused_unless_explicitly_trusted`。
     async fn new() -> Self {
+        Self::with_user_header_trust(true).await
+    }
+
+    /// 用指定的 `X-OO-User` 信任开关装配应用，让两种部署配置都能被覆盖。
+    async fn with_user_header_trust(trust_user_header: bool) -> Self {
         let dir = std::env::temp_dir().join(format!("oo-api-{}", uuid::Uuid::new_v4()));
         let pool = db::connect("sqlite::memory:").await.unwrap();
         let store = Arc::new(LocalFsStore::new(&dir).await.unwrap());
@@ -30,6 +38,7 @@ impl TestApp {
                 presence: Arc::new(tokio::sync::Mutex::new(
                     oo_server::presence::PresenceStore::default(),
                 )),
+                trust_user_header,
             }),
             dir,
             pool,
@@ -2202,6 +2211,65 @@ async fn docx_export_reports_semantic_losses() {
     assert_eq!(response.status(), StatusCode::OK);
     let losses = response.headers().get("x-docx-losses").unwrap();
     assert_eq!(losses, "todoState:1");
+}
+
+/// `X-OO-User` 默认不被信任：带了就明确失败，而不是静默降级成 dev-user。
+/// 静默降级会让 ACL 演练得出错误结论，所以这里要求 400 且错误信息可操作。
+#[tokio::test]
+async fn user_header_is_refused_unless_explicitly_trusted() {
+    let app = TestApp::with_user_header_trust(false).await;
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/artifacts")
+        .header("x-oo-user", "someone-else")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = app.json(request).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "bad_request");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("OO_TRUST_USER_HEADER"),
+        "拒绝时必须指明如何显式开启：{body}"
+    );
+
+    // 不带该头时仍以开发用户正常工作，默认配置不是不可用，只是不接受身份声明。
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/artifacts")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = app.json(request).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// 开启开关后 `X-OO-User` 才决定 Principal，ACL 随之生效。
+#[tokio::test]
+async fn trusted_user_header_selects_the_principal() {
+    let app = TestApp::with_user_header_trust(true).await;
+    let (_, meta) = app.upload_fixture("minimal.docx").await;
+    let id = meta["id"].as_str().unwrap();
+    // upload_fixture 不带身份头，owner 因此是 dev-user。
+    assert_eq!(meta["ownerId"], "dev-user", "{meta}");
+
+    let snapshot_as = |user: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/artifacts/{id}/snapshot"))
+            .header("x-oo-user", user)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (status, _) = app.json(snapshot_as("stranger-1")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "陌生人不应读到该文档");
+
+    // 同一个请求换成 owner 就通过，证明头确实被采纳而不是被忽略。
+    let (status, _) = app.json(snapshot_as("dev-user")).await;
+    assert_eq!(status, StatusCode::OK);
 }
 
 /// C4 授权矩阵：owner 全权；editor 可读+可提交事务、不可管理协作者与元数据；
