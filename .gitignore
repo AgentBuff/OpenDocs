@@ -52,11 +52,11 @@
 /.prompt/
 
 # -----------------------------------------------------------------------------
-# Internal design and decision records; product source/docs remain versioned.
+# Internal design, planning and decision records are kept out of the repository.
+# This covers the whole docs/ tree, including the generated API contract
+# artifacts under docs/generated/ (produced by scripts/api-contract-source.mjs).
 # -----------------------------------------------------------------------------
-/docs/adr/
-/docs/architecture/
-/docs/generated/mcp-tools.json
+/docs/
 
 # Frozen third-party research and pre-cutover snapshots are not product source.
 /freeze/
