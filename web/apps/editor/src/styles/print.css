@@ -23,7 +23,21 @@
   .block-table__controls,
   .code-block__toolbar,
   .code-block__gutter,
-  .presentation-* {
+  .presentation-studio__file-input,
+  .presentation-studio__header,
+  .presentation-command-bar,
+  .presentation-studio__navigator,
+  .presentation-studio__context-row,
+  .presentation-studio__inspector,
+  .presentation-studio__presence-layer,
+  .presentation-studio__node-toolbar,
+  .ss__header,
+  .ssr,
+  .ss__formula-bar,
+  .ss__statusbar,
+  .ss__sheetbar,
+  .ss__ctxmenu-overlay,
+  .ss__row-dialog {
     display: none !important;
   }
 
@@ -39,7 +53,13 @@
     width: auto !important;
     min-height: auto !important;
     background: #ffffff !important;
+    break-after: page;
   }
+
+  .block-editor__page:last-of-type { break-after: auto; }
+
+  .block-editor__header,
+  .block-editor__footer { color: #000000 !important; }
 
   .block-row {
     break-inside: avoid-page;

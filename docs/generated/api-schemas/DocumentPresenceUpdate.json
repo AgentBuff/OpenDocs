@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "required": [
+    "revision",
+    "selectedNodeIds"
+  ],
+  "properties": {
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blockId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "selectedNodeIds": {
+      "type": "array",
+      "maxItems": 0
+    },
+    "selection": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false
+}

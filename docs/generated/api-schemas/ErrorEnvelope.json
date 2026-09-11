@@ -3,7 +3,8 @@
   "required": [
     "error",
     "code",
-    "requestId"
+    "requestId",
+    "retryable"
   ],
   "properties": {
     "error": {
@@ -14,6 +15,9 @@
     },
     "requestId": {
       "type": "string"
+    },
+    "retryable": {
+      "type": "boolean"
     },
     "details": {
       "type": "object"

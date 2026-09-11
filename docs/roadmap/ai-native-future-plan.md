@@ -32,6 +32,9 @@ AI 能力不应作为编辑器功能的捷径。若在基础模型、事务、�
 
 ## 4. 未来阶段
 
+> 任务级展开见 [`../architecture/agent-integration-task-plan.md`](../architecture/agent-integration-task-plan.md)：
+> A2 → T1（MCP server）、A1 → T2（检索）、A0 → T3（知识对象）、A3 → T4（AgentRun）。
+
 ### A0 — 可追溯的知识对象（不接模型）
 
 在不调用 LLM 的前提下，定义可复用的 `Claim`、`Evidence`、`Decision`、`Task`、`Citation` 等工作对象及关系。它们要么是独立 Artifact，要么是明确的结构化 block extension；不能以散落 metadata 或富文本约定实现。

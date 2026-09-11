@@ -7,7 +7,7 @@ I00 introduces test-only helpers; it does not add a Document semantic command or
 ```text
 POST /api/artifacts
 GET  /api/artifacts/{id}/snapshot
-PUT  /api/artifacts/{id}/snapshot
+GET  /api/artifacts/{id}/snapshot  # read-only; online writes use semantic transactions
 POST /api/artifacts/{id}/transactions
 GET  /api/artifacts/{id}/events
 ```

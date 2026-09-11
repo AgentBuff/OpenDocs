@@ -52,7 +52,7 @@ const KIND_LABEL: Record<ArtifactKind, string> = Object.fromEntries(
 ) as Record<ArtifactKind, string>;
 
 interface Props {
-  onOpen: (id: string, title: string, kind: ArtifactKind) => void;
+  onOpen: (id: string, title: string, kind: ArtifactKind, warnings?: string[]) => void;
 }
 
 export function Home({ onOpen }: Props) {
@@ -70,6 +70,7 @@ export function Home({ onOpen }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [createTab, setCreateTab] = useState<"office" | "ai">("office");
+  const [importMode, setImportMode] = useState<"audit" | "strict">("audit");
   const fileInput = useRef<HTMLInputElement>(null);
 
   const refresh = useCallback(async () => {
@@ -112,7 +113,7 @@ export function Home({ onOpen }: Props) {
     setCreateMenuOpen(false);
     void run(async () => {
       const meta = await api.create(kind);
-      if (kind === "document" || kind === "presentation") onOpen(meta.id, meta.title, kind);
+      if (kind === "document" || kind === "presentation" || kind === "spreadsheet" || kind === "mindmap") onOpen(meta.id, meta.title, kind);
       else setError(`${KIND_LABEL[kind]}已创建，专用编辑器正在接入中。`);
     });
   }, [onOpen, run]);
@@ -120,15 +121,18 @@ export function Home({ onOpen }: Props) {
   const handleUpload = useCallback(
     (file: File) => {
       void run(async () => {
-        const meta = await api.upload(file);
-        if (meta.kind === "document" || meta.kind === "presentation") onOpen(meta.id, meta.title, meta.kind);
-        else setError(`${KIND_LABEL[meta.kind]}已导入，专用编辑器正在接入中。`);
+        const { artifact: meta, warnings } = await api.upload(file, importMode);
+        if (meta.kind === "document" || meta.kind === "presentation" || meta.kind === "spreadsheet" || meta.kind === "mindmap") {
+          onOpen(meta.id, meta.title, meta.kind, meta.kind === "mindmap" ? warnings : undefined);
+        } else {
+          setError(`${KIND_LABEL[meta.kind]}已导入，专用编辑器正在接入中。`);
+        }
       }).finally(() => {
         // 清空输入框，否则重复选择同一个文件不会触发 change。
         if (fileInput.current) fileInput.current.value = "";
       });
     },
-    [onOpen, run],
+    [importMode, onOpen, run],
   );
 
   const toggleStar = useCallback(
@@ -307,7 +311,7 @@ export function Home({ onOpen }: Props) {
                       <span className="create-menu__icon create-menu__icon--upload"><UploadIcon /></span>
                       <span className="create-menu__copy">
                         <strong>上传文件</strong>
-                        <small>DOCX、XLSX、PPTX</small>
+                        <small>Office、Mindmap、Markdown</small>
                       </span>
                     </button>
                   </div>
@@ -328,7 +332,7 @@ export function Home({ onOpen }: Props) {
           <input
             ref={fileInput}
             type="file"
-            accept=".docx,.xlsx,.pptx"
+            accept=".docx,.xlsx,.pptx,.mindmap.json,.json,.md,.opmm,.mm,.xmind"
             hidden
             disabled={busy}
             onChange={(e) => {
@@ -336,6 +340,13 @@ export function Home({ onOpen }: Props) {
               if (file) handleUpload(file);
             }}
           />
+        </label>
+        <label className="sidebar__import-mode">
+          导入策略
+          <select aria-label="导入策略" value={importMode} disabled={busy} onChange={(event) => setImportMode(event.target.value as "audit" | "strict")}>
+            <option value="audit">兼容导入并报告降级</option>
+            <option value="strict">有损内容直接拒绝</option>
+          </select>
         </label>
 
         <nav className="sidebar__nav">
@@ -411,7 +422,7 @@ export function Home({ onOpen }: Props) {
           {visible.length === 0 ? (
             <p className="empty">
               {documents.length === 0
-                ? "还没有文件。点「新建」选择类型，或上传 .docx / .xlsx / .pptx。"
+                ? "还没有文件。点「新建」选择类型，或上传 Office、Mindmap JSON / Markdown 文件。"
                 : "没有匹配的文件。"}
             </p>
           ) : (
@@ -421,7 +432,7 @@ export function Home({ onOpen }: Props) {
                   key={doc.id}
                   className={`row row--${doc.kind}`}
                   onClick={() => {
-                    if (doc.kind === "document" || doc.kind === "presentation") onOpen(doc.id, doc.title, doc.kind);
+                    if (doc.kind === "document" || doc.kind === "presentation" || doc.kind === "spreadsheet" || doc.kind === "mindmap") onOpen(doc.id, doc.title, doc.kind);
                     else setError(`${KIND_LABEL[doc.kind]}的专用编辑器正在接入中。`);
                   }}
                 >

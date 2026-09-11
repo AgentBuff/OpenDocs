@@ -9,20 +9,20 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use axum::Json;
 use oo_protocol::{
-    ArtifactCommandEnvelope, CommandRecord, CommitResult, DomainEventRecord, EntityRef,
-    Invalidation, MutationRecord, TransactionOrigin, CURRENT_PROTOCOL_VERSION,
+    CommandRecord, CommitResult, DomainEventRecord, EntityRef, Invalidation, MutationRecord,
+    TransactionOrigin, CURRENT_PROTOCOL_VERSION,
 };
-use oo_schema::ArtifactPayload;
+use oo_schema::{ArtifactPayload, AssetReferenceSource};
 use oo_whiteboard::{
     WhiteboardCommand, WhiteboardCommandBatch, WhiteboardEngine, WhiteboardEngineError,
 };
 
-use crate::artifact_routes::{artifact_for, authorize, load_artifact, Role};
+use crate::artifact_routes::artifact_for;
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind};
 use crate::document_support::TransactionCommit;
-use crate::error::{AppError, ConflictDetails};
-use crate::request_context;
+use crate::error::AppError;
+use crate::transaction_kernel;
 use crate::AppState;
 
 pub async fn submit_transaction(
@@ -32,59 +32,27 @@ pub async fn submit_transaction(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<TransactionCommit>, AppError> {
-    let transaction: ArtifactCommandEnvelope = serde_json::from_str(&body)
-        .map_err(|error| AppError::BadRequest(format!("事务 JSON 无效：{error}")))?;
-    transaction
-        .validate()
-        .map_err(|error| AppError::BadRequest(format!("事务协议无效：{error}")))?;
-    if transaction.artifact_id != id {
-        return Err(AppError::BadRequest(
-            "事务 artifactId 必须与请求路径一致".into(),
-        ));
-    }
-    let request = request_context::transaction(&headers, &transaction)?;
-    let transaction_id = request.transaction_id;
-    let expected_version = i64::try_from(request.expected_revision)
-        .map_err(|_| AppError::BadRequest("事务 baseRevision 超出服务端范围".into()))?;
+    let prepared = transaction_kernel::prepare(&headers, &id, &body)?;
 
     let _write_guard = state.write_lock.lock().await;
-    // 事务是写路径：editor 及以上（C4 授权分层）。
-    authorize(&state, &user, &id, Role::Editor).await?;
-    let (meta, snapshot) = load_artifact(&state, &user, &id).await?;
-    if meta.kind != ArtifactKind::Whiteboard {
-        return Err(AppError::UnsupportedArtifact(meta.kind));
+    let (meta, snapshot) =
+        transaction_kernel::load_target(&state, &user, &id, ArtifactKind::Whiteboard).await?;
+    if let Some(replay) = transaction_kernel::replay_if_committed(
+        &state,
+        &id,
+        &meta,
+        &prepared.transaction_id,
+        invalidation_from_keys,
+    )
+    .await?
+    {
+        return Ok(Json(replay));
     }
-    if let Some(record) = db::get_artifact_transaction(&state.pool, &id, &transaction_id).await? {
-        let revision = u64::try_from(record.version)
-            .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
-        let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
-        return Ok(Json(TransactionCommit {
-            result: CommitResult {
-                protocol_version: CURRENT_PROTOCOL_VERSION,
-                artifact_id: id,
-                transaction_id: record.transaction_id,
-                revision,
-                invalidation: invalidation_from_keys(
-                    &record.changed_entities,
-                    record.structure_changed,
-                ),
-                mutations: Vec::new(),
-                events: Vec::new(),
-            },
-            document: meta,
-            can_undo,
-            can_redo,
-        }));
-    }
-    if meta.version != expected_version {
-        return Err(AppError::VersionConflictDetails(ConflictDetails {
-            artifact_id: id,
-            requested_revision: request.expected_revision,
-            current_revision: u64::try_from(meta.version)
-                .map_err(|_| AppError::Internal("Artifact revision 超出协议范围".into()))?,
-            changed_entities: Vec::new(),
-        }));
-    }
+    transaction_kernel::require_current_revision(&state, &meta, &id, prepared.expected_revision)
+        .await?;
+    let transaction = prepared.envelope;
+    let transaction_id = prepared.transaction_id;
+    let expected_version = prepared.expected_version;
 
     let ArtifactPayload::Whiteboard(model) = snapshot.payload else {
         return Err(AppError::Internal(
@@ -120,6 +88,7 @@ pub async fn submit_transaction(
         .map_err(|_| AppError::Internal("Whiteboard revision 超出服务端范围".into()))?;
     let snapshot_key = crate::document_support::artifact_snapshot_key(&id, version);
     state.store.put(&snapshot_key, &bytes).await?;
+    let referenced_assets = engine.model().asset_references();
 
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
         .await?
@@ -140,16 +109,18 @@ pub async fn submit_transaction(
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
-    crate::events::stamp_actor(&mut events, &user.id);
+    transaction_kernel::stamp_events(&mut events, &user.id);
 
-    let committed = match db::commit_artifact_transaction_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_candidate(
+        &state,
+        &snapshot_key,
         db::ArtifactTransactionCommit {
             id: &id,
             expected_version,
             snapshot_key: &snapshot_key,
             transaction_id: &transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &changed_entities,
             structure_changed: change_set.invalidation.structure_changed,
             origin: transaction_origin_name(transaction.origin),
@@ -157,20 +128,9 @@ pub async fn submit_transaction(
             before_snapshot_key: &blobs.snapshot_key,
             events: &events,
         },
-        &[],
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(Some(meta)) => meta,
-        Ok(None) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-        Err(error) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
+    .await?;
     // Whiteboard has no server-authoritative history yet; affordances stay
     // false instead of pretending an undo path exists.
     Ok(Json(TransactionCommit {
@@ -195,12 +155,6 @@ pub async fn submit_transaction(
         can_undo: false,
         can_redo: false,
     }))
-}
-
-async fn discard_candidate_snapshot(state: &AppState, snapshot_key: &str) {
-    if let Err(error) = state.store.delete(snapshot_key).await {
-        tracing::warn!(snapshot_key, error = %error, "无法清理未提交的 Whiteboard snapshot");
-    }
 }
 
 fn whiteboard_command_from_record(record: CommandRecord) -> Result<WhiteboardCommand, AppError> {

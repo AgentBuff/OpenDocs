@@ -59,4 +59,9 @@
     min-height: calc(100vh - 150px);
     padding: 48px 28px 80px;
   }
+
+  .document-find { flex-wrap: wrap; }
+  .document-find > input:not([type="checkbox"]) { flex: 1 1 140px; }
+  .document-toc { position: absolute; top: 0; right: 0; bottom: 0; z-index: 10; width: min(280px, 86vw); box-shadow: var(--oo-shadow-popover); }
+  .editor__workspace { position: relative; }
 }

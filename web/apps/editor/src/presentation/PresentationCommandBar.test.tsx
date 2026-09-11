@@ -14,6 +14,7 @@ const handlers = {
   onInsertChart: () => undefined,
   onInsertImage: () => undefined,
   onPlay: () => undefined,
+  onPresenter: () => undefined,
   onOpenDeckInspector: () => undefined,
   onMoveSlideBackward: () => undefined,
   onMoveSlideForward: () => undefined,
@@ -40,6 +41,7 @@ describe("PresentationCommandBar", () => {
           "presentation.moveSlide",
           "presentation.deleteSlide",
         ])}
+        exportHref="/api/artifacts/deck/export/pptx"
         {...handlers}
       />,
     );
@@ -50,6 +52,9 @@ describe("PresentationCommandBar", () => {
     expect(html).toContain('aria-label="复制当前幻灯片"');
     expect(html).toContain("设计");
     expect(html).toContain('aria-label="删除当前幻灯片"');
+    expect(html).toContain('aria-label="下载 PPTX"');
+    expect(html).toContain('href="/api/artifacts/deck/export/pptx"');
+    expect(html).toContain('download=""');
     expect(html).not.toContain("对齐");
     expect(html).not.toContain("分布");
     expect(html).not.toContain("锁定");

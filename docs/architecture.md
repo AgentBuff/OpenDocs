@@ -33,14 +33,16 @@ Platform Kernel
 ├── oo-presentation Presentation Scene Graph engine
 ├── oo-spreadsheet  Spreadsheet sparse Grid engine
 ├── oo-mindmap      Mindmap Graph engine
+├── oo-mindmap-wasm canonical Mindmap engine 的浏览器薄绑定
 ├── oo-whiteboard   Whiteboard Scene Graph engine
 └── oo-server       axum + SQLite + object store
 
 Browser
 ├── @open-office/schema  Artifact 消费类型与网络边界校验
 ├── @open-office/document-engine  `oo-document` 的 typed WASM adapter（只返回 ChangeSet）
+├── @open-office/mindmap-engine   `oo-mindmap` 的 typed WASM adapter（只返回 projection/ChangeSet）
 ├── @open-office/ui       主题 Token、Toolbar/Menu/Popover 等无业务 UI 原语
-└── apps/editor          DOM-first Block Tree 编辑器
+└── apps/editor          Document DOM 编辑器与各 Artifact 专业编辑器
 ```
 
 ### UI 基础设施边界
@@ -72,8 +74,9 @@ DOM input
 ```
 
 每次事务带 `baseRevision` 和 `transactionId`。文档快照指针与事务幂等日志在同一个
-SQLite 事务中提交，重试不会重复插入 block。完整快照读写使用
-`/api/artifacts/{id}/snapshot`，增量编辑使用 `/api/artifacts/{id}/transactions`。
+SQLite 事务中提交，重试不会重复插入 block。`/api/artifacts/{id}/snapshot` 是只读投影；
+所有在线编辑只使用 `/api/artifacts/{id}/transactions`。文件导入和历史恢复由服务端受控入口
+原子生成新的不可变 snapshot，不向浏览器暴露完整模型覆盖能力。
 
 服务端元数据、revision 指针、快照登记、事务幂等、历史和 durable event outbox 统一存储在
 `artifacts`、`artifact_snapshots`、`artifact_transactions`、`artifact_history` 和
@@ -101,6 +104,24 @@ Renderer 是可替换的视图层，不得成为领域模型或持久化格式�
 - Whiteboard：Canvas/WebGL，使用视口裁剪和空间索引。
 
 Canvas 的职责是高效绘制图形和分页预览，不承担文档状态、选区、输入法或事务逻辑。
+
+Spreadsheet 浏览器会话把 workbook 结构和 cell viewport 明确分开：无 viewport 参数的
+`/projection/spreadsheet` 只返回 sheet/metadata 结构，所有 sheet 的 `cells` 必须为空；Grid 按
+`sheetId + row/column window` 请求有界单元格投影。提交后客户端只用新 revision 失效并重取结构与
+当前窗口，不读取完整 snapshot，也不在 renderer 保存第二份 workbook。离屏合并锚点通过额外的有界
+投影补齐。十万稀疏单元格的 engine 基准只构造窗口结果，浏览器网络回归同时禁止启动和提交后的
+`/snapshot` 请求。
+
+Spreadsheet 剪贴板与填充同样是 engine-owned range transaction。浏览器复制时按最多 1000×200 的
+有界窗口分块读取 canonical cells（含 adapter attrs），内部投影携带源坐标；`pasteRange` 一次提交稀疏
+矩阵、模式和可选源坐标，`fillRange` 在引擎内从 canonical source 重复填充。相对 A1 引用按目标位移，
+`$` 锁定轴保持不动，显式跨 sheet 前缀保留；越界引用变成 `#REF!`。CSV/TSV 系统剪贴板没有可信
+源坐标，公式按原文写入。无论 1 格还是 10,000 格，提交只生成一条 `RangeChanged` mutation 和一个
+history entry；409 只用最新 revision 重试一次同一语义命令。
+
+Spreadsheet 公式支持面、日期系统、UTC 时钟、typed error 传播以及筛选/条件格式/数据验证的求值边界
+由 [`spreadsheet-formula-contract.md`](architecture/spreadsheet-formula-contract.md) 固化。公式结果始终是
+只读 projection；数据规则只能通过 engine-owned semantic command 修改。
 
 ## 可扩展边界
 
@@ -153,13 +174,64 @@ element 及其后代。父矩阵只作为计算前置条件，不会扩大 dirty
 `SnapshotEnvelope` 或 `DocumentModel`；Session 仍是唯一 command 入口，React 通过按 Block 的
 `useSyncExternalStore` 订阅局部更新。
 
+Document 大文档渲染只在根 Block 边界做视口虚拟化：页面与稳定 slot 保持完整顺序，slot 通过共享的
+`IntersectionObserver` 挂载视口前后预取区内的 `BlockNode`，并用测量高度维持离屏布局。嵌套子树跟随根
+Block 一起挂载；包含当前 active block 的根子树无条件常驻，避免输入法、原生 selection 或对象键盘导航
+因卸载丢失焦点。打印事件会同步切换到全量 Block projection，打印结束再恢复视口挂载。该机制只管理
+renderer 生命周期，不缓存或修改领域数据。
+
+无障碍输入仍由 DOM adapter 转译为 semantic command：正文和表格单元格在 composition 期间不提交，
+compositionend 后一次读取 DOM RichText；表格 Tab/Shift+Tab 依稳定 cell 元素顺序恢复焦点，Shift+方向键
+继续扩展 stable-id range。图片替代文本是 `ImageBlockPatch` 的强类型持久字段，具有 2048 Unicode scalar
+上限；屏幕阅读器读取 canonical `alt`，而不是题注或临时 DOM 属性。
+
+### Mindmap Graph（完整编辑链路）
+
+Mindmap 的持久化真相是 `oo-schema::MindmapModel`，包含 parent graph、显式关联边、布局与连线设置、
+节点样式以及备注、链接、标记、图片资产引用。结构和属性只能通过
+`MindmapEngine::execute(MindmapCommandBatch)` 修改；每个命令产生可逆的 typed mutation、局部
+invalidation 和新 revision。服务端把 inverse journal 与 Artifact revision 一起持久化，因此撤销/重做
+跨进程重启仍然成立，且不会把 React、SVG 或浏览器内存当作历史真相。
+
+`MindmapIndex` 为节点、children、深度和结构查询建立 O(n) 索引。八种布局均由 canonical Rust engine
+生成 world-space projection，节点尺寸由文本和富内容计算，边路由只包含字符串 id 与几何点；屏幕 pan、
+zoom、主题、选区、拖拽预览和框选均为本地 view state，不进入 snapshot。大图只渲染视口附近节点，
+projection 本身保持完整且确定。
+
+浏览器通过 `oo-mindmap-wasm` 和 `@open-office/mindmap-engine` 使用同一份 Rust projection；WASM 层只做
+版本化 snapshot/command JSON 的解析与序列化，不复制 graph、布局或历史算法。编辑器将键盘、拖拽、
+剪贴板、右键菜单、属性面板等交互翻译为 semantic command，经服务端 revision/transactionId 校验后再
+读取不可变 snapshot。保存期间写控件被冻结，避免并发 UI 意图基于同一旧 revision 提交。
+
+图片先写入通用 Artifact asset store，节点只保存已验证的 `assetId`；五类 payload 共用只读
+asset-reference projection，提交 snapshot 时在同一数据库事务内校验存在性、可用的 checksum/MIME
+并维护精确引用计数。在线 snapshot JSON 仍不内嵌二进制；只有离线交换包携带封闭资产集合。
+版本化 `.mindmap.json` 交换包携带完整资产 manifest、checksum、MIME 和受限 base64 数据；导入时重建
+Artifact-local asset id，悬空、伪造或多余资产均拒绝。Markdown、FreeMind 与 XMind 通过独立 importer
+进入同一当前 schema，SVG/PDF 只消费 canonical projection。详细交换合同见
+[`mindmap-exchange-contract.md`](architecture/mindmap-exchange-contract.md)。协作者选区和光标复用通用
+presence 通道，属于有过期时间的临时状态；远端持久化变化通过带 revision cursor 的 SSE 推送，并按
+invalidation 选择 canonical WASM 增量刷新或可取消 Worker 全量刷新。10k 空间索引、裁剪和性能预算见
+[`mindmap-large-map-collaboration.md`](architecture/mindmap-large-map-collaboration.md)。
+
+Document 评论、显式 mention 与 suggestion 是独立协作元数据，不进入 RichText attrs 或 Artifact snapshot。
+它们通过稳定 block/table-cell id、Unicode scalar range 和创建 revision 锚定；读取时针对当前不可变
+snapshot 重解析，目标移动仍有效，版本变化标记 stale，实体删除或范围越界返回 detached。接受 suggestion
+必须重新校验原文本并通过 Document semantic transaction；Document cursor/selection 仅驻留带 TTL 的
+presence 内存投影，revision 推进或目标失效后立即清除。
+
+参考项目对照、架构取舍和后续扩展边界见
+[`docs/reviews/mindmap-reference-analysis.md`](reviews/mindmap-reference-analysis.md)。
+
 ### XLSX adapter 边界
 
-`oo-xlsx` 独立处理 XLSX 的 ZIP/XML package，不依赖也不进入 `oo-spreadsheet` engine。首批通道只
-覆盖 workbook relationships、worksheet、sharedStrings、inline string、number、boolean、formula
-和稀疏 A1 cell；导出会生成最小有效 package。未消费的 ZIP parts 通过
-`XlsxImportResult.ignored_parts` 显式报告，SpreadsheetModel 中暂不支持的 attrs/复杂值直接报错，
-禁止 adapter 静默伪造或丢失数据。公式求值、样式、合并单元格、图表和冻结窗格继续由独立能力演进。
+`oo-xlsx` 独立处理 XLSX 的 ZIP/XML package，不依赖也不进入 `oo-spreadsheet` engine。当前通道覆盖
+workbook 设置与命名区域、稀疏单元格、普通/共享公式、typed style、合并与冻结、筛选与排序、数据校验
+和条件格式；条件格式的 differential style 通过 `dxfs/dxfId` 往返。严格读取拒绝任何已识别但不能
+建模的内容；审计读取返回结构化 loss report。导出前同样先检查 canonical model，禁止静默丢失 attrs、
+媒体或其他未映射语义。验收使用 canonical `semantic_diff`，不以 ZIP 字节相同或“Office 能打开”为准。
+逐项能力和损失分类见
+[`spreadsheet-xlsx-fidelity.md`](architecture/spreadsheet-xlsx-fidelity.md)。
 
 ### PPTX adapter 边界
 

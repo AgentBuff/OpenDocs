@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use chrono::{DateTime, Utc};
 use oo_protocol::DomainEventRecord;
 pub use oo_schema::ArtifactKind;
+use oo_schema::AssetReference;
 use serde::Serialize;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
@@ -47,6 +48,7 @@ pub struct ArtifactTransactionRecord {
     pub artifact_id: String,
     pub transaction_id: String,
     pub author_id: String,
+    pub client_actor_id: String,
     pub base_version: i64,
     pub version: i64,
     pub changed_entities: Vec<String>,
@@ -176,6 +178,7 @@ impl ArtifactTransactionRecord {
             artifact_id: row.try_get("artifact_id")?,
             transaction_id: row.try_get("transaction_id")?,
             author_id: row.try_get("author_id")?,
+            client_actor_id: row.try_get("client_actor_id")?,
             base_version: row.try_get("base_version")?,
             version: row.try_get("version")?,
             changed_entities,
@@ -537,14 +540,38 @@ pub async fn get_artifact_asset(
     row.as_ref().map(asset_from_row).transpose()
 }
 
+/// Returns a bounded, oldest-first batch of unreferenced assets for offline
+/// garbage collection. The grace cutoff prevents a freshly uploaded asset
+/// from being collected before its following semantic transaction arrives.
+pub async fn list_unreferenced_artifact_assets_before(
+    pool: &SqlitePool,
+    cutoff: DateTime<Utc>,
+    limit: i64,
+) -> Result<Vec<ArtifactAsset>, sqlx::Error> {
+    if !(1..=10_000).contains(&limit) {
+        return Err(sqlx::Error::Protocol(
+            "asset GC limit 必须在 1..=10000".into(),
+        ));
+    }
+    let rows = sqlx::query(
+        "SELECT artifact_id, asset_id, object_key, content_type, file_name, checksum, size, ref_count, created_at, updated_at \
+         FROM artifact_assets WHERE ref_count = 0 AND updated_at < ? \
+         ORDER BY updated_at, artifact_id, asset_id LIMIT ?",
+    )
+    .bind(cutoff)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    rows.iter().map(asset_from_row).collect()
+}
+
 pub async fn set_artifact_asset_references(
     pool: &SqlitePool,
     artifact_id: &str,
-    referenced_asset_ids: &[String],
+    references: &[AssetReference],
 ) -> Result<(), sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    set_asset_references_in_transaction(&mut transaction, artifact_id, referenced_asset_ids)
-        .await?;
+    set_asset_references_in_transaction(&mut transaction, artifact_id, references).await?;
     transaction.commit().await
 }
 
@@ -556,7 +583,7 @@ pub async fn set_artifact_asset_references(
 async fn set_asset_references_in_transaction(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     artifact_id: &str,
-    referenced_asset_ids: &[String],
+    references: &[AssetReference],
 ) -> Result<(), sqlx::Error> {
     let now = Utc::now();
     sqlx::query("UPDATE artifact_assets SET ref_count = 0, updated_at = ? WHERE artifact_id = ?")
@@ -564,19 +591,56 @@ async fn set_asset_references_in_transaction(
         .bind(artifact_id)
         .execute(&mut **transaction)
         .await?;
-    for asset_id in referenced_asset_ids {
+    for reference in references {
+        let stored = sqlx::query(
+            "SELECT checksum, content_type FROM artifact_assets \
+             WHERE artifact_id = ? AND asset_id = ?",
+        )
+        .bind(artifact_id)
+        .bind(&reference.asset_id)
+        .fetch_optional(&mut **transaction)
+        .await?
+        .ok_or_else(|| {
+            sqlx::Error::Protocol(format!(
+                "artifact {artifact_id} 引用了不存在的 asset {}",
+                reference.asset_id
+            ))
+        })?;
+        let checksum: String = stored.try_get("checksum")?;
+        let content_type: String = stored.try_get("content_type")?;
+        if reference
+            .expected_checksum
+            .as_ref()
+            .is_some_and(|expected| expected != &checksum)
+        {
+            return Err(sqlx::Error::Protocol(format!(
+                "artifact {artifact_id} asset {} checksum 不匹配",
+                reference.asset_id
+            )));
+        }
+        if reference
+            .expected_content_type
+            .as_ref()
+            .is_some_and(|expected| expected != &content_type)
+        {
+            return Err(sqlx::Error::Protocol(format!(
+                "artifact {artifact_id} asset {} content type 不匹配",
+                reference.asset_id
+            )));
+        }
         let result = sqlx::query(
             "UPDATE artifact_assets SET ref_count = ref_count + 1, updated_at = ? \
              WHERE artifact_id = ? AND asset_id = ?",
         )
         .bind(now)
         .bind(artifact_id)
-        .bind(asset_id)
+        .bind(&reference.asset_id)
         .execute(&mut **transaction)
         .await?;
         if result.rows_affected() != 1 {
             return Err(sqlx::Error::Protocol(format!(
-                "artifact {artifact_id} 引用了不存在的 asset {asset_id}"
+                "artifact {artifact_id} 引用了不存在的 asset {}",
+                reference.asset_id
             )));
         }
     }
@@ -588,14 +652,36 @@ pub async fn delete_artifact_asset(
     artifact_id: &str,
     asset_id: &str,
 ) -> Result<bool, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let object_key = sqlx::query_scalar::<_, String>(
+        "SELECT object_key FROM artifact_assets \
+         WHERE artifact_id = ? AND asset_id = ? AND ref_count = 0",
+    )
+    .bind(artifact_id)
+    .bind(asset_id)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some(object_key) = object_key else {
+        transaction.rollback().await?;
+        return Ok(false);
+    };
     let result = sqlx::query(
         "DELETE FROM artifact_assets WHERE artifact_id = ? AND asset_id = ? AND ref_count = 0",
     )
     .bind(artifact_id)
     .bind(asset_id)
-    .execute(pool)
+    .execute(&mut *transaction)
     .await?;
-    Ok(result.rows_affected() > 0)
+    if result.rows_affected() != 1 {
+        transaction.rollback().await?;
+        return Ok(false);
+    }
+    sqlx::query("DELETE FROM artifact_blob_integrity WHERE object_key = ?")
+        .bind(object_key)
+        .execute(&mut *transaction)
+        .await?;
+    transaction.commit().await?;
+    Ok(true)
 }
 
 /// 返回文档的全部 snapshot 对象键，删除文档时一并回收历史版本。
@@ -705,7 +791,7 @@ pub async fn get_artifact_transaction(
     transaction_id: &str,
 ) -> Result<Option<ArtifactTransactionRecord>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT artifact_id, transaction_id, author_id, base_version, version, changed_entities_json, \
+        "SELECT artifact_id, transaction_id, author_id, client_actor_id, base_version, version, changed_entities_json, \
                 structure_changed, origin, commands_json, created_at \
          FROM artifact_transactions WHERE artifact_id = ? AND transaction_id = ?",
     )
@@ -716,6 +802,67 @@ pub async fn get_artifact_transaction(
     row.as_ref()
         .map(ArtifactTransactionRecord::from_row)
         .transpose()
+}
+
+/// Bounded conflict hint used by SDKs to decide whether a local selection or
+/// cache can be preserved after refreshing to the current revision.
+pub async fn changed_entities_since(
+    pool: &SqlitePool,
+    artifact_id: &str,
+    revision: u64,
+) -> Result<Vec<String>, sqlx::Error> {
+    let revision = i64::try_from(revision)
+        .map_err(|_| sqlx::Error::Protocol("revision 超出数据库范围".into()))?;
+    let rows = sqlx::query(
+        "SELECT changed_entities_json FROM artifact_transactions \
+         WHERE artifact_id = ? AND version > ? ORDER BY version LIMIT 100",
+    )
+    .bind(artifact_id)
+    .bind(revision)
+    .fetch_all(pool)
+    .await?;
+    let mut changed = HashSet::new();
+    for row in rows {
+        let encoded: String = row.try_get("changed_entities_json")?;
+        let entities: Vec<String> = serde_json::from_str(&encoded)
+            .map_err(|error| sqlx::Error::Protocol(format!("无效的事务摘要 JSON：{error}")))?;
+        changed.extend(entities);
+    }
+    let mut changed = changed.into_iter().collect::<Vec<_>>();
+    changed.sort();
+    Ok(changed)
+}
+
+/// Bounded durable invalidation summary for realtime projection consumers.
+/// Entity keys retain the engine namespace separator and are decoded only at
+/// the client/engine adapter boundary.
+pub async fn artifact_change_summary_since(
+    pool: &SqlitePool,
+    artifact_id: &str,
+    revision: u64,
+) -> Result<(Vec<String>, bool), sqlx::Error> {
+    let revision = i64::try_from(revision)
+        .map_err(|_| sqlx::Error::Protocol("revision 超出数据库范围".into()))?;
+    let rows = sqlx::query(
+        "SELECT changed_entities_json, structure_changed FROM artifact_transactions \
+         WHERE artifact_id = ? AND version > ? ORDER BY version LIMIT 100",
+    )
+    .bind(artifact_id)
+    .bind(revision)
+    .fetch_all(pool)
+    .await?;
+    let mut changed = HashSet::new();
+    let mut structure_changed = false;
+    for row in rows {
+        let encoded: String = row.try_get("changed_entities_json")?;
+        let entities: Vec<String> = serde_json::from_str(&encoded)
+            .map_err(|error| sqlx::Error::Protocol(format!("无效的事务摘要 JSON：{error}")))?;
+        changed.extend(entities);
+        structure_changed |= row.try_get::<bool, _>("structure_changed")?;
+    }
+    let mut changed = changed.into_iter().collect::<Vec<_>>();
+    changed.sort();
+    Ok((changed, structure_changed))
 }
 
 /// Returns the next logical history entry without exposing object-store keys to
@@ -970,6 +1117,8 @@ pub struct ArtifactTransactionCommit<'a> {
     pub snapshot_key: &'a str,
     pub transaction_id: &'a str,
     pub author_id: &'a str,
+    /// Untrusted client/session identity retained only for audit correlation.
+    pub client_actor_id: &'a str,
     pub changed_entities: &'a [String],
     pub structure_changed: bool,
     pub origin: &'a str,
@@ -991,15 +1140,15 @@ pub async fn commit_artifact_transaction(
 pub async fn commit_artifact_transaction_with_assets(
     pool: &SqlitePool,
     commit: ArtifactTransactionCommit<'_>,
-    referenced_asset_ids: &[String],
+    references: &[AssetReference],
 ) -> Result<Option<ArtifactMeta>, sqlx::Error> {
-    commit_artifact_transaction_internal(pool, commit, Some(referenced_asset_ids)).await
+    commit_artifact_transaction_internal(pool, commit, Some(references)).await
 }
 
 async fn commit_artifact_transaction_internal(
     pool: &SqlitePool,
     commit: ArtifactTransactionCommit<'_>,
-    referenced_asset_ids: Option<&[String]>,
+    references: Option<&[AssetReference]>,
 ) -> Result<Option<ArtifactMeta>, sqlx::Error> {
     let changed_entities_json = serde_json::to_string(commit.changed_entities)
         .map_err(|error| sqlx::Error::Protocol(format!("事务摘要序列化失败：{error}")))?;
@@ -1036,12 +1185,13 @@ async fn commit_artifact_transaction_internal(
     .await?;
     sqlx::query(
         "INSERT INTO artifact_transactions \
-         (artifact_id, transaction_id, author_id, base_version, version, changed_entities_json, structure_changed, origin, commands_json, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (artifact_id, transaction_id, author_id, client_actor_id, base_version, version, changed_entities_json, structure_changed, origin, commands_json, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(commit.id)
     .bind(commit.transaction_id)
     .bind(commit.author_id)
+    .bind(commit.client_actor_id)
     .bind(commit.expected_version)
     .bind(next_version)
     .bind(changed_entities_json.as_str())
@@ -1071,8 +1221,8 @@ async fn commit_artifact_transaction_internal(
     .bind(now)
     .execute(&mut *transaction)
     .await?;
-    if let Some(asset_ids) = referenced_asset_ids {
-        set_asset_references_in_transaction(&mut transaction, commit.id, asset_ids).await?;
+    if let Some(references) = references {
+        set_asset_references_in_transaction(&mut transaction, commit.id, references).await?;
     }
     insert_domain_events(
         &mut transaction,
@@ -1096,6 +1246,7 @@ pub struct ArtifactHistoryCommit<'a> {
     pub snapshot_key: &'a str,
     pub transaction_id: &'a str,
     pub author_id: &'a str,
+    pub client_actor_id: &'a str,
     pub changed_entities: &'a [String],
     pub structure_changed: bool,
     pub origin: &'a str,
@@ -1118,15 +1269,15 @@ pub async fn commit_artifact_history(
 pub async fn commit_artifact_history_with_assets(
     pool: &SqlitePool,
     commit: ArtifactHistoryCommit<'_>,
-    referenced_asset_ids: &[String],
+    references: &[AssetReference],
 ) -> Result<Option<ArtifactMeta>, sqlx::Error> {
-    commit_artifact_history_internal(pool, commit, Some(referenced_asset_ids)).await
+    commit_artifact_history_internal(pool, commit, Some(references)).await
 }
 
 async fn commit_artifact_history_internal(
     pool: &SqlitePool,
     commit: ArtifactHistoryCommit<'_>,
-    referenced_asset_ids: Option<&[String]>,
+    references: Option<&[AssetReference]>,
 ) -> Result<Option<ArtifactMeta>, sqlx::Error> {
     let changed_entities_json = serde_json::to_string(commit.changed_entities)
         .map_err(|error| sqlx::Error::Protocol(format!("事务摘要序列化失败：{error}")))?;
@@ -1163,12 +1314,13 @@ async fn commit_artifact_history_internal(
     .await?;
     sqlx::query(
         "INSERT INTO artifact_transactions \
-         (artifact_id, transaction_id, author_id, base_version, version, changed_entities_json, structure_changed, origin, commands_json, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         (artifact_id, transaction_id, author_id, client_actor_id, base_version, version, changed_entities_json, structure_changed, origin, commands_json, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(commit.id)
     .bind(commit.transaction_id)
     .bind(commit.author_id)
+    .bind(commit.client_actor_id)
     .bind(commit.expected_version)
     .bind(next_version)
     .bind(changed_entities_json.as_str())
@@ -1192,8 +1344,8 @@ async fn commit_artifact_history_internal(
         transaction.rollback().await?;
         return Ok(None);
     }
-    if let Some(asset_ids) = referenced_asset_ids {
-        set_asset_references_in_transaction(&mut transaction, commit.id, asset_ids).await?;
+    if let Some(references) = references {
+        set_asset_references_in_transaction(&mut transaction, commit.id, references).await?;
     }
     insert_domain_events(
         &mut transaction,
@@ -1430,6 +1582,7 @@ mod tests {
                 snapshot_key: "d1-v2",
                 transaction_id: "snapshot-registry-1",
                 author_id: "dev-user",
+                client_actor_id: "test-client",
                 changed_entities: &changed_entities,
                 structure_changed: false,
                 origin: "system",
@@ -1472,7 +1625,14 @@ mod tests {
         .unwrap();
 
         let changed_entities = Vec::new();
-        let referenced = vec!["asset-1".to_string()];
+        let referenced = vec![
+            AssetReference {
+                asset_id: "asset-1".into(),
+                expected_checksum: Some("checksum".into()),
+                expected_content_type: Some("image/png".into()),
+            },
+            AssetReference::by_id("asset-1"),
+        ];
         commit_artifact_transaction_with_assets(
             &pool,
             ArtifactTransactionCommit {
@@ -1481,6 +1641,7 @@ mod tests {
                 snapshot_key: "d1-v2",
                 transaction_id: "asset-tx-1",
                 author_id: "dev-user",
+                client_actor_id: "test-client",
                 changed_entities: &changed_entities,
                 structure_changed: true,
                 origin: "local",
@@ -1499,29 +1660,49 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .ref_count,
-            1
+            2
         );
 
-        let missing = vec!["missing".to_string()];
-        assert!(commit_artifact_transaction_with_assets(
-            &pool,
-            ArtifactTransactionCommit {
-                id: "d1",
-                expected_version: 2,
-                snapshot_key: "d1-v3",
-                transaction_id: "asset-tx-2",
-                author_id: "dev-user",
-                changed_entities: &changed_entities,
-                structure_changed: true,
-                origin: "local",
-                commands_json: "[]",
-                before_snapshot_key: "d1-v2",
-                events: &[],
-            },
-            &missing,
-        )
-        .await
-        .is_err());
+        for (transaction_id, reference) in [
+            (
+                "asset-tx-bad-checksum",
+                AssetReference {
+                    asset_id: "asset-1".into(),
+                    expected_checksum: Some("forged".into()),
+                    expected_content_type: Some("image/png".into()),
+                },
+            ),
+            (
+                "asset-tx-bad-mime",
+                AssetReference {
+                    asset_id: "asset-1".into(),
+                    expected_checksum: Some("checksum".into()),
+                    expected_content_type: Some("image/jpeg".into()),
+                },
+            ),
+            ("asset-tx-missing", AssetReference::by_id("missing")),
+        ] {
+            assert!(commit_artifact_transaction_with_assets(
+                &pool,
+                ArtifactTransactionCommit {
+                    id: "d1",
+                    expected_version: 2,
+                    snapshot_key: "d1-v3",
+                    transaction_id,
+                    author_id: "dev-user",
+                    client_actor_id: "test-client",
+                    changed_entities: &changed_entities,
+                    structure_changed: true,
+                    origin: "local",
+                    commands_json: "[]",
+                    before_snapshot_key: "d1-v2",
+                    events: &[],
+                },
+                &[reference],
+            )
+            .await
+            .is_err());
+        }
         assert_eq!(get_artifact(&pool, "d1").await.unwrap().unwrap().version, 2);
         assert_eq!(
             get_artifact_asset(&pool, "d1", "asset-1")
@@ -1529,8 +1710,60 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .ref_count,
-            1
+            2
         );
+    }
+
+    #[tokio::test]
+    async fn asset_gc_lists_only_expired_unreferenced_rows_and_removes_integrity_metadata() {
+        let pool = pool().await;
+        insert_artifact(&pool, new_doc("d1", "x")).await.unwrap();
+        let old = Utc::now() - chrono::Duration::hours(48);
+        let checksum = "0".repeat(64);
+        for (asset_id, ref_count) in [("garbage", 0), ("live", 1)] {
+            let object_key = format!("d1/assets/{asset_id}");
+            insert_artifact_asset(
+                &pool,
+                &ArtifactAsset {
+                    artifact_id: "d1".into(),
+                    asset_id: asset_id.into(),
+                    object_key: object_key.clone(),
+                    content_type: "image/png".into(),
+                    file_name: format!("{asset_id}.png"),
+                    checksum: checksum.clone(),
+                    size: 3,
+                    ref_count,
+                    created_at: old,
+                    updated_at: old,
+                },
+            )
+            .await
+            .unwrap();
+            register_blob_integrity(&pool, "d1", &object_key, "asset", &checksum, 3)
+                .await
+                .unwrap();
+        }
+
+        let candidates = list_unreferenced_artifact_assets_before(
+            &pool,
+            Utc::now() - chrono::Duration::hours(24),
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|asset| asset.asset_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["garbage"]
+        );
+        assert!(delete_artifact_asset(&pool, "d1", "garbage").await.unwrap());
+        assert!(get_blob_integrity(&pool, "d1/assets/garbage")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!delete_artifact_asset(&pool, "d1", "live").await.unwrap());
     }
 
     #[tokio::test]
@@ -1547,6 +1780,7 @@ mod tests {
                 snapshot_key: "d1-v2",
                 transaction_id: "tx-1",
                 author_id: "dev-user",
+                client_actor_id: "test-client",
                 changed_entities: &changed_entities,
                 structure_changed: false,
                 origin: "local",
@@ -1627,6 +1861,7 @@ mod tests {
                 snapshot_key: "d1-v2",
                 transaction_id: "lease-tx",
                 author_id: "dev-user",
+                client_actor_id: "test-client",
                 changed_entities: &changed_entities,
                 structure_changed: false,
                 origin: "local",
@@ -1686,6 +1921,7 @@ mod tests {
                 snapshot_key: "d1-v2",
                 transaction_id: "tx-fails",
                 author_id: "dev-user",
+                client_actor_id: "test-client",
                 changed_entities: &changed_entities,
                 structure_changed: false,
                 origin: "local",

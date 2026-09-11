@@ -9,6 +9,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type { ArtifactPageSetup, DocumentBlockKind } from "@open-office/schema/artifact";
+import type { DocumentReviewAnchor } from "@open-office/schema/api";
 import { useThemeRuntime } from "@open-office/ui";
 
 import { api } from "./api.js";
@@ -19,12 +20,16 @@ import { BlockEditor } from "./blockEditor.js";
 import { HomeIcon, StarIcon, ThemeIcon } from "./icons/index.js";
 import { useBlockSession } from "./hooks/useBlockSession.js";
 import { BlockToolbar } from "./chrome/BlockToolbar.js";
+import { DocumentFindBar, DocumentToc } from "./chrome/DocumentNavigation.js";
+import { DocumentPageSemantics } from "./chrome/DocumentPageSemantics.js";
+import { DocumentReviewPanel } from "./chrome/DocumentReviewPanel.js";
 import { DEFAULT_PAGE_SETUP } from "./chrome/PageSetupPanel.js";
 import { selectDocumentText, isDocumentWideSelection } from "./utils/selection.js";
 import { focusBlock } from "./blocks/focus.js";
 import { formatDate } from "./utils/date.js";
 import { EMPTY_TOOLBAR_SELECTION, readToolbarSelectionState, type ToolbarSelectionState } from "./toolbar/selectionState.js";
 import { useBlockProjection, useBlockProjectionStructure } from "./store/blockProjectionStore.js";
+import { readDomTextSelection } from "./interaction/domSelection.js";
 
 interface Props {
   id: string;
@@ -47,9 +52,31 @@ export function Editor({ id, title, onBack }: Props) {
   const [formatPainterActive, setFormatPainterActive] = useState(false);
   const [pageSetupOpen, setPageSetupOpen] = useState(false);
   const [toolbarSelection, setToolbarSelection] = useState<ToolbarSelectionState>(EMPTY_TOOLBAR_SELECTION);
+  const [findOpen, setFindOpen] = useState(false);
+  const [tocOpen, setTocOpen] = useState(true);
+  const [pageSemanticsOpen, setPageSemanticsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewAnchor, setReviewAnchor] = useState<DocumentReviewAnchor | null>(null);
+  const revisionRef = useRef(session.state.revision);
+  revisionRef.current = session.state.revision;
 
   useEffect(() => {
-    const updateToolbarSelection = () => setToolbarSelection(readToolbarSelectionState());
+    const updateToolbarSelection = () => {
+      setToolbarSelection(readToolbarSelectionState());
+      const selection = window.getSelection();
+      const boundary = selection?.rangeCount ? selection.getRangeAt(0).startContainer : null;
+      const element = boundary instanceof Element ? boundary : boundary?.parentElement;
+      const content = element?.closest<HTMLElement>('.block-row__content[contenteditable="true"]');
+      const blockId = content?.closest<HTMLElement>("[data-block-id]")?.dataset.blockId;
+      if (!content || !blockId) return;
+      const semantic = readDomTextSelection(content, blockId);
+      if (semantic) setReviewAnchor({
+        blockId,
+        start: semantic.range.start,
+        end: semantic.range.end,
+        revision: revisionRef.current,
+      });
+    };
     document.addEventListener("selectionchange", updateToolbarSelection);
     updateToolbarSelection();
     return () => document.removeEventListener("selectionchange", updateToolbarSelection);
@@ -112,6 +139,13 @@ export function Editor({ id, title, onBack }: Props) {
       session.reportError(error);
     });
   }, [id, session.reportError, starred]);
+
+  const closeFind = useCallback(() => {
+    setFindOpen(false);
+    const blockId = session.state.activeBlockId;
+    if (blockId) focusBlock(blockId);
+    else document.querySelector<HTMLElement>('.block-row__content[contenteditable="true"]')?.focus();
+  }, [session.state.activeBlockId]);
 
   const refreshHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -246,6 +280,12 @@ export function Editor({ id, title, onBack }: Props) {
   }), [activeBlock, applyKind, insertTarget, session, toolbarSelection.hasTextSelection]);
 
   const handleShortcut = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const isFind = event.key.toLowerCase() === "f" && (event.metaKey || event.ctrlKey) && !event.altKey;
+    if (isFind) {
+      event.preventDefault();
+      setFindOpen(true);
+      return;
+    }
     const isSelectAll = event.key.toLowerCase() === "a"
       && (event.metaKey || event.ctrlKey)
       && !event.altKey
@@ -315,7 +355,13 @@ export function Editor({ id, title, onBack }: Props) {
           <ThemeIcon dark={theme === "office-dark"} />
         </button>
         <span className="editor__spacer" />
+        <button className="btn btn--ghost btn--sm" type="button" onClick={() => findOpen ? closeFind() : setFindOpen(true)} aria-pressed={findOpen}>查找</button>
+        <button className="btn btn--ghost btn--sm" type="button" onClick={() => setTocOpen((open) => !open)} aria-pressed={tocOpen}>目录</button>
+        <button className="btn btn--ghost btn--sm" type="button" onClick={() => setPageSemanticsOpen((open) => !open)} aria-pressed={pageSemanticsOpen}>页眉与注释</button>
+        <button className="btn btn--ghost btn--sm" type="button" onClick={() => setReviewOpen((open) => !open)} aria-pressed={reviewOpen}>审阅</button>
       </header>
+
+      {findOpen && <DocumentFindBar session={session} revision={session.state.revision} onClose={closeFind} />}
 
       {historyOpen && (
         <aside className="history-panel" aria-label="历史版本">
@@ -385,9 +431,14 @@ export function Editor({ id, title, onBack }: Props) {
 
       {session.state.error && <p className="alert">{session.state.error}</p>}
 
-      <main className="editor__surface editor__surface--blocks">
-        <BlockEditor session={session} />
-      </main>
+      <div className="editor__workspace">
+        <main className="editor__surface editor__surface--blocks">
+          <BlockEditor session={session} />
+        </main>
+        {tocOpen && <DocumentToc session={session} revision={session.state.revision} onClose={() => setTocOpen(false)} />}
+        {pageSemanticsOpen && <DocumentPageSemantics session={session} revision={session.state.revision} onClose={() => setPageSemanticsOpen(false)} />}
+        {reviewOpen && <DocumentReviewPanel artifactId={id} session={session} selectionAnchor={reviewAnchor} onClose={() => setReviewOpen(false)} />}
+      </div>
 
       <footer className="editor__statusbar">
         <span>{session.state.loading ? "正在加载…" : `${session.state.wordCount} 个字`}</span>

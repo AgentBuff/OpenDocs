@@ -11,20 +11,21 @@ use axum::http::HeaderMap;
 use axum::Json;
 use oo_protocol::{
     ArtifactCommandEnvelope, CommandRecord, CommitResult, DomainEventRecord, EntityRef,
-    Invalidation, MutationRecord, TransactionOrigin, CURRENT_PROTOCOL_VERSION,
+    HistoryAction, Invalidation, MutationRecord, SpreadsheetHistoryOperation, TransactionOrigin,
+    CURRENT_PROTOCOL_VERSION, SPREADSHEET_HISTORY_TYPE_ID,
 };
-use oo_schema::ArtifactPayload;
+use oo_schema::{ArtifactEnvelope, ArtifactPayload, AssetReferenceSource};
 use oo_spreadsheet::{
     SpreadsheetCommand, SpreadsheetCommandBatch, SpreadsheetEngine, SpreadsheetEngineError,
     SpreadsheetMutation,
 };
 
-use crate::artifact_routes::{artifact_for, authorize, load_artifact, Role};
+use crate::artifact_routes::{artifact_for, load_artifact};
 use crate::auth::CurrentUser;
 use crate::db::{self, ArtifactKind};
 use crate::document_support::TransactionCommit;
-use crate::error::{AppError, ConflictDetails};
-use crate::request_context;
+use crate::error::AppError;
+use crate::transaction_kernel;
 use crate::AppState;
 
 pub async fn submit_transaction(
@@ -34,58 +35,39 @@ pub async fn submit_transaction(
     headers: HeaderMap,
     body: String,
 ) -> Result<Json<TransactionCommit>, AppError> {
-    let transaction: ArtifactCommandEnvelope = serde_json::from_str(&body)
-        .map_err(|error| AppError::BadRequest(format!("事务 JSON 无效：{error}")))?;
-    transaction
-        .validate()
-        .map_err(|error| AppError::BadRequest(format!("事务协议无效：{error}")))?;
-    if transaction.artifact_id != id {
-        return Err(AppError::BadRequest(
-            "事务 artifactId 必须与请求路径一致".into(),
-        ));
-    }
-    let request = request_context::transaction(&headers, &transaction)?;
-    let transaction_id = request.transaction_id;
-    let expected_version = i64::try_from(request.expected_revision)
-        .map_err(|_| AppError::BadRequest("事务 baseRevision 超出服务端范围".into()))?;
+    let prepared = transaction_kernel::prepare(&headers, &id, &body)?;
+    let history = spreadsheet_history_operation(&prepared.envelope)?;
 
     let _write_guard = state.write_lock.lock().await;
-    // 事务是写路径：editor 及以上（C4 授权分层）。
-    authorize(&state, &user, &id, Role::Editor).await?;
-    let (meta, snapshot) = load_artifact(&state, &user, &id).await?;
-    if meta.kind != ArtifactKind::Spreadsheet {
-        return Err(AppError::UnsupportedArtifact(meta.kind));
+    let (meta, snapshot) =
+        transaction_kernel::load_target(&state, &user, &id, ArtifactKind::Spreadsheet).await?;
+    if let Some(replay) = transaction_kernel::replay_if_committed(
+        &state,
+        &id,
+        &meta,
+        &prepared.transaction_id,
+        invalidation_from_keys,
+    )
+    .await?
+    {
+        return Ok(Json(replay));
     }
-    if let Some(record) = db::get_artifact_transaction(&state.pool, &id, &transaction_id).await? {
-        let revision = u64::try_from(record.version)
-            .map_err(|_| AppError::Internal("事务 revision 超出协议范围".into()))?;
-        let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
-        return Ok(Json(TransactionCommit {
-            result: CommitResult {
-                protocol_version: CURRENT_PROTOCOL_VERSION,
-                artifact_id: id,
-                transaction_id: record.transaction_id,
-                revision,
-                invalidation: invalidation_from_keys(
-                    &record.changed_entities,
-                    record.structure_changed,
-                ),
-                mutations: Vec::new(),
-                events: Vec::new(),
-            },
-            document: meta,
-            can_undo,
-            can_redo,
-        }));
-    }
-    if meta.version != expected_version {
-        return Err(AppError::VersionConflictDetails(ConflictDetails {
-            artifact_id: id,
-            requested_revision: request.expected_revision,
-            current_revision: u64::try_from(meta.version)
-                .map_err(|_| AppError::Internal("Artifact revision 超出协议范围".into()))?,
-            changed_entities: Vec::new(),
-        }));
+    transaction_kernel::require_current_revision(&state, &meta, &id, prepared.expected_revision)
+        .await?;
+    let transaction = prepared.envelope;
+    let transaction_id = prepared.transaction_id;
+    let expected_version = prepared.expected_version;
+    if let Some(history) = history {
+        return submit_history_transaction(
+            &state,
+            &user,
+            &id,
+            &transaction,
+            expected_version,
+            &transaction_id,
+            history,
+        )
+        .await;
     }
 
     let ArtifactPayload::Spreadsheet(model) = snapshot.payload else {
@@ -123,6 +105,7 @@ pub async fn submit_transaction(
         .map_err(|_| AppError::Internal("Spreadsheet revision 超出服务端范围".into()))?;
     let snapshot_key = crate::document_support::artifact_snapshot_key(&id, version);
     state.store.put(&snapshot_key, &bytes).await?;
+    let referenced_assets = engine.model().asset_references();
 
     let blobs = db::get_artifact_blob_keys(&state.pool, &id)
         .await?
@@ -145,16 +128,18 @@ pub async fn submit_transaction(
             })
         })
         .collect::<Result<Vec<_>, AppError>>()?;
-    crate::events::stamp_actor(&mut events, &user.id);
+    transaction_kernel::stamp_events(&mut events, &user.id);
 
-    let committed = match db::commit_artifact_transaction_with_assets(
-        &state.pool,
+    let committed = transaction_kernel::commit_candidate(
+        &state,
+        &snapshot_key,
         db::ArtifactTransactionCommit {
             id: &id,
             expected_version,
             snapshot_key: &snapshot_key,
             transaction_id: &transaction_id,
             author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
             changed_entities: &changed_entities,
             structure_changed: change_set.invalidation.structure_changed,
             origin: transaction_origin_name(transaction.origin),
@@ -162,22 +147,13 @@ pub async fn submit_transaction(
             before_snapshot_key: &blobs.snapshot_key,
             events: &events,
         },
-        &[],
+        &referenced_assets,
     )
-    .await
-    {
-        Ok(Some(meta)) => meta,
-        Ok(None) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(AppError::VersionConflict);
-        }
-        Err(error) => {
-            discard_candidate_snapshot(&state, &snapshot_key).await;
-            return Err(error.into());
-        }
-    };
-    // Spreadsheet has no server-authoritative history yet; affordances stay
-    // false instead of pretending an undo path exists.
+    .await?;
+    // Server-authoritative history: the durable semantic command record makes
+    // the committed transaction replayable, so the affordances reflect the
+    // real replayable history state.
+    let (can_undo, can_redo) = db::artifact_history_state(&state.pool, &id).await?;
     Ok(Json(TransactionCommit {
         result: CommitResult {
             protocol_version: CURRENT_PROTOCOL_VERSION,
@@ -189,18 +165,250 @@ pub async fn submit_transaction(
             events,
         },
         document: committed,
-        can_undo: false,
-        can_redo: false,
+        can_undo,
+        can_redo,
     }))
 }
 
-async fn discard_candidate_snapshot(state: &AppState, snapshot_key: &str) {
-    if let Err(error) = state.store.delete(snapshot_key).await {
-        tracing::warn!(snapshot_key, error = %error, "无法清理未提交的 Spreadsheet snapshot");
+/// Validates the Spreadsheet-scoped history intent before any command reaches
+/// the normal grid command decoder. History remains an intent-only command:
+/// its inverse mutations are recovered from the server-owned semantic
+/// transaction record, never from a client payload.
+fn spreadsheet_history_operation(
+    transaction: &ArtifactCommandEnvelope,
+) -> Result<Option<SpreadsheetHistoryOperation>, AppError> {
+    let has_history = transaction
+        .commands
+        .iter()
+        .any(|record| record.type_id == SPREADSHEET_HISTORY_TYPE_ID);
+    if !has_history {
+        if matches!(
+            transaction.origin,
+            TransactionOrigin::Undo | TransactionOrigin::Redo
+        ) {
+            return Err(AppError::BadRequest(
+                "Undo/Redo transaction 必须使用 spreadsheet.history command".into(),
+            ));
+        }
+        return Ok(None);
+    }
+    if transaction.commands.len() != 1 {
+        return Err(AppError::BadRequest(
+            "spreadsheet.history transaction 只能包含一个 command".into(),
+        ));
+    }
+    let record = &transaction.commands[0];
+    if record.type_id != SPREADSHEET_HISTORY_TYPE_ID {
+        return Err(AppError::BadRequest(
+            "spreadsheet.history transaction 不能混入普通 command".into(),
+        ));
+    }
+    let operation = SpreadsheetHistoryOperation::from_record(record).map_err(|error| {
+        AppError::BadRequest(format!("Spreadsheet history operation 无效：{error}"))
+    })?;
+    let expected_origin = match operation.action {
+        HistoryAction::Undo => TransactionOrigin::Undo,
+        HistoryAction::Redo => TransactionOrigin::Redo,
+    };
+    if transaction.origin != expected_origin {
+        return Err(AppError::BadRequest(
+            "history action 与 transaction origin 不一致".into(),
+        ));
+    }
+    Ok(Some(operation))
+}
+
+/// Reconstructs the grid engine from the pre-transaction snapshot and the
+/// durable semantic command record, then applies the undo/redo transition.
+/// The resulting immutable snapshot is persisted as a normal history
+/// transition, so restarts never lose the undo position.
+async fn submit_history_transaction(
+    state: &AppState,
+    user: &CurrentUser,
+    id: &str,
+    transaction: &ArtifactCommandEnvelope,
+    expected_version: i64,
+    transaction_id: &str,
+    history: SpreadsheetHistoryOperation,
+) -> Result<Json<TransactionCommit>, AppError> {
+    let expected_undone = matches!(history.action, HistoryAction::Redo);
+    let entry = db::get_artifact_history(&state.pool, id, expected_undone)
+        .await?
+        .ok_or_else(|| {
+            AppError::BadRequest(match history.action {
+                HistoryAction::Undo => "没有可撤销的 Spreadsheet 事务".into(),
+                HistoryAction::Redo => "没有可重做的 Spreadsheet 事务".into(),
+            })
+        })?;
+    let source = db::get_artifact_transaction(&state.pool, id, &entry.transaction_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("Spreadsheet history 缺少原始事务记录".into()))?;
+    let source_base_revision = u64::try_from(source.base_version)
+        .map_err(|_| AppError::Internal("Spreadsheet history base revision 超出范围".into()))?;
+    let command_records: Vec<CommandRecord> =
+        serde_json::from_str(&source.commands_json).map_err(|error| {
+            AppError::Internal(format!("Spreadsheet history commands JSON 无效：{error}"))
+        })?;
+    let commands = command_records
+        .into_iter()
+        .map(spreadsheet_command_from_record)
+        .collect::<Result<Vec<_>, _>>()?;
+    if commands.is_empty() {
+        return Err(AppError::BadRequest(
+            "该 Spreadsheet 历史条目不包含可重放的语义 command".into(),
+        ));
+    }
+    let before =
+        load_spreadsheet_from_snapshot_key(state, user, id, &entry.before_snapshot_key).await?;
+    let mut engine =
+        SpreadsheetEngine::new(before, source_base_revision).map_err(spreadsheet_engine_error)?;
+    engine
+        .execute(SpreadsheetCommandBatch {
+            base_revision: source_base_revision,
+            commands,
+        })
+        .map_err(spreadsheet_engine_error)?;
+    let change_set = match history.action {
+        HistoryAction::Undo => engine.undo().map_err(spreadsheet_engine_error)?,
+        HistoryAction::Redo => {
+            engine.undo().map_err(spreadsheet_engine_error)?;
+            engine.redo().map_err(spreadsheet_engine_error)?
+        }
+    };
+    let revision = u64::try_from(
+        expected_version
+            .checked_add(1)
+            .ok_or_else(|| AppError::Internal("Spreadsheet revision 溢出".into()))?,
+    )
+    .map_err(|_| AppError::Internal("Spreadsheet revision 超出协议范围".into()))?;
+    let artifact = artifact_for(
+        id,
+        revision,
+        ArtifactPayload::Spreadsheet(engine.model().clone()),
+    )?;
+    let bytes = serde_json::to_vec(&artifact).map_err(|error| {
+        AppError::Internal(format!("序列化 Spreadsheet Artifact 失败：{error}"))
+    })?;
+    let version = i64::try_from(revision)
+        .map_err(|_| AppError::Internal("Spreadsheet revision 超出服务端范围".into()))?;
+    let snapshot_key = crate::document_support::artifact_snapshot_key(id, version);
+    state.store.put(&snapshot_key, &bytes).await?;
+    let referenced_assets = engine.model().asset_references();
+
+    let changed_entities = entity_keys(&change_set.invalidation);
+    let mutation_records = change_set
+        .mutations
+        .iter()
+        .map(mutation_record)
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let mut events = change_set
+        .mutations
+        .iter()
+        .enumerate()
+        .map(|(index, mutation)| {
+            Ok(DomainEventRecord {
+                event_id: format!("{transaction_id}:{revision}:{index}"),
+                type_id: event_type_id(mutation).into(),
+                payload: event_payload(mutation),
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    events.push(DomainEventRecord {
+        event_id: format!("{transaction_id}:{revision}:history"),
+        type_id: "spreadsheet.historyApplied".into(),
+        payload: serde_json::json!({
+            "action": match history.action {
+                HistoryAction::Undo => "undo",
+                HistoryAction::Redo => "redo",
+            },
+            "historyId": entry.history_id,
+            "sourceTransactionId": entry.transaction_id,
+            "actorId": user.id,
+        }),
+    });
+    transaction_kernel::stamp_events(&mut events, &user.id);
+    let commands_json = serde_json::to_string(&transaction.commands)
+        .map_err(|error| AppError::Internal(format!("事务记录序列化失败：{error}")))?;
+    let committed = transaction_kernel::commit_history_candidate(
+        state,
+        &snapshot_key,
+        db::ArtifactHistoryCommit {
+            id,
+            expected_version,
+            snapshot_key: &snapshot_key,
+            transaction_id,
+            author_id: &user.id,
+            client_actor_id: &transaction.actor_id,
+            changed_entities: &changed_entities,
+            structure_changed: change_set.invalidation.structure_changed,
+            origin: transaction_origin_name(transaction.origin),
+            commands_json: &commands_json,
+            history_id: entry.history_id,
+            expected_undone,
+            next_undone: !expected_undone,
+            events: &events,
+        },
+        &referenced_assets,
+    )
+    .await?;
+    let (can_undo, can_redo) = db::artifact_history_state(&state.pool, id).await?;
+    Ok(Json(TransactionCommit {
+        result: CommitResult {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            artifact_id: id.into(),
+            transaction_id: transaction_id.into(),
+            revision,
+            invalidation: change_set.invalidation,
+            mutations: mutation_records,
+            events,
+        },
+        document: committed,
+        can_undo,
+        can_redo,
+    }))
+}
+
+async fn load_spreadsheet_from_snapshot_key(
+    state: &AppState,
+    user: &CurrentUser,
+    id: &str,
+    snapshot_key: &str,
+) -> Result<oo_schema::SpreadsheetModel, AppError> {
+    // Re-check ownership before reading an immutable object key supplied by
+    // the server history row.
+    let (meta, _) = load_artifact(state, user, id).await?;
+    if meta.kind != ArtifactKind::Spreadsheet {
+        return Err(AppError::UnsupportedArtifact(meta.kind));
+    }
+    let bytes = state.store.get(snapshot_key).await?;
+    let artifact: ArtifactEnvelope = serde_json::from_slice(&bytes).map_err(|error| {
+        AppError::Internal(format!("历史 Spreadsheet Artifact JSON 无效：{error}"))
+    })?;
+    artifact
+        .validate()
+        .map_err(|error| AppError::Internal(format!("历史 Spreadsheet Artifact 无效：{error}")))?;
+    if artifact.artifact_id != id {
+        return Err(AppError::Internal(
+            "历史 Spreadsheet Artifact id 不一致".into(),
+        ));
+    }
+    match artifact.payload {
+        ArtifactPayload::Spreadsheet(model) => Ok(model),
+        _ => Err(AppError::Internal(
+            "历史 snapshot 不是 Spreadsheet Artifact".into(),
+        )),
     }
 }
 
 fn spreadsheet_command_from_record(record: CommandRecord) -> Result<SpreadsheetCommand, AppError> {
+    if record.type_id == SPREADSHEET_HISTORY_TYPE_ID {
+        // The typeId exists so clients can discover the history affordance;
+        // it is an intent that `submit_history_transaction` resolves from the
+        // durable transaction log, never a grid command payload.
+        return Err(AppError::BadRequest(
+            "spreadsheet.history 只能作为事务中的唯一 intent command 提交".into(),
+        ));
+    }
     let command: SpreadsheetCommand = serde_json::from_value(record.payload)
         .map_err(|error| AppError::BadRequest(format!("Spreadsheet command 无效：{error}")))?;
     let expected_type_id = match &command {
@@ -209,8 +417,32 @@ fn spreadsheet_command_from_record(record: CommandRecord) -> Result<SpreadsheetC
         SpreadsheetCommand::DeleteSheet { .. } => "spreadsheet.deleteSheet",
         SpreadsheetCommand::SetCell { .. } => "spreadsheet.setCell",
         SpreadsheetCommand::SetCellStyle { .. } => "spreadsheet.setCellStyle",
+        SpreadsheetCommand::SetRowLayout { .. } => "spreadsheet.setRowLayout",
         SpreadsheetCommand::SetSheetMetadata { .. } => "spreadsheet.setSheetMetadata",
         SpreadsheetCommand::ClearCell { .. } => "spreadsheet.clearCell",
+        SpreadsheetCommand::InsertRows { .. } => "spreadsheet.insertRows",
+        SpreadsheetCommand::DeleteRows { .. } => "spreadsheet.deleteRows",
+        SpreadsheetCommand::InsertColumns { .. } => "spreadsheet.insertColumns",
+        SpreadsheetCommand::DeleteColumns { .. } => "spreadsheet.deleteColumns",
+        SpreadsheetCommand::MergeCells { .. } => "spreadsheet.mergeCells",
+        SpreadsheetCommand::UnmergeCells { .. } => "spreadsheet.unmergeCells",
+        SpreadsheetCommand::SortRange { .. } => "spreadsheet.sortRange",
+        SpreadsheetCommand::FormatRange { .. } => "spreadsheet.formatRange",
+        SpreadsheetCommand::ClearRange { .. } => "spreadsheet.clearRange",
+        SpreadsheetCommand::ReplaceRange { .. } => "spreadsheet.replaceRange",
+        SpreadsheetCommand::PasteRange { .. } => "spreadsheet.pasteRange",
+        SpreadsheetCommand::FillRange { .. } => "spreadsheet.fillRange",
+        SpreadsheetCommand::SetFreezePane { .. } => "spreadsheet.setFreezePane",
+        SpreadsheetCommand::SetAutoFilter { .. } => "spreadsheet.setAutoFilter",
+        SpreadsheetCommand::UpsertFilterColumn { .. } => "spreadsheet.upsertFilterColumn",
+        SpreadsheetCommand::ClearFilterColumn { .. } => "spreadsheet.clearFilter",
+        SpreadsheetCommand::SetCalculationMode { .. } => "spreadsheet.setCalculationMode",
+        SpreadsheetCommand::SetRowDimensions { .. } => "spreadsheet.setRowDimensions",
+        SpreadsheetCommand::SetColumnDimensions { .. } => "spreadsheet.setColumnDimensions",
+        SpreadsheetCommand::UpsertConditionalFormat { .. } => "spreadsheet.upsertConditionalFormat",
+        SpreadsheetCommand::DeleteConditionalFormat { .. } => "spreadsheet.deleteConditionalFormat",
+        SpreadsheetCommand::UpsertDataValidation { .. } => "spreadsheet.upsertDataValidation",
+        SpreadsheetCommand::DeleteDataValidation { .. } => "spreadsheet.deleteDataValidation",
     };
     if record.type_id != expected_type_id {
         return Err(AppError::BadRequest(format!(
@@ -227,6 +459,25 @@ fn event_type_id(mutation: &SpreadsheetMutation) -> &'static str {
     match mutation {
         SpreadsheetMutation::SheetChanged { .. } => "spreadsheet.sheetChanged",
         SpreadsheetMutation::CellChanged { .. } => "spreadsheet.cellChanged",
+        SpreadsheetMutation::RangeChanged { .. } => "spreadsheet.rangeChanged",
+        SpreadsheetMutation::PaneChanged { .. } => "spreadsheet.paneChanged",
+        SpreadsheetMutation::FilterChanged { .. } => "spreadsheet.filterChanged",
+        SpreadsheetMutation::FilterColumnsChanged { .. } => "spreadsheet.filterColumnsChanged",
+        SpreadsheetMutation::CalculationModeChanged { .. } => "spreadsheet.calculationModeChanged",
+        SpreadsheetMutation::NamedRangesChanged { .. } => "spreadsheet.namedRangesChanged",
+        SpreadsheetMutation::ActiveSheetChanged { .. } => "spreadsheet.activeSheetChanged",
+        SpreadsheetMutation::RowDimensionsChanged { .. } => "spreadsheet.rowDimensionsChanged",
+        SpreadsheetMutation::ColumnDimensionsChanged { .. } => {
+            "spreadsheet.columnDimensionsChanged"
+        }
+        SpreadsheetMutation::ConditionalFormatUpserted { .. } => {
+            "spreadsheet.conditionalFormatUpserted"
+        }
+        SpreadsheetMutation::ConditionalFormatRemoved { .. } => {
+            "spreadsheet.conditionalFormatRemoved"
+        }
+        SpreadsheetMutation::DataValidationUpserted { .. } => "spreadsheet.dataValidationUpserted",
+        SpreadsheetMutation::DataValidationRemoved { .. } => "spreadsheet.dataValidationRemoved",
     }
 }
 
@@ -240,6 +491,73 @@ fn event_payload(mutation: &SpreadsheetMutation) -> serde_json::Value {
             "row": address.row,
             "column": address.column,
             "after": after,
+        }),
+        SpreadsheetMutation::RangeChanged {
+            sheet_id, range, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "range": range,
+        }),
+        SpreadsheetMutation::PaneChanged {
+            sheet_id, after, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "after": after,
+        }),
+        SpreadsheetMutation::FilterChanged {
+            sheet_id, after, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "after": after,
+        }),
+        SpreadsheetMutation::FilterColumnsChanged {
+            sheet_id, after, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "after": after,
+        }),
+        SpreadsheetMutation::CalculationModeChanged { after, .. } => serde_json::json!({
+            "after": after,
+        }),
+        SpreadsheetMutation::NamedRangesChanged { after, .. } => serde_json::json!({
+            "after": after,
+        }),
+        SpreadsheetMutation::ActiveSheetChanged { after, .. } => serde_json::json!({
+            "after": after,
+        }),
+        SpreadsheetMutation::RowDimensionsChanged {
+            sheet_id, after, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "after": after,
+        }),
+        SpreadsheetMutation::ColumnDimensionsChanged {
+            sheet_id, after, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "after": after,
+        }),
+        SpreadsheetMutation::ConditionalFormatUpserted { sheet_id, rule, .. } => {
+            serde_json::json!({
+                "sheetId": sheet_id,
+                "ruleId": rule.id,
+            })
+        }
+        SpreadsheetMutation::ConditionalFormatRemoved {
+            sheet_id, rule_id, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "ruleId": rule_id,
+        }),
+        SpreadsheetMutation::DataValidationUpserted { sheet_id, rule, .. } => serde_json::json!({
+            "sheetId": sheet_id,
+            "ruleId": rule.id,
+        }),
+        SpreadsheetMutation::DataValidationRemoved {
+            sheet_id, rule_id, ..
+        } => serde_json::json!({
+            "sheetId": sheet_id,
+            "ruleId": rule_id,
         }),
     }
 }

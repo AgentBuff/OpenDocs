@@ -5,6 +5,7 @@ import {
   OpenOfficeSdk,
   buildTransaction,
   conflictDetails,
+  isRetryableApiError,
   isVersionConflict,
 } from "../src/index.js";
 import { ArtifactApiClient, ArtifactApiError, type EventRecord } from "@open-office/schema/api";
@@ -62,6 +63,29 @@ describe("agent-facing SDK adapter", () => {
     expect(calls.every((call) => call.includes("limit=10"))).toBe(true);
   });
 
+  it("imports with an explicit loss policy and downloads binary mindmap exports", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const sdk = new OpenOfficeSdk({
+      baseUrl: "http://api.test",
+      fetcher: async (input, init) => {
+        requests.push({ url: String(input), init });
+        if (String(input).includes("/import")) return new Response(JSON.stringify({
+          id: "map-1", kind: "mindmap", title: "Map", ownerId: "user-1", size: 12, version: 1,
+          starred: false, createdAt: "2026-09-11T00:00:00Z", updatedAt: "2026-09-11T00:00:00Z", warnings: ["unsupportedFeature:1"],
+        }), { status: 201, headers: { "content-type": "application/json" } });
+        return new Response("<svg/>", { status: 200, headers: { "content-type": "image/svg+xml" } });
+      },
+    });
+    const imported = await sdk.importArtifact(new Blob(["map"]), "map.mm", "strict");
+    expect(imported.artifact.id).toBe("map-1");
+    expect(imported.warnings).toEqual(["unsupportedFeature:1"]);
+    const form = requests[0]?.init?.body as FormData;
+    expect(form.get("mode")).toBe("strict");
+    const exported = await sdk.exportArtifact("map-1", "svg");
+    expect(await exported.text()).toBe("<svg/>");
+    expect(requests[1]?.url.endsWith("/api/artifacts/map-1/export/svg")).toBe(true);
+  });
+
   it("deduplicates at-least-once events, preserves opaque cursors and surfaces revision gaps", () => {
     const api = new ArtifactApiClient({ fetcher: async () => new Response("{}", { status: 500 }) });
     const consumer = new EventFeedConsumer(api, "a-1", { revision: 4 });
@@ -81,9 +105,11 @@ describe("agent-facing SDK adapter", () => {
       error: "冲突",
       code: "version_conflict",
       requestId: "req-1",
+      retryable: true,
       details: { artifactId: "a-1", requestedRevision: 4, currentRevision: 6 },
     });
     expect(isVersionConflict(error)).toBe(true);
+    expect(isRetryableApiError(error)).toBe(true);
     expect(conflictDetails(error)).toEqual({ artifactId: "a-1", requestedRevision: 4, currentRevision: 6 });
   });
 });

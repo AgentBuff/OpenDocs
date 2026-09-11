@@ -1,0 +1,36 @@
+{
+  "description": "Independent product maturity signals. A client must inspect the feature it\nintends to use instead of treating one implemented command as proof that\nimport, history, assets or collaboration are equally mature.",
+  "properties": {
+    "assets": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "edit": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "export": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "history": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "import": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "presence": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    },
+    "projection": {
+      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
+    }
+  },
+  "required": [
+    "edit",
+    "history",
+    "projection",
+    "import",
+    "export",
+    "assets",
+    "presence"
+  ],
+  "type": "object"
+}

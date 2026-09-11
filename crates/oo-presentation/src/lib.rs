@@ -26,6 +26,205 @@ pub struct PresentationCommandBatch {
     pub commands: Vec<PresentationCommand>,
 }
 
+/// Semantic command inventory owned by the Presentation engine. The server
+/// derives capability discovery from this list and only appends transport
+/// intents such as durable history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PresentationCommandDescriptor {
+    pub type_id: &'static str,
+    pub scope: &'static str,
+}
+
+pub fn presentation_command_registry() -> &'static [PresentationCommandDescriptor] {
+    const COMMANDS: &[PresentationCommandDescriptor] = &[
+        PresentationCommandDescriptor {
+            type_id: "presentation.registerAsset",
+            scope: "presentation.asset",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setPageSpec",
+            scope: "presentation.deck",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.createMaster",
+            scope: "presentation.master",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.updateMaster",
+            scope: "presentation.master",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteMaster",
+            scope: "presentation.master",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.createLayout",
+            scope: "presentation.layout",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.updateLayout",
+            scope: "presentation.layout",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteLayout",
+            scope: "presentation.layout",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.createSlide",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteSlide",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.moveSlide",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.duplicateSlide",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.insertNode",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteNode",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.moveNode",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.reorderNode",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.groupNodes",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.ungroupNodes",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setNodeTransform",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setNodeLocked",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.alignNodes",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.distributeNodes",
+            scope: "presentation.node",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setShapeStyle",
+            scope: "presentation.node.shape",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setShapeGeometry",
+            scope: "presentation.node.shape",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setChartSpec",
+            scope: "presentation.node.chart",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setConnectorEndpoints",
+            scope: "presentation.node.connector",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setTableCellContent",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setTableCellStyle",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.insertTableRows",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.insertTableColumns",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteTableRow",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteTableColumn",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.mergeTableCells",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.splitTableCell",
+            scope: "presentation.node.table",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setTextContent",
+            scope: "presentation.node.text",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setTextFrame",
+            scope: "presentation.node.text",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setImageConfig",
+            scope: "presentation.node.image",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setMediaConfig",
+            scope: "presentation.node.media",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setSlideNotes",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setSlideBackground",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setSlideLayout",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setTheme",
+            scope: "presentation.deck",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.setSlideTransition",
+            scope: "presentation.slide",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.upsertAnimation",
+            scope: "presentation.slide.timeline",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.deleteAnimation",
+            scope: "presentation.slide.timeline",
+        },
+        PresentationCommandDescriptor {
+            type_id: "presentation.moveAnimation",
+            scope: "presentation.slide.timeline",
+        },
+    ];
+    COMMANDS
+}
+
 /// Stable table-cell identity inside one table node. For merged regions the
 /// only valid address is the region's top-left anchor; the engine rejects
 /// interior coordinates so UI hit testing cannot silently mutate a neighbour.
@@ -1435,6 +1634,14 @@ fn apply_command(
             if child_ids.len() < 2 {
                 return Err(PresentationEngineError::GroupRequiresTwoNodes);
             }
+            for child_id in &child_ids {
+                let child = &slide.nodes[node_index(slide, child_id)?];
+                if matches!(child.kind, SceneNodeKind::Connector(_)) {
+                    return Err(PresentationEngineError::ConnectorCannotBeGrouped(
+                        child_id.clone(),
+                    ));
+                }
+            }
             if slide.nodes.iter().any(|node| node.id == group.id) {
                 return Err(PresentationEngineError::DuplicateNode(group.id));
             }
@@ -1513,6 +1720,43 @@ fn apply_command(
         } => {
             let slide = slide_mut(deck, &slide_id)?;
             let index = node_index(slide, &node_id)?;
+            if slide.nodes[index].locked {
+                return Err(PresentationEngineError::LockedNode(node_id));
+            }
+            if matches!(slide.nodes[index].kind, SceneNodeKind::Group(_)) {
+                let affected = slide
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, node)| {
+                        node.id == node_id || is_descendant(slide, &node.id, &node_id)
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if let Some(locked) = affected.iter().find_map(|index| {
+                    let node = &slide.nodes[*index];
+                    (node.locked && node.id != node_id).then(|| node.id.clone())
+                }) {
+                    return Err(PresentationEngineError::LockedNode(locked));
+                }
+                let previous = affected
+                    .iter()
+                    .map(|index| {
+                        (
+                            slide.nodes[*index].id.clone(),
+                            slide.nodes[*index].transform.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                transform_group_nodes(slide, index, &affected, transform);
+                return Ok((
+                    InverseMutation::RestoreNodeTransforms {
+                        slide_id: slide_id.clone(),
+                        transforms: previous,
+                    },
+                    PresentationMutation::NodeTransformSet { slide_id, node_id },
+                ));
+            }
             let previous = std::mem::replace(&mut slide.nodes[index].transform, transform);
             Ok((
                 InverseMutation::SetNodeTransform {
@@ -2770,6 +3014,51 @@ fn selected_node_indices(
     Ok(indices)
 }
 
+fn transform_group_nodes(
+    slide: &mut Slide,
+    group_index: usize,
+    affected: &[usize],
+    next: NodeTransform,
+) {
+    let previous = slide.nodes[group_index].transform.clone();
+    let previous_center = (
+        previous.x + previous.width / 2.0,
+        previous.y + previous.height / 2.0,
+    );
+    let next_center = (next.x + next.width / 2.0, next.y + next.height / 2.0);
+    let scale_x = next.width / previous.width;
+    let scale_y = next.height / previous.height;
+    let previous_angle = previous.rotation.to_radians();
+    let next_angle = next.rotation.to_radians();
+    let delta_rotation = next.rotation - previous.rotation;
+    let (previous_sin, previous_cos) = previous_angle.sin_cos();
+    let (next_sin, next_cos) = next_angle.sin_cos();
+
+    for index in affected
+        .iter()
+        .copied()
+        .filter(|index| *index != group_index)
+    {
+        let transform = &mut slide.nodes[index].transform;
+        let center_x = transform.x + transform.width / 2.0;
+        let center_y = transform.y + transform.height / 2.0;
+        let delta_x = center_x - previous_center.0;
+        let delta_y = center_y - previous_center.1;
+        let local_x = previous_cos * delta_x + previous_sin * delta_y;
+        let local_y = -previous_sin * delta_x + previous_cos * delta_y;
+        let scaled_x = local_x * scale_x;
+        let scaled_y = local_y * scale_y;
+        let rotated_x = next_cos * scaled_x - next_sin * scaled_y;
+        let rotated_y = next_sin * scaled_x + next_cos * scaled_y;
+        transform.width *= scale_x;
+        transform.height *= scale_y;
+        transform.x = next_center.0 + rotated_x - transform.width / 2.0;
+        transform.y = next_center.1 + rotated_y - transform.height / 2.0;
+        transform.rotation += delta_rotation;
+    }
+    slide.nodes[group_index].transform = next;
+}
+
 fn align_nodes(
     slide: &mut Slide,
     node_ids: &[String],
@@ -3203,6 +3492,8 @@ pub enum PresentationEngineError {
     LockedNode(String),
     #[error("对象操作至少需要 {required} 个对象，当前为 {actual}")]
     SelectionRequiresAtLeast { required: usize, actual: usize },
+    #[error("connector {0} 的自由端点不属于 node transform，当前不能加入组合")]
+    ConnectorCannotBeGrouped(String),
     #[error("不存在的 animation：{0}")]
     MissingAnimation(String),
     #[error("node {0} 仍有子节点，必须先显式 ungroup 或移动子节点")]
@@ -3263,6 +3554,22 @@ mod tests {
         ShapeGeometry, ShapeNode, SlideLayout, SlideMaster, TableCell, TableCellStyle, TableNode,
         TextAutoFit, TextNode, TextVerticalAlign,
     };
+
+    #[test]
+    fn command_registry_is_unique_and_engine_owned() {
+        let registry = presentation_command_registry();
+        assert_eq!(registry.len(), 46);
+        let unique = registry
+            .iter()
+            .map(|descriptor| descriptor.type_id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), registry.len());
+        assert!(registry.iter().all(|descriptor| {
+            descriptor.type_id.starts_with("presentation.")
+                && descriptor.scope.starts_with("presentation")
+                && descriptor.type_id != "presentation.history"
+        }));
+    }
 
     fn slide(id: &str) -> Slide {
         Slide {
@@ -3823,10 +4130,7 @@ mod tests {
                     PresentationCommand::SetTextContent {
                         slide_id: "s1".into(),
                         node_id: "n1".into(),
-                        body: PresentationRichText {
-                            text: "changed".into(),
-                            runs: vec![],
-                        },
+                        body: PresentationRichText::plain("changed"),
                     },
                     PresentationCommand::SetNodeTransform {
                         slide_id: "s1".into(),
@@ -3860,10 +4164,7 @@ mod tests {
                 PresentationCommand::SetTextContent {
                     slide_id: "s1".into(),
                     node_id: "n1".into(),
-                    body: PresentationRichText {
-                        text: "hello".into(),
-                        runs: vec![],
-                    },
+                    body: PresentationRichText::plain("hello"),
                 },
             ],
         );
@@ -3939,6 +4240,132 @@ mod tests {
             .iter()
             .any(|node| node.id == "g"));
         engine.deck().validate().unwrap();
+    }
+
+    #[test]
+    fn grouping_a_connector_is_rejected_atomically() {
+        let mut connector = text_node("connector", "a");
+        connector.kind = SceneNodeKind::Connector(ConnectorNode {
+            start: ConnectorEndpoint::Free(oo_schema::presentation_v5::Point { x: 0.0, y: 0.0 }),
+            end: ConnectorEndpoint::Free(oo_schema::presentation_v5::Point { x: 10.0, y: 10.0 }),
+        });
+        let mut engine = PresentationEngine::new(
+            Deck {
+                slides: vec![Slide {
+                    nodes: vec![connector, text_node("text", "b")],
+                    ..slide("s1")
+                }],
+                ..deck()
+            },
+            0,
+        )
+        .unwrap();
+        let before = engine.deck().clone();
+        let result = engine.execute(PresentationCommandBatch {
+            base_revision: 0,
+            commands: vec![PresentationCommand::GroupNodes {
+                slide_id: "s1".into(),
+                group: group_node("g", "c"),
+                child_ids: vec!["connector".into(), "text".into()],
+                index: 0,
+            }],
+        });
+        assert!(
+            matches!(result, Err(PresentationEngineError::ConnectorCannotBeGrouped(id)) if id == "connector")
+        );
+        assert_eq!(engine.deck(), &before);
+    }
+
+    #[test]
+    fn group_transform_moves_scales_rotates_children_and_undoes_as_one_mutation() {
+        let mut engine = PresentationEngine::new(deck(), 0).unwrap();
+        let mut first = shape_node("a", "a");
+        first.transform = NodeTransform {
+            x: 0.0,
+            y: 0.0,
+            width: 40.0,
+            height: 20.0,
+            rotation: 0.0,
+        };
+        let mut second = shape_node("b", "b");
+        second.transform = NodeTransform {
+            x: 60.0,
+            y: 20.0,
+            width: 40.0,
+            height: 20.0,
+            rotation: 10.0,
+        };
+        let mut group = group_node("g", "c");
+        group.transform = NodeTransform {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 40.0,
+            rotation: 0.0,
+        };
+        run(
+            &mut engine,
+            vec![
+                PresentationCommand::CreateSlide {
+                    slide: slide("s1"),
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: first,
+                    index: 0,
+                },
+                PresentationCommand::InsertNode {
+                    slide_id: "s1".into(),
+                    node: second,
+                    index: 1,
+                },
+                PresentationCommand::GroupNodes {
+                    slide_id: "s1".into(),
+                    group,
+                    child_ids: vec!["a".into(), "b".into()],
+                    index: 0,
+                },
+            ],
+        );
+        let grouped = engine.deck().clone();
+        run(
+            &mut engine,
+            vec![PresentationCommand::SetNodeTransform {
+                slide_id: "s1".into(),
+                node_id: "g".into(),
+                transform: NodeTransform {
+                    x: 100.0,
+                    y: 200.0,
+                    width: 200.0,
+                    height: 80.0,
+                    rotation: 90.0,
+                },
+            }],
+        );
+        let slide = &engine.deck().slides[0];
+        let first = slide.nodes.iter().find(|node| node.id == "a").unwrap();
+        let second = slide.nodes.iter().find(|node| node.id == "b").unwrap();
+        assert_eq!(
+            (
+                first.transform.width,
+                first.transform.height,
+                first.transform.rotation
+            ),
+            (80.0, 40.0, 90.0)
+        );
+        assert_eq!(
+            (
+                second.transform.width,
+                second.transform.height,
+                second.transform.rotation
+            ),
+            (80.0, 40.0, 100.0)
+        );
+        assert_eq!((first.transform.x, first.transform.y), (180.0, 160.0));
+        assert_eq!((second.transform.x, second.transform.y), (140.0, 280.0));
+        engine.undo(engine.revision()).unwrap();
+        assert_eq!(engine.deck(), &grouped);
     }
 
     #[test]
@@ -4197,10 +4624,7 @@ mod tests {
                 },
             ],
         );
-        let body = PresentationRichText {
-            text: "Revenue".into(),
-            runs: vec![],
-        };
+        let body = PresentationRichText::plain("Revenue");
         let style = TableCellStyle::default();
         let change = run(
             &mut engine,

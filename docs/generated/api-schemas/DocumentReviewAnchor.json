@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "required": [
+    "blockId",
+    "start",
+    "end",
+    "revision"
+  ],
+  "properties": {
+    "blockId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "rowId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "cellId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "start": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "end": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

@@ -4,15 +4,15 @@
 // Source: crates/oo-protocol/tests/snapshots/contract_schemas.json
 
 export interface ArtifactCapability {
-/** Empty for planned engines. An empty list is intentional: it is not a */
-/** promise that an unimplemented command exists. */
+/** Empty when editing is planned or unsupported. An empty list is */
+/** intentional: it is not a promise that an unimplemented command exists. */
   commands: Array<ArtifactCommandCapability>;
+  features: ArtifactFeatureCapabilities;
   kind: ArtifactKind;
   namespace: string;
-  status: ArtifactCapabilityStatus;
 }
 
-export type ArtifactCapabilityStatus = "stable" | "planned";
+export type ArtifactCapabilityStatus = "stable" | "preview" | "planned" | "unsupported";
 
 /** A semantic command accepted by an Artifact engine. `scope` allows a client */
 /** to discover table-specific commands without pretending that tables are a */
@@ -29,6 +29,8 @@ export interface ArtifactCommandCapability {
 /** 这里表达的是语义 command，不是 Document engine 的内部 operation。不同 Artifact */
 /** 通过 `type_id` 扩展能力，服务端必须在进入领域 engine 前做对应的 command 校验。 */
 export interface ArtifactCommandEnvelope {
+/** Client-local device/session identity for correlation only. Servers must */
+/** derive authorization, audit author and event actor from authentication. */
   actorId: string;
   artifactId: string;
   baseRevision: number;
@@ -37,6 +39,19 @@ export interface ArtifactCommandEnvelope {
   origin: TransactionOrigin;
   protocolVersion: number;
   transactionId: string;
+}
+
+/** Independent product maturity signals. A client must inspect the feature it */
+/** intends to use instead of treating one implemented command as proof that */
+/** import, history, assets or collaboration are equally mature. */
+export interface ArtifactFeatureCapabilities {
+  assets: ArtifactCapabilityStatus;
+  edit: ArtifactCapabilityStatus;
+  export: ArtifactCapabilityStatus;
+  history: ArtifactCapabilityStatus;
+  import: ArtifactCapabilityStatus;
+  presence: ArtifactCapabilityStatus;
+  projection: ArtifactCapabilityStatus;
 }
 
 export type ArtifactKind = "document" | "spreadsheet" | "presentation" | "mindmap" | "whiteboard";

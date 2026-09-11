@@ -7,7 +7,7 @@
 
 - `oo-docx::parse_docx` 直接产出 `oo_schema::DocumentModel`。
 - 服务端只持久化 `ArtifactEnvelope`，对象键使用 `artifacts/{revision}.json`。
-- 读取使用 `/api/artifacts/{id}/snapshot`；完整快照写入同一路径也必须携带 `If-Match` 与 `x-transaction-id`，返回 typed `CommitResult`，不可绕过事务幂等和 domain event outbox。
+- `/api/artifacts/{id}/snapshot` 只读；所有在线内容写入必须使用 semantic transaction，不存在完整快照 PUT 旁路。
 - 编辑使用 `/api/artifacts/{id}/transactions`，事务摘要与 snapshot 指针在同一数据库事务内提交。
 - 版本历史使用 `/api/artifacts/{id}/revisions`（列表/读取）和
   `/api/artifacts/{id}/revisions/{version}/restore`；恢复只生成新 revision，并要求 `If-Match`、`x-transaction-id`，以 system/import transaction 写入 durable outbox。
@@ -16,6 +16,10 @@
   `OO_ENABLE_BLOB_GC=1` 才执行，默认不猜测未登记对象是否可删除。
 - 已有数据先执行 `cargo run -p oo-server --bin reconcile-snapshots -- <data-dir>`；该工具只登记
   通过 Artifact/schema/revision 校验的对象，不删除文件，检查输出和备份后再打开 GC。
+- 五类 payload 通过统一只读 asset-reference projection 声明二进制闭包。事务提交在推进 snapshot
+  指针的同一数据库事务中校验资产存在性，以及模型明确声明的 checksum/MIME，并重建引用计数。
+  未引用资产仅允许在停止 writer 后离线回收：设置 `OO_ENABLE_ASSET_GC=1`，执行
+  `cargo run -p oo-server --bin gc-assets -- <data-dir> [grace-hours]`；默认宽限期为 24 小时。
 - React 使用 Block Tree DOM 编辑器；每个 block 有稳定 id，行首加号/把手固定在正文左侧。
 - Canvas/WASM Paragraph 会话不再进入文档编辑器运行时；Canvas 只留给未来白板/演示文稿引擎。
 - 旧 Paragraph/layout/editor/WASM 源码与生成物已移入 `freeze/legacy-before-block-cutover`，不在

@@ -32,7 +32,7 @@ export type {
 } from "./protocol.generated.js";
 
 /** Runtime accepts this version only; older snapshots must go through the offline migrator. */
-export const CURRENT_SCHEMA_VERSION = 5;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 export interface ArtifactPageSetup {
   width: number;
@@ -349,6 +349,58 @@ export interface DocumentModel {
   root: string[];
   blocks: DocumentBlock[];
   pageSetup: ArtifactPageSetup | null;
+  pageSemantics: DocumentPageSemantics;
+}
+
+export interface DocumentPageSemantics {
+  sections: DocumentSection[];
+  footnotes: DocumentNote[];
+  endnotes: DocumentNote[];
+}
+
+export interface DocumentSection {
+  id: string;
+  startBlockId: string;
+  pageSetup: ArtifactPageSetup | null;
+  header: DocumentHeaderFooter | null;
+  footer: DocumentHeaderFooter | null;
+  pageNumbering: DocumentPageNumbering | null;
+}
+
+export interface DocumentHeaderFooter {
+  default: HeaderFooterContent;
+  firstPage: HeaderFooterContent | null;
+  evenPages: HeaderFooterContent | null;
+}
+
+export interface HeaderFooterContent {
+  segments: HeaderFooterSegment[];
+}
+
+export type HeaderFooterSegment =
+  | { type: "text"; content: RichText }
+  | { type: "pageNumber" }
+  | { type: "pageCount" };
+
+export type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+
+export interface DocumentPageNumbering {
+  startAt: number;
+  format: PageNumberFormat;
+}
+
+export interface DocumentTextAnchor {
+  blockId: string;
+  rowId: string | null;
+  cellId: string | null;
+  start: number;
+  end: number;
+}
+
+export interface DocumentNote {
+  id: string;
+  anchor: DocumentTextAnchor;
+  content: RichText[];
 }
 
 export interface SpreadsheetModel {
@@ -367,7 +419,8 @@ export interface CellModel {
   row: number;
   column: number;
   value?: unknown;
-  formula?: string;
+  /** Rust 端 Option::None 在 wire 上是显式 null，因此允许 null 形态。 */
+  formula?: string | null;
   attrs: Record<string, unknown>;
   style?: CellStyle | null;
 }
@@ -380,7 +433,9 @@ export interface SpreadsheetMetadata {
   activeSheetId: string | null;
   calculationMode: CalculationMode;
   dateSystem: DateSystem;
+  namedRanges: SpreadsheetNamedRange[];
 }
+export interface SpreadsheetNamedRange { name: string; scopeSheetId: string | null; sheetId: string; range: GridRange; }
 
 export interface FreezePane {
   rows: number;
@@ -461,12 +516,15 @@ export interface CellStyle {
   font: FontStyle | null;
   fill: FillStyle | null;
   alignment: AlignmentStyle | null;
+  borders: CellBorders | null;
 }
 export interface FontStyle {
   family: string | null;
   size: number | null;
   bold: boolean;
   italic: boolean;
+  strikethrough: boolean;
+  underline: boolean;
   color: string | null;
 }
 export interface FillStyle {
@@ -478,6 +536,20 @@ export interface AlignmentStyle {
   vertical: string | null;
   wrap: boolean;
 }
+export interface CellBorderEdge {
+  style: string | null;
+  color: string | null;
+}
+export interface CellBorders {
+  top: CellBorderEdge | null;
+  bottom: CellBorderEdge | null;
+  left: CellBorderEdge | null;
+  right: CellBorderEdge | null;
+}
+/** 边框样式封闭词表，与 Rust CellBorders::KNOWN_STYLES 对齐。 */
+export const CELL_BORDER_STYLES: ReadonlySet<string> = new Set([
+  "thin", "medium", "thick", "dashed", "dotted", "double", "hair",
+]);
 export interface SheetMedia {
   id: string;
   relationship: string;
@@ -486,7 +558,10 @@ export interface SheetMedia {
   anchor: GridRange;
 }
 
+export interface SheetRowLayout { row: number; height: number | null; hidden: boolean; }
+
 export interface SheetMetadata {
+  rowLayout?: SheetRowLayout[];
   visibility: SheetVisibility;
   rowCount: number | null;
   columnCount: number | null;
@@ -503,15 +578,75 @@ export interface SheetMetadata {
 export type PresentationDeck = PresentationV5Deck;
 
 export interface MindmapModel {
+  /** Shared document semantics; viewport color mode, zoom, pan and selection are local UI state. */
+  settings: MindmapSettings;
   root: string | null;
   nodes: MindmapNode[];
   edges: MindmapEdge[];
+  summaries: MindmapSummary[];
+  boundaries: MindmapBoundary[];
+  formulas: MindmapFormula[];
+}
+
+export type MindmapLayoutKind =
+  | "logicalRight"
+  | "logicalLeft"
+  | "mindMap"
+  | "organization"
+  | "catalog"
+  | "timelineHorizontal"
+  | "timelineVertical"
+  | "fishbone";
+export type MindmapConnectorShape = "orthogonal" | "curve" | "straight";
+export type MindmapNodeShape = "roundedRectangle" | "rectangle" | "ellipse" | "diamond" | "pill" | "underline";
+export type MindmapTextAlign = "start" | "center" | "end";
+
+export interface MindmapConnectorStyle {
+  shape: MindmapConnectorShape;
+  color: string | null;
+  width: number;
+  dashed: boolean;
+}
+
+export interface MindmapSettings {
+  layout: MindmapLayoutKind;
+  /** Shared product theme id. Light/dark/high-contrast remains a personal renderer preference. */
+  themeId: string | null;
+  connector: MindmapConnectorStyle;
+}
+
+export interface MindmapNodeStyle {
+  shape: MindmapNodeShape;
+  fillColor: string | null;
+  borderColor: string | null;
+  textColor: string | null;
+  borderWidth: number;
+  textAlign: MindmapTextAlign;
+  minWidth: number;
+  maxWidth: number;
+}
+
+export interface MindmapImage {
+  assetId: string;
+  alt: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface MindmapNodeSupplement {
+  note: RichText | null;
+  hyperlink: string | null;
+  image: MindmapImage | null;
+  markers: string[];
 }
 
 export interface MindmapNode {
   id: string;
   parentId: string | null;
   content: RichText | null;
+  style: MindmapNodeStyle;
+  supplement: MindmapNodeSupplement;
+  /** Extension-only compatibility data; first-party features use typed fields. */
   attrs: Record<string, unknown>;
   collapsed: boolean;
 }
@@ -520,7 +655,31 @@ export interface MindmapEdge {
   id: string;
   sourceId: string;
   targetId: string;
+  label: RichText | null;
+  style: MindmapConnectorStyle;
   attrs: Record<string, unknown>;
+}
+
+export interface MindmapSummary {
+  id: string;
+  startNodeId: string;
+  endNodeId: string;
+  content: RichText;
+}
+
+export interface MindmapBoundary {
+  id: string;
+  rootNodeId: string;
+  label: RichText | null;
+}
+
+export type MindmapFormulaDisplay = "inline" | "block";
+
+export interface MindmapFormula {
+  id: string;
+  nodeId: string;
+  source: string;
+  display: MindmapFormulaDisplay;
 }
 
 export interface WhiteboardModel {
@@ -566,6 +725,7 @@ export interface DocumentHistoryOperation {
 }
 
 export const DOCUMENT_HISTORY_TYPE_ID = "document.history";
+export const MINDMAP_HISTORY_TYPE_ID = "mindmap.history";
 
 
 
@@ -698,10 +858,27 @@ export type DocumentCommand =
         transform?: ImageTransform;
         size?: ImageSize;
         placement?: ImagePlacement;
+        alt?: string;
         caption?: string;
       };
     }
   | { type: "replaceBlockText"; blockId: string; content: RichText }
+  | {
+      type: "replaceAllText";
+      query: string;
+      replacement: string;
+      options?: { caseSensitive?: boolean; wholeWord?: boolean };
+    }
+  | {
+      type: "replaceTextMatch";
+      target:
+        | { type: "block"; blockId: string }
+        | { type: "tableCell"; blockId: string; rowId: string; cellId: string };
+      range: TextRange;
+      query: string;
+      replacement: string;
+      options?: { caseSensitive?: boolean; wholeWord?: boolean };
+    }
   | { type: "convertBlock"; blockId: string; kind: DocumentBlockKind }
   | { type: "replaceTableCellText"; blockId: string; rowId: string; cellId: string; content: RichText }
   | {
@@ -723,7 +900,11 @@ export type DocumentCommand =
   | { type: "deleteBlock"; blockId: string }
   | { type: "resetBlock"; blockId: string }
   | { type: "moveBlock"; blockId: string; parentId?: string | null; index: number }
-  | { type: "setPageSetup"; pageSetup: ArtifactPageSetup | null };
+  | { type: "setPageSetup"; pageSetup: ArtifactPageSetup | null }
+  | { type: "upsertSection"; section: DocumentSection; index: number }
+  | { type: "deleteSection"; sectionId: string }
+  | { type: "upsertNote"; noteKind: "footnote" | "endnote"; note: DocumentNote }
+  | { type: "deleteNote"; noteKind: "footnote" | "endnote"; noteId: string };
 
 export interface RemovedBlock {
   position: number;
@@ -745,7 +926,8 @@ export type DocumentMutation =
       toParentId: string | null;
       toIndex: number;
     }
-  | { type: "setPageSetup"; before: ArtifactPageSetup | null; after: ArtifactPageSetup | null };
+  | { type: "setPageSetup"; before: ArtifactPageSetup | null; after: ArtifactPageSetup | null }
+  | { type: "setPageSemantics"; before: DocumentPageSemantics; after: DocumentPageSemantics };
 
 /** 解析并校验服务端返回的 Artifact 快照。 */
 export function parseSnapshot(value: unknown): SnapshotEnvelope {
@@ -876,7 +1058,124 @@ function parseDocumentModel(value: unknown): DocumentModel {
   }
   validateTree(root, byId);
   const pageSetup = record.pageSetup === null ? null : parsePageSetup(record.pageSetup);
-  return { root, blocks, pageSetup };
+  const pageSemantics = parseDocumentPageSemantics(record.pageSemantics, root, byId);
+  return { root, blocks, pageSetup, pageSemantics };
+}
+
+function parseDocumentPageSemantics(
+  value: unknown,
+  root: string[],
+  byId: Map<string, DocumentBlock>,
+): DocumentPageSemantics {
+  const record = asRecord(value, "document.pageSemantics");
+  assertKnownKeys(record, ["sections", "footnotes", "endnotes"], "document.pageSemantics");
+  const rootPositions = new Map(root.map((id, index) => [id, index]));
+  let previous = -1;
+  const sectionIds = new Set<string>();
+  const sections = asArray(record.sections, "document.pageSemantics.sections").map((raw, index): DocumentSection => {
+    const name = `document.pageSemantics.sections[${index}]`;
+    const item = asRecord(raw, name);
+    assertKnownKeys(item, ["id", "startBlockId", "pageSetup", "header", "footer", "pageNumbering"], name);
+    const id = asNonEmptyString(item.id, `${name}.id`);
+    if (sectionIds.has(id)) throw new Error(`${name}.id 重复`);
+    sectionIds.add(id);
+    const startBlockId = asNonEmptyString(item.startBlockId, `${name}.startBlockId`);
+    const position = rootPositions.get(startBlockId);
+    if (position === undefined) throw new Error(`${name}.startBlockId 必须引用根 block`);
+    if (index === 0 && position !== 0) throw new Error("首个 section 必须从第一个根 block 开始");
+    if (position <= previous) throw new Error("section 必须按根 block 顺序排列且起点不能重复");
+    previous = position;
+    const pageSetup = item.pageSetup === null ? null : parsePageSetup(item.pageSetup);
+    const header = item.header === null ? null : parseDocumentHeaderFooter(item.header, `${name}.header`);
+    const footer = item.footer === null ? null : parseDocumentHeaderFooter(item.footer, `${name}.footer`);
+    const pageNumbering = item.pageNumbering === null ? null : parseDocumentPageNumbering(item.pageNumbering, `${name}.pageNumbering`);
+    return { id, startBlockId, pageSetup, header, footer, pageNumbering };
+  });
+  const noteIds = new Set<string>();
+  const parseNotes = (raw: unknown, kind: "footnotes" | "endnotes"): DocumentNote[] => asArray(raw, `document.pageSemantics.${kind}`).map((value, index) => {
+    const name = `document.pageSemantics.${kind}[${index}]`;
+    const item = asRecord(value, name);
+    assertKnownKeys(item, ["id", "anchor", "content"], name);
+    const id = asNonEmptyString(item.id, `${name}.id`);
+    if (noteIds.has(id)) throw new Error(`document note id 重复：${id}`);
+    noteIds.add(id);
+    const content = asArray(item.content, `${name}.content`).map(parseRichText);
+    if (!content.length) throw new Error(`${name}.content 不能为空`);
+    return { id, anchor: parseDocumentTextAnchor(item.anchor, name, byId), content };
+  });
+  return {
+    sections,
+    footnotes: parseNotes(record.footnotes, "footnotes"),
+    endnotes: parseNotes(record.endnotes, "endnotes"),
+  };
+}
+
+function parseDocumentHeaderFooter(value: unknown, name: string): DocumentHeaderFooter {
+  const record = asRecord(value, name);
+  assertKnownKeys(record, ["default", "firstPage", "evenPages"], name);
+  return {
+    default: parseHeaderFooterContent(record.default, `${name}.default`),
+    firstPage: record.firstPage === null ? null : parseHeaderFooterContent(record.firstPage, `${name}.firstPage`),
+    evenPages: record.evenPages === null ? null : parseHeaderFooterContent(record.evenPages, `${name}.evenPages`),
+  };
+}
+
+function parseHeaderFooterContent(value: unknown, name: string): HeaderFooterContent {
+  const record = asRecord(value, name);
+  assertKnownKeys(record, ["segments"], name);
+  const rawSegments = asArray(record.segments, `${name}.segments`);
+  if (rawSegments.length > 256) throw new Error(`${name}.segments 不能超过 256 个`);
+  return { segments: rawSegments.map((raw, index): HeaderFooterSegment => {
+    const segment = asRecord(raw, `${name}.segments[${index}]`);
+    if (segment.type === "text") {
+      assertKnownKeys(segment, ["type", "content"], `${name}.segments[${index}]`);
+      return { type: "text", content: parseRichText(segment.content) };
+    }
+    if (segment.type === "pageNumber" || segment.type === "pageCount") {
+      assertKnownKeys(segment, ["type"], `${name}.segments[${index}]`);
+      return { type: segment.type };
+    }
+    throw new Error(`${name}.segments[${index}].type 无效`);
+  }) };
+}
+
+function parseDocumentPageNumbering(value: unknown, name: string): DocumentPageNumbering {
+  const record = asRecord(value, name);
+  assertKnownKeys(record, ["startAt", "format"], name);
+  const startAt = asNonNegativeInteger(record.startAt, `${name}.startAt`);
+  if (startAt < 1 || startAt > 1_000_000) throw new Error(`${name}.startAt 必须在 1 到 1000000 之间`);
+  const format = record.format;
+  if (format !== "decimal" && format !== "upperRoman" && format !== "lowerRoman" && format !== "upperLetter" && format !== "lowerLetter") {
+    throw new Error(`${name}.format 无效`);
+  }
+  return { startAt, format };
+}
+
+function parseDocumentTextAnchor(value: unknown, owner: string, byId: Map<string, DocumentBlock>): DocumentTextAnchor {
+  const name = `${owner}.anchor`;
+  const record = asRecord(value, name);
+  assertKnownKeys(record, ["blockId", "rowId", "cellId", "start", "end"], name);
+  const blockId = asNonEmptyString(record.blockId, `${name}.blockId`);
+  const block = byId.get(blockId);
+  if (!block) throw new Error(`${name}.blockId 引用了不存在的 block`);
+  const rowId = record.rowId === null ? null : asNonEmptyString(record.rowId, `${name}.rowId`);
+  const cellId = record.cellId === null ? null : asNonEmptyString(record.cellId, `${name}.cellId`);
+  if ((rowId === null) !== (cellId === null)) throw new Error(`${name}.rowId/cellId 必须同时存在或同时省略`);
+  let textLength: number;
+  if (rowId !== null && cellId !== null) {
+    if (block.data.type !== "table") throw new Error(`${name}.blockId 不是表格`);
+    const row = block.data.data.rows.find((candidate) => candidate.id === rowId);
+    const cell = row?.cells.find((candidate) => candidate.id === cellId);
+    if (!cell) throw new Error(`${name} 引用了不存在的单元格`);
+    textLength = Array.from(cell.content.text).length;
+  } else {
+    if (!block.content) throw new Error(`${name}.blockId 不是文本 block`);
+    textLength = Array.from(block.content.text).length;
+  }
+  const start = asNonNegativeInteger(record.start, `${name}.start`);
+  const end = asNonNegativeInteger(record.end, `${name}.end`);
+  if (start > end || end > textLength) throw new Error(`${name} 范围超出文本长度`);
+  return { blockId, rowId, cellId, start, end };
 }
 
 function validateTree(root: string[], byId: Map<string, DocumentBlock>): void {
@@ -980,11 +1279,13 @@ function parseBlockData(value: unknown, index: number): BlockData {
       : asNonEmptyString(data.originalAssetId, `${name}.data.originalAssetId`);
     const caption = data.caption === undefined ? "" : asString(data.caption, `${name}.data.caption`);
     if (Array.from(caption).length > 512) throw new Error(`${name}.data.caption 不能超过 512 个字符`);
+    const alt = data.alt === undefined ? "" : asString(data.alt, `${name}.data.alt`);
+    if (Array.from(alt).length > 2_048) throw new Error(`${name}.data.alt 替代文本不能超过 2048 个字符`);
     return {
       type,
       data: {
         assetId: asNonEmptyString(data.assetId, `${name}.data.assetId`),
-        alt: data.alt === undefined ? "" : asString(data.alt, `${name}.data.alt`),
+        alt,
         originalAssetId,
         transform,
         size: parseImageSize(data.size, `${name}.data.size`),
@@ -1402,7 +1703,7 @@ function parsePageSetup(value: unknown): ArtifactPageSetup {
   return pageSetup;
 }
 
-function parseSpreadsheetModel(value: unknown): SpreadsheetModel {
+export function parseSpreadsheetModel(value: unknown): SpreadsheetModel {
   const record = asRecord(value, "spreadsheet data");
   const metadata = parseSpreadsheetMetadata(record.metadata, "spreadsheet.metadata");
   const rawSheets = asArray(record.sheets, "spreadsheet sheets");
@@ -1421,12 +1722,15 @@ function parseSpreadsheetModel(value: unknown): SpreadsheetModel {
       return {
         row,
         column,
-        ...(cell.value === undefined ? {} : { value: cell.value }),
-        ...(cell.formula === undefined
+        // Rust 端 Option::None 序列化为显式 null（不是缺省），必须与 undefined 一并豁免。
+        ...(cell.value === undefined || cell.value === null ? {} : { value: cell.value }),
+        ...(cell.formula === undefined || cell.formula === null
           ? {}
           : { formula: asString(cell.formula, `sheet[${index}].cell[${cellIndex}].formula`) }),
         attrs,
-        ...(cell.style === undefined ? {} : { style: parseCellStyle(cell.style, `sheet[${index}].cell[${cellIndex}].style`) }),
+        ...(cell.style === undefined || cell.style === null
+          ? {}
+          : { style: parseCellStyle(cell.style, `sheet[${index}].cell[${cellIndex}].style`) }),
       } satisfies CellModel;
     });
     const coordinates = new Set(cells.map((cell) => `${cell.row}:${cell.column}`));
@@ -1443,12 +1747,20 @@ function parseSpreadsheetModel(value: unknown): SpreadsheetModel {
   if (metadata.activeSheetId !== null && !ids.has(metadata.activeSheetId)) {
     throw new Error(`spreadsheet.metadata.activeSheetId 不存在：${metadata.activeSheetId}`);
   }
+  const namedKeys = new Set<string>();
+  for (const named of metadata.namedRanges) {
+    const key = `${named.scopeSheetId ?? "workbook"}:${named.name.toLocaleLowerCase()}`;
+    if (!ids.has(named.sheetId) || (named.scopeSheetId !== null && !ids.has(named.scopeSheetId)) || namedKeys.has(key)) {
+      throw new Error(`spreadsheet.metadata.namedRanges 无效、重名或引用未知 sheet：${named.name}`);
+    }
+    namedKeys.add(key);
+  }
   return { metadata, sheets };
 }
 
 function parseSpreadsheetMetadata(value: unknown, name: string): SpreadsheetMetadata {
   if (value === undefined || value === null) {
-    return { activeSheetId: null, calculationMode: "automatic", dateSystem: "excel1900" };
+    return { activeSheetId: null, calculationMode: "automatic", dateSystem: "excel1900", namedRanges: [] };
   }
   const record = asRecord(value, name);
   const activeSheetId = record.activeSheetId === undefined || record.activeSheetId === null
@@ -1458,7 +1770,18 @@ function parseSpreadsheetMetadata(value: unknown, name: string): SpreadsheetMeta
   if (calculationMode !== "automatic" && calculationMode !== "manual") throw new Error(`${name}.calculationMode 无效`);
   const dateSystem = record.dateSystem === undefined ? "excel1900" : record.dateSystem;
   if (dateSystem !== "excel1900" && dateSystem !== "excel1904") throw new Error(`${name}.dateSystem 无效`);
-  return { activeSheetId, calculationMode, dateSystem };
+  const namedRanges = asArray(record.namedRanges ?? [], `${name}.namedRanges`).map((raw, index) => {
+    const named = asRecord(raw, `${name}.namedRanges[${index}]`);
+    const rangeName = asString(named.name, `${name}.namedRanges[${index}].name`);
+    if (!rangeName.trim()) throw new Error(`${name}.namedRanges[${index}].name 不能为空`);
+    return {
+      name: rangeName,
+      scopeSheetId: named.scopeSheetId === undefined || named.scopeSheetId === null ? null : asString(named.scopeSheetId, `${name}.namedRanges[${index}].scopeSheetId`),
+      sheetId: asString(named.sheetId, `${name}.namedRanges[${index}].sheetId`),
+      range: parseGridRange(named.range, `${name}.namedRanges[${index}].range`),
+    } satisfies SpreadsheetNamedRange;
+  });
+  return { activeSheetId, calculationMode, dateSystem, namedRanges };
 }
 
 function parseSheetMetadata(value: unknown, name: string): SheetMetadata {
@@ -1476,7 +1799,16 @@ function parseSheetMetadata(value: unknown, name: string): SheetMetadata {
   const autoFilter = record.autoFilter === undefined || record.autoFilter === null ? null : parseFilter(record.autoFilter, `${name}.autoFilter`);
   const sort = record.sort === undefined || record.sort === null ? null : parseSort(record.sort, `${name}.sort`);
   const media = asArray(record.media ?? [], `${name}.media`).map((item, index) => parseMedia(item, `${name}.media[${index}]`));
-  return { visibility, rowCount, columnCount, freeze, autoFilter, sort, conditionalFormats, dataValidations, mergedRanges, media };
+  const seenRows = new Set<number>();
+  const rowLayout = asArray(record.rowLayout ?? [], `${name}.rowLayout`).map((item, index): SheetRowLayout => {
+    const entry = asRecord(item, `${name}.rowLayout[${index}]`);
+    const row = asNonNegativeInteger(entry.row, `${name}.rowLayout.row`);
+    const height = entry.height == null ? null : entry.height;
+    if (row >= (rowCount ?? 1_048_576) || seenRows.has(row) || (height !== null && (typeof height !== "number" || !Number.isFinite(height) || height <= 0 || height > 409.5)) || (entry.hidden !== undefined && typeof entry.hidden !== "boolean")) throw new Error(`${name}.rowLayout 无效`);
+    seenRows.add(row);
+    return { row, height: height as number | null, hidden: entry.hidden === true };
+  });
+  return { visibility, rowCount, columnCount, freeze, autoFilter, sort, conditionalFormats, dataValidations, mergedRanges, media, ...(rowLayout.length ? { rowLayout } : {}) };
 }
 
 function defaultSheetMetadata(): SheetMetadata {
@@ -1562,17 +1894,41 @@ function parseDataValidation(value: unknown, name: string): DataValidationRule {
   return { id: asNonEmptyString(record.id, `${name}.id`), range: parseGridRange(record.range, `${name}.range`), kind: parsed, allowBlank: record.allowBlank === undefined ? false : asBoolean(record.allowBlank, `${name}.allowBlank`), errorMessage: record.errorMessage === undefined || record.errorMessage === null ? null : asString(record.errorMessage, `${name}.errorMessage`) };
 }
 
-function parseCellStyle(value: unknown, name: string): CellStyle {
-  if (value === undefined || value === null) return { numberFormat: null, font: null, fill: null, alignment: null };
+function parseCellBorderEdge(value: unknown, name: string): CellBorderEdge {
+  const record = asRecord(value, name);
+  const style = record.style === undefined || record.style === null ? null : asString(record.style, `${name}.style`);
+  const color = record.color === undefined || record.color === null ? null : asString(record.color, `${name}.color`);
+  if (style !== null && !CELL_BORDER_STYLES.has(style)) {
+    throw new Error(`${name}.style 无效：${style}`);
+  }
+  if (style === null && color === null) {
+    throw new Error(`${name} 的样式与颜色不能同时为空`);
+  }
+  return { style, color };
+}
+
+function parseCellBorders(value: unknown, name: string): CellBorders {
+  const record = asRecord(value, name);
+  const side = (key: string): CellBorderEdge | null => {
+    const raw = record[key];
+    return raw === undefined || raw === null ? null : parseCellBorderEdge(raw, `${name}.${key}`);
+  };
+  return { top: side("top"), bottom: side("bottom"), left: side("left"), right: side("right") };
+}
+
+export function parseCellStyle(value: unknown, name: string): CellStyle {
+  if (value === undefined || value === null) return { numberFormat: null, font: null, fill: null, alignment: null, borders: null };
   const record = asRecord(value, name);
   const font = record.font === undefined || record.font === null ? null : asRecord(record.font, `${name}.font`);
   const fill = record.fill === undefined || record.fill === null ? null : asRecord(record.fill, `${name}.fill`);
   const alignment = record.alignment === undefined || record.alignment === null ? null : asRecord(record.alignment, `${name}.alignment`);
+  const borders = record.borders === undefined || record.borders === null ? null : parseCellBorders(record.borders, `${name}.borders`);
   return {
     numberFormat: record.numberFormat === undefined || record.numberFormat === null ? null : asString(record.numberFormat, `${name}.numberFormat`),
-    font: font === null ? null : { family: font.family === undefined || font.family === null ? null : asString(font.family, `${name}.font.family`), size: font.size === undefined || font.size === null ? null : asFiniteNumber(font.size, `${name}.font.size`), bold: font.bold === undefined ? false : asBoolean(font.bold, `${name}.font.bold`), italic: font.italic === undefined ? false : asBoolean(font.italic, `${name}.font.italic`), color: font.color === undefined || font.color === null ? null : asString(font.color, `${name}.font.color`) },
+    font: font === null ? null : { family: font.family === undefined || font.family === null ? null : asString(font.family, `${name}.font.family`), size: font.size === undefined || font.size === null ? null : asFiniteNumber(font.size, `${name}.font.size`), bold: font.bold === undefined ? false : asBoolean(font.bold, `${name}.font.bold`), italic: font.italic === undefined ? false : asBoolean(font.italic, `${name}.font.italic`), strikethrough: font.strikethrough === undefined ? false : asBoolean(font.strikethrough, `${name}.font.strikethrough`), underline: font.underline === undefined ? false : asBoolean(font.underline, `${name}.font.underline`), color: font.color === undefined || font.color === null ? null : asString(font.color, `${name}.font.color`) },
     fill: fill === null ? null : { foreground: fill.foreground === undefined || fill.foreground === null ? null : asString(fill.foreground, `${name}.fill.foreground`), background: fill.background === undefined || fill.background === null ? null : asString(fill.background, `${name}.fill.background`) },
     alignment: alignment === null ? null : { horizontal: alignment.horizontal === undefined || alignment.horizontal === null ? null : asString(alignment.horizontal, `${name}.alignment.horizontal`), vertical: alignment.vertical === undefined || alignment.vertical === null ? null : asString(alignment.vertical, `${name}.alignment.vertical`), wrap: alignment.wrap === undefined ? false : asBoolean(alignment.wrap, `${name}.alignment.wrap`) },
+    borders,
   };
 }
 
@@ -1583,6 +1939,7 @@ function parseMedia(value: unknown, name: string): SheetMedia {
 
 function parseMindmapModel(value: unknown): MindmapModel {
   const record = asRecord(value, "mindmap data");
+  const settings = parseMindmapSettings(record.settings);
   const root = record.root === null ? null : asNonEmptyString(record.root, "mindmap root");
   const rawNodes = asArray(record.nodes, "mindmap nodes");
   const ids = new Set<string>();
@@ -1597,15 +1954,21 @@ function parseMindmapModel(value: unknown): MindmapModel {
         ? null
         : asNonEmptyString(node.parentId, `mindmap node[${index}].parentId`),
       content: node.content === null ? null : parseRichText(node.content),
+      style: parseMindmapNodeStyle(node.style, `mindmap node[${index}].style`),
+      supplement: parseMindmapNodeSupplement(node.supplement, `mindmap node[${index}].supplement`),
       attrs: asRecord(node.attrs, `mindmap node[${index}].attrs`),
       collapsed: node.collapsed === true,
     } satisfies MindmapNode;
   });
   const rawEdges = record.edges === undefined ? [] : asArray(record.edges, "mindmap edges");
+  const rawSummaries = record.summaries === undefined ? [] : asArray(record.summaries, "mindmap summaries");
+  const rawBoundaries = record.boundaries === undefined ? [] : asArray(record.boundaries, "mindmap boundaries");
+  const rawFormulas = record.formulas === undefined ? [] : asArray(record.formulas, "mindmap formulas");
   if (nodes.length === 0) {
     if (root !== null) throw new Error("空 mindmap 不能设置 root");
     if (rawEdges.length > 0) throw new Error("空 mindmap 不能设置 edge");
-    return { root, nodes, edges: [] };
+    if (rawSummaries.length || rawBoundaries.length || rawFormulas.length) throw new Error("空 mindmap 不能设置高级结构");
+    return { settings, root, nodes, edges: [], summaries: [], boundaries: [], formulas: [] };
   }
   if (root === null || !ids.has(root)) throw new Error("非空 mindmap 必须引用存在的 root");
   const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -1633,9 +1996,166 @@ function parseMindmapModel(value: unknown): MindmapModel {
     if (!ids.has(sourceId) || !ids.has(targetId)) {
       throw new Error(`mindmap edge ${id} 引用了不存在的节点`);
     }
-    return { id, sourceId, targetId, attrs: asRecord(edge.attrs, `mindmap edge[${index}].attrs`) } satisfies MindmapEdge;
+    return {
+      id,
+      sourceId,
+      targetId,
+      label: edge.label === undefined || edge.label === null ? null : parseRichText(edge.label),
+      style: parseMindmapConnectorStyle(edge.style, `mindmap edge[${index}].style`),
+      attrs: asRecord(edge.attrs, `mindmap edge[${index}].attrs`),
+    } satisfies MindmapEdge;
   });
-  return { root, nodes, edges };
+  const summaries = rawSummaries.map((rawSummary, index) => {
+    const summary = asRecord(rawSummary, `mindmap summary[${index}]`);
+    assertKnownKeys(summary, ["id", "startNodeId", "endNodeId", "content"], `mindmap summary[${index}]`);
+    const id = asNonEmptyString(summary.id, `mindmap summary[${index}].id`);
+    const startNodeId = asNonEmptyString(summary.startNodeId, `mindmap summary[${index}].startNodeId`);
+    const endNodeId = asNonEmptyString(summary.endNodeId, `mindmap summary[${index}].endNodeId`);
+    const start = byId.get(startNodeId);
+    const end = byId.get(endNodeId);
+    if (!start || !end) throw new Error(`mindmap summary ${id} 引用了不存在的节点`);
+    if (start.id === end.id || start.parentId === null || start.parentId !== end.parentId) throw new Error(`mindmap summary ${id} 必须引用同一非空 parent 下的不同兄弟节点`);
+    const siblings = nodes.filter((node) => node.parentId === start.parentId);
+    if (siblings.findIndex((node) => node.id === start.id) >= siblings.findIndex((node) => node.id === end.id)) throw new Error(`mindmap summary ${id} 的兄弟区间必须为正向非空区间`);
+    return { id, startNodeId, endNodeId, content: parseRichText(summary.content) } satisfies MindmapSummary;
+  });
+  const boundaries = rawBoundaries.map((rawBoundary, index) => {
+    const boundary = asRecord(rawBoundary, `mindmap boundary[${index}]`);
+    assertKnownKeys(boundary, ["id", "rootNodeId", "label"], `mindmap boundary[${index}]`);
+    const id = asNonEmptyString(boundary.id, `mindmap boundary[${index}].id`);
+    const rootNodeId = asNonEmptyString(boundary.rootNodeId, `mindmap boundary[${index}].rootNodeId`);
+    if (!ids.has(rootNodeId)) throw new Error(`mindmap boundary ${id} 引用了不存在的节点`);
+    return { id, rootNodeId, label: boundary.label === undefined || boundary.label === null ? null : parseRichText(boundary.label) } satisfies MindmapBoundary;
+  });
+  const formulas = rawFormulas.map((rawFormula, index) => {
+    const formula = asRecord(rawFormula, `mindmap formula[${index}]`);
+    assertKnownKeys(formula, ["id", "nodeId", "source", "display"], `mindmap formula[${index}]`);
+    const id = asNonEmptyString(formula.id, `mindmap formula[${index}].id`);
+    const nodeId = asNonEmptyString(formula.nodeId, `mindmap formula[${index}].nodeId`);
+    if (!ids.has(nodeId)) throw new Error(`mindmap formula ${id} 引用了不存在的节点`);
+    const source = asString(formula.source, `mindmap formula[${index}].source`);
+    if (!source.trim() || [...source].length > 4096) throw new Error(`mindmap formula ${id} source 必须为 1 到 4096 个字符`);
+    const display = formula.display === undefined ? "inline" : asMindmapFormulaDisplay(formula.display, `mindmap formula[${index}].display`);
+    return { id, nodeId, source, display } satisfies MindmapFormula;
+  });
+  const graphIds = [...nodes.map((item) => item.id), ...edges.map((item) => item.id), ...summaries.map((item) => item.id), ...boundaries.map((item) => item.id), ...formulas.map((item) => item.id)];
+  if (new Set(graphIds).size !== graphIds.length) throw new Error("mindmap graph entity id 必须全局唯一");
+  return { settings, root, nodes, edges, summaries, boundaries, formulas };
+}
+
+function asMindmapFormulaDisplay(value: unknown, name: string): MindmapFormulaDisplay {
+  if (value === "inline" || value === "block") return value;
+  throw new Error(`${name} 无效`);
+}
+
+function parseMindmapSettings(value: unknown): MindmapSettings {
+  const record = asRecord(value, "mindmap settings");
+  const layout = record.layout === undefined ? "logicalRight" : asMindmapLayoutKind(record.layout);
+  const themeId = record.themeId === undefined || record.themeId === null
+    ? null
+    : asNonEmptyString(record.themeId, "mindmap settings.themeId");
+  return {
+    layout,
+    themeId,
+    connector: parseMindmapConnectorStyle(record.connector, "mindmap settings.connector"),
+  };
+}
+
+function parseMindmapConnectorStyle(value: unknown, name: string): MindmapConnectorStyle {
+  const record = asRecord(value, name);
+  const shape = record.shape === undefined ? "orthogonal" : asMindmapConnectorShape(record.shape, `${name}.shape`);
+  const color = parseMindmapStyleToken(record.color, `${name}.color`);
+  const width = record.width === undefined ? 2 : asFiniteNumber(record.width, `${name}.width`);
+  if (width < 0.5 || width > 16) throw new Error(`${name}.width 必须在 0.5 到 16 之间`);
+  return {
+    shape,
+    color,
+    width,
+    dashed: record.dashed === undefined ? false : asBoolean(record.dashed, `${name}.dashed`),
+  };
+}
+
+function parseMindmapNodeStyle(value: unknown, name: string): MindmapNodeStyle {
+  const record = asRecord(value, name);
+  const borderWidth = record.borderWidth === undefined ? 1 : asFiniteNumber(record.borderWidth, `${name}.borderWidth`);
+  const minWidth = record.minWidth === undefined ? 96 : asFiniteNumber(record.minWidth, `${name}.minWidth`);
+  const maxWidth = record.maxWidth === undefined ? 320 : asFiniteNumber(record.maxWidth, `${name}.maxWidth`);
+  if (borderWidth < 0 || borderWidth > 16) throw new Error(`${name}.borderWidth 必须在 0 到 16 之间`);
+  if (minWidth < 24 || maxWidth > 2048 || minWidth > maxWidth) throw new Error(`${name} 宽度约束无效`);
+  return {
+    shape: record.shape === undefined ? "roundedRectangle" : asMindmapNodeShape(record.shape, `${name}.shape`),
+    fillColor: parseMindmapStyleToken(record.fillColor, `${name}.fillColor`),
+    borderColor: parseMindmapStyleToken(record.borderColor, `${name}.borderColor`),
+    textColor: parseMindmapStyleToken(record.textColor, `${name}.textColor`),
+    borderWidth,
+    textAlign: record.textAlign === undefined ? "start" : asMindmapTextAlign(record.textAlign, `${name}.textAlign`),
+    minWidth,
+    maxWidth,
+  };
+}
+
+function parseMindmapNodeSupplement(value: unknown, name: string): MindmapNodeSupplement {
+  const record = asRecord(value, name);
+  const hyperlink = record.hyperlink === undefined || record.hyperlink === null
+    ? null
+    : asNonEmptyString(record.hyperlink, `${name}.hyperlink`);
+  if (hyperlink && hyperlink.length > 2048) throw new Error(`${name}.hyperlink 过长`);
+  const image = record.image === undefined || record.image === null
+    ? null
+    : parseMindmapImage(record.image, `${name}.image`);
+  const markers = record.markers === undefined ? [] : asArray(record.markers, `${name}.markers`).map((marker, index) => {
+    const parsed = asNonEmptyString(marker, `${name}.markers[${index}]`);
+    if (parsed.length > 64) throw new Error(`${name}.markers[${index}] 过长`);
+    return parsed;
+  });
+  if (new Set(markers).size !== markers.length) throw new Error(`${name}.markers 不能重复`);
+  return {
+    note: record.note === undefined || record.note === null ? null : parseRichText(record.note),
+    hyperlink,
+    image,
+    markers,
+  };
+}
+
+function parseMindmapImage(value: unknown, name: string): MindmapImage {
+  const record = asRecord(value, name);
+  const width = record.width === undefined || record.width === null ? null : asFiniteNumber(record.width, `${name}.width`);
+  const height = record.height === undefined || record.height === null ? null : asFiniteNumber(record.height, `${name}.height`);
+  if (width !== null && (width < 8 || width > 4096)) throw new Error(`${name}.width 无效`);
+  if (height !== null && (height < 8 || height > 4096)) throw new Error(`${name}.height 无效`);
+  return {
+    assetId: asNonEmptyString(record.assetId, `${name}.assetId`),
+    alt: record.alt === undefined ? "" : asString(record.alt, `${name}.alt`),
+    width,
+    height,
+  };
+}
+
+function parseMindmapStyleToken(value: unknown, name: string): string | null {
+  if (value === undefined || value === null) return null;
+  const token = asNonEmptyString(value, name);
+  if (token.length > 128) throw new Error(`${name} 不能超过 128 个字符`);
+  return token;
+}
+
+function asMindmapLayoutKind(value: unknown): MindmapLayoutKind {
+  if (value === "logicalRight" || value === "logicalLeft" || value === "mindMap" || value === "organization" || value === "catalog" || value === "timelineHorizontal" || value === "timelineVertical" || value === "fishbone") return value;
+  throw new Error("mindmap settings.layout 无效");
+}
+
+function asMindmapConnectorShape(value: unknown, name: string): MindmapConnectorShape {
+  if (value === "orthogonal" || value === "curve" || value === "straight") return value;
+  throw new Error(`${name} 无效`);
+}
+
+function asMindmapNodeShape(value: unknown, name: string): MindmapNodeShape {
+  if (value === "roundedRectangle" || value === "rectangle" || value === "ellipse" || value === "diamond" || value === "pill" || value === "underline") return value;
+  throw new Error(`${name} 无效`);
+}
+
+function asMindmapTextAlign(value: unknown, name: string): MindmapTextAlign {
+  if (value === "start" || value === "center" || value === "end") return value;
+  throw new Error(`${name} 无效`);
 }
 
 function validateMindmapParents(nodes: MindmapNode[]): void {

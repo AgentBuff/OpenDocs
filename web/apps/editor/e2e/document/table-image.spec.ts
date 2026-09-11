@@ -35,6 +35,10 @@ test.describe("Document table and image interactions", () => {
     await firstCell.click();
     await page.keyboard.type("editable cell");
     await expect(firstCell).toContainText("editable cell");
+    await firstCell.press("Tab");
+    await expect(table.locator("td").nth(1)).toBeFocused();
+    await table.locator("td").nth(1).press("Shift+Tab");
+    await expect(firstCell).toBeFocused();
 
     const secondCell = table.locator("td").nth(1);
     await secondCell.click({ modifiers: ["Shift"] });
@@ -120,11 +124,16 @@ test.describe("Document table and image interactions", () => {
       buffer: testImage,
     });
 
-    const image = page.getByRole("group", { name: "test-image.svg" });
+    const image = page.locator(".block-image");
     await expect(image).toBeVisible();
+    await expect(image).toHaveAccessibleName("test-image.svg");
     await image.click();
     await expect(page.getByRole("toolbar", { name: "图片工具栏" })).toBeVisible();
     await expect(page.getByRole("button", { name: "裁剪图片" })).toBeVisible();
+    await page.getByRole("button", { name: "图片替代文本" }).click();
+    await page.getByRole("dialog", { name: "图片替代文本" }).getByRole("textbox").fill("蓝色矩形示意图");
+    await page.getByRole("dialog", { name: "图片替代文本" }).getByRole("textbox").press("Enter");
+    await expect(image.locator("img")).toHaveAttribute("alt", "蓝色矩形示意图");
 
     await page.keyboard.press("ArrowRight");
     await expect(page.locator("[data-block-id]")).toHaveCount(2);
@@ -142,6 +151,9 @@ test.describe("Document table and image interactions", () => {
     await page.keyboard.press("Enter");
     await expect(page.locator("[data-block-id]")).toHaveCount(3);
     await expect(page.locator('[contenteditable="true"]').last()).toBeFocused();
+
+    await page.reload();
+    await expect(page.locator('img[alt="蓝色矩形示意图"]')).toBeVisible();
   });
 
   test("creates caret paragraphs on both object sides and explicitly cancels image selection", async ({ page }) => {

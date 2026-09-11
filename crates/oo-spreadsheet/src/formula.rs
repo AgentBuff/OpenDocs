@@ -1,8 +1,11 @@
 //! Spreadsheet 公式依赖图的纯查询派生索引。
 //!
 //! 该模块只读取 `SpreadsheetModel` 中的公式，解析常见 A1 引用并建立反向依赖关系；它
-//! 不把计算结果写回 cell，也不属于 SpreadsheetEngine 的持久化状态。未来公式求值器、
-//! 虚拟 viewport 和 XLSX adapter 都可以消费这个索引，而不需要在 UI 层重新扫描公式。
+//! 不把计算结果写回 cell，也不会被序列化进 snapshot。SpreadsheetEngine 把它作为
+//! 非持久化的派生缓存持有：普通单元格写入走增量 [`FormulaDependencyIndex::update`]，
+//! 结构编辑/sheet 变更后整体重建，并借助 `affected_topology` 把受影响的依赖单元格
+//! 汇报进 ChangeSet invalidation。虚拟 viewport 与 XLSX adapter 同样可以直接消费这个
+//! 索引，而不需要在 UI 层重新扫描公式。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
@@ -11,6 +14,8 @@ use oo_schema::{ArtifactEnvelope, ArtifactPayload, SchemaValidationError, Spread
 use super::CellAddress;
 
 const MAX_RANGE_CELLS: u64 = 100_000;
+const MAX_FORMULA_ROWS: i64 = 1_048_576;
+const MAX_FORMULA_COLUMNS: i64 = 16_384;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormulaDependencyIndex {
@@ -29,6 +34,18 @@ impl FormulaDependencyIndex {
         )
         .validate()?;
 
+        Self::from_validated_model(model)
+    }
+
+    /// Builds the index from a model the caller has already validated.
+    ///
+    /// The engine and the server projection only ever touch validated snapshots
+    /// (engine commands run the final schema check; artifact loading validates
+    /// persisted JSON), so they must not pay an extra whole-model clone per
+    /// request just to re-validate. Callers passing an unvalidated model here
+    /// bypass that contract and may observe ambiguous sheet names as ordinary
+    /// parse misses instead of typed errors.
+    pub fn from_validated_model(model: &SpreadsheetModel) -> Result<Self, FormulaDependencyError> {
         let sheet_lookup = build_sheet_lookup(model)?;
         let mut dependencies = BTreeMap::new();
         let mut dependents: BTreeMap<CellAddress, BTreeSet<CellAddress>> = BTreeMap::new();
@@ -182,6 +199,11 @@ impl FormulaDependencyIndex {
         let lookup = build_sheet_lookup(model)?;
         let changed_set: BTreeSet<_> = changed.iter().cloned().collect();
         for address in &changed_set {
+            // Only the outgoing edges of a changed cell can become stale: a
+            // content change never affects which formulas read this address
+            // (the incoming `dependents` edges are keyed by the address, not
+            // its value). Dropping `dependents[address]` here would silently
+            // sever the graph whenever a referenced constant cell is written.
             if let Some(previous) = self.dependencies.remove(address) {
                 for dependency in previous {
                     if let Some(dependents) = self.dependents.get_mut(&dependency) {
@@ -196,7 +218,6 @@ impl FormulaDependencyIndex {
                     }
                 }
             }
-            self.dependents.remove(address);
         }
         for address in &changed_set {
             let Some(cell) = model
@@ -228,6 +249,368 @@ impl FormulaDependencyIndex {
         }
         Ok(self.affected_topology(changed))
     }
+}
+
+/// Which axis a structural edit shifts along (mirror of the engine's private
+/// `SheetAxis` so the rewrite helpers stay independent of the engine types).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteAxis {
+    Row,
+    Column,
+}
+
+/// The structural edit a formula rewrite should mirror.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteOp {
+    /// Insert `count` empty rows/columns at 0-based position `at`.
+    Insert { at: u32, count: u32 },
+    /// Delete the `count` rows/columns in `[at, at + count)`.
+    Delete { at: u32, count: u32 },
+}
+
+/// Rewrites every A1 reference in `formula` that points at `edited_sheet_id`
+/// so the coordinates follow a row/column insert or delete on that sheet.
+///
+/// Rules (Excel semantics):
+/// - Both relative and absolute markers shift; `$` only matters when copying,
+///   not when the grid itself is edited.
+/// - Ranges expand when the insertion lands inside them and contract when a
+///   delete only cuts part of them.
+/// - References (or whole ranges) swallowed by a delete become the `#REF!`
+///   error literal, matching what Excel keeps in the formula text.
+///
+/// Returns `None` when the formula contains no reference that needs rewriting.
+/// The scanner mirrors `parse_references` exactly (quoted literals skipped,
+/// function-name guards applied, unknown sheet prefixes left untouched) so a
+/// rewritten formula and the dependency index can never disagree about what a
+/// formula reads.
+pub fn rewrite_formula_references(
+    formula: &str,
+    current_sheet_id: &str,
+    edited_sheet_id: &str,
+    sheet_lookup: &HashMap<String, String>,
+    axis: RewriteAxis,
+    op: RewriteOp,
+) -> Option<String> {
+    let chars: Vec<char> = formula.chars().collect();
+    let mut out = String::with_capacity(formula.len() + 8);
+    let mut changed = false;
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '"' {
+            let end = skip_string(&chars, index);
+            out.extend(chars[index..end].iter());
+            index = end;
+            continue;
+        }
+
+        let start = index;
+        let (sheet_name, cell_start) = parse_sheet_prefix(&chars, index);
+        if sheet_name.is_some() {
+            index = cell_start;
+        }
+        let Some((first, mut end)) = parse_cell_ref(&chars, index) else {
+            out.extend(chars[start..start + 1].iter());
+            index = start + 1;
+            continue;
+        };
+        if sheet_name.is_none() && has_identifier_before(&chars, index) {
+            out.extend(chars[start..start + 1].iter());
+            index = start + 1;
+            continue;
+        }
+        if has_identifier_after(&chars, end) {
+            out.extend(chars[start..start + 1].iter());
+            index = start + 1;
+            continue;
+        }
+
+        // Resolve the referenced sheet: an explicit prefix resolves through the
+        // lookup, no prefix means the formula's own sheet.
+        let resolved = sheet_name
+            .as_deref()
+            .and_then(|name| sheet_lookup.get(&normalize_sheet_name(name)).cloned())
+            .or_else(|| {
+                if sheet_name.is_none() {
+                    Some(current_sheet_id.to_string())
+                } else {
+                    None
+                }
+            });
+
+        // Range form: `ref:ref`.
+        let mut range_second = None;
+        if chars.get(end) == Some(&':') {
+            if let Some((second, range_end)) = parse_cell_ref(&chars, end + 1) {
+                if has_identifier_after(&chars, range_end) {
+                    out.extend(chars[start..start + 1].iter());
+                    index = start + 1;
+                    continue;
+                }
+                range_second = Some(second);
+                end = range_end;
+            }
+        }
+
+        match resolved {
+            Some(sheet_id) if sheet_id == edited_sheet_id => {
+                let prefix_end = if sheet_name.is_some() {
+                    cell_start
+                } else {
+                    index
+                };
+                out.extend(chars[start..prefix_end].iter());
+                match range_second {
+                    Some(second) => {
+                        out.push_str(&rewrite_range_token(
+                            first, second, axis, op, &chars, index, end,
+                        ));
+                    }
+                    None => match rewrite_coordinate(first, axis, op) {
+                        Some(rewritten) => out.push_str(&cell_token(rewritten, &chars, index, end)),
+                        None => out.push_str("#REF!"),
+                    },
+                }
+                changed = true;
+                index = end;
+            }
+            _ => {
+                // Unrelated or unresolvable reference: copy the token verbatim.
+                out.extend(chars[start..end].iter());
+                index = end;
+            }
+        }
+    }
+    changed.then_some(out)
+}
+
+/// Translates A1 references when a formula is copied to another cell.
+/// Relative axes move by the destination delta, `$`-absolute axes stay fixed,
+/// quoted string literals are ignored and explicit sheet prefixes are kept.
+pub fn translate_formula_for_copy(formula: &str, row_delta: i64, column_delta: i64) -> String {
+    let chars: Vec<char> = formula.chars().collect();
+    let mut out = String::with_capacity(formula.len() + 8);
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] == '"' {
+            let end = skip_string(&chars, index);
+            out.extend(chars[index..end].iter());
+            index = end;
+            continue;
+        }
+        let start = index;
+        let (sheet_name, cell_start) = parse_sheet_prefix(&chars, index);
+        if sheet_name.is_some() {
+            index = cell_start;
+        }
+        let Some((coordinate, end)) = parse_cell_ref(&chars, index) else {
+            out.push(chars[start]);
+            index = start + 1;
+            continue;
+        };
+        if (sheet_name.is_none() && has_identifier_before(&chars, index))
+            || has_identifier_after(&chars, end)
+        {
+            out.push(chars[start]);
+            index = start + 1;
+            continue;
+        }
+        out.extend(chars[start..index].iter());
+        let token = &chars[index..end];
+        let column_absolute = token.first() == Some(&'$');
+        let row_absolute = token.iter().skip(1).any(|character| *character == '$');
+        let row = if row_absolute {
+            Some(i64::from(coordinate.0))
+        } else {
+            i64::from(coordinate.0).checked_add(row_delta)
+        };
+        let column = if column_absolute {
+            Some(i64::from(coordinate.1))
+        } else {
+            i64::from(coordinate.1).checked_add(column_delta)
+        };
+        match (row, column) {
+            (Some(row), Some(column))
+                if (0..MAX_FORMULA_ROWS).contains(&row)
+                    && (0..MAX_FORMULA_COLUMNS).contains(&column) =>
+            {
+                out.push_str(&cell_token((row as u32, column as u32), &chars, index, end))
+            }
+            _ => out.push_str("#REF!"),
+        }
+        index = end;
+    }
+    out
+}
+
+/// Rewrites a `ref:ref` range token with Excel interval semantics: an insert
+/// inside the range expands it, a partial delete contracts it to the surviving
+/// band, and a fully swallowed range degrades to `#REF!`.
+fn rewrite_range_token(
+    first: (u32, u32),
+    second: (u32, u32),
+    axis: RewriteAxis,
+    op: RewriteOp,
+    original: &[char],
+    token_start: usize,
+    token_end: usize,
+) -> String {
+    let row_interval = (first.0.min(second.0), first.0.max(second.0));
+    let column_interval = (first.1.min(second.1), first.1.max(second.1));
+    let (new_rows, new_columns) = match axis {
+        RewriteAxis::Row => (
+            rewrite_interval(row_interval.0, row_interval.1, op),
+            Some(column_interval),
+        ),
+        RewriteAxis::Column => (
+            Some(row_interval),
+            rewrite_interval(column_interval.0, column_interval.1, op),
+        ),
+    };
+    let (Some(rows), Some(columns)) = (new_rows, new_columns) else {
+        return "#REF!".into();
+    };
+    let lo = (rows.0, columns.0);
+    let hi = (rows.1, columns.1);
+    if lo == hi {
+        cell_token(lo, original, token_start, token_end)
+    } else {
+        format!(
+            "{}:{}",
+            cell_token(lo, original, token_start, token_end),
+            cell_token(hi, original, token_start, token_end)
+        )
+    }
+}
+
+/// Inclusive-axis interval shift for one range dimension; `None` when the
+/// interval is fully swallowed by the delete band.
+fn rewrite_interval(start: u32, end: u32, op: RewriteOp) -> Option<(u32, u32)> {
+    match op {
+        RewriteOp::Insert { at, count } => {
+            let (start, end) = if start >= at {
+                (start.checked_add(count)?, end.checked_add(count)?)
+            } else if end >= at {
+                (start, end.checked_add(count)?)
+            } else {
+                (start, end)
+            };
+            Some((start, end))
+        }
+        RewriteOp::Delete { at, count } => {
+            let band_end = at.checked_add(count)?;
+            if start >= band_end {
+                Some((start - count, end - count))
+            } else if end < at {
+                Some((start, end))
+            } else if start >= at && end < band_end {
+                None
+            } else if start >= at {
+                // Range starts inside the band and reaches past it.
+                Some((at, end - count))
+            } else if end >= band_end {
+                // Band strictly inside the range: contract to both sides.
+                Some((start, end - count))
+            } else {
+                // Only the tail of the range is inside the band.
+                Some((start, at.saturating_sub(1)))
+            }
+        }
+    }
+}
+
+/// Shifts one 0-based coordinate; `None` when the coordinate lives inside the
+/// deleted band.
+fn rewrite_coordinate(
+    coordinate: (u32, u32),
+    axis: RewriteAxis,
+    op: RewriteOp,
+) -> Option<(u32, u32)> {
+    let (row, column) = coordinate;
+    let position = match axis {
+        RewriteAxis::Row => row,
+        RewriteAxis::Column => column,
+    };
+    let shifted = match op {
+        RewriteOp::Insert { at, count } => {
+            if position >= at {
+                position.checked_add(count)?
+            } else {
+                position
+            }
+        }
+        RewriteOp::Delete { at, count } => {
+            if position >= at + count {
+                position - count
+            } else if position >= at {
+                return None;
+            } else {
+                position
+            }
+        }
+    };
+    Some(match axis {
+        RewriteAxis::Row => (shifted, column),
+        RewriteAxis::Column => (row, shifted),
+    })
+}
+
+/// Rebuilds one cell token, preserving `$` markers from the original slice but
+/// regenerating the column letters and row digits from the new coordinate.
+fn cell_token(
+    coordinate: (u32, u32),
+    original: &[char],
+    token_start: usize,
+    token_end: usize,
+) -> String {
+    let slice = &original[token_start..token_end];
+    let column_absolute = slice.first() == Some(&'$');
+    // `$` may only appear as the leading marker and before the row digits, so
+    // "any $ after the first character" identifies a row-absolute marker.
+    let row_absolute = slice.iter().skip(1).any(|character| *character == '$');
+    let mut out = String::new();
+    if column_absolute {
+        out.push('$');
+    }
+    let (row, column) = coordinate;
+    let mut column = column;
+    let mut letters = Vec::new();
+    loop {
+        letters.push((b'A' + (column % 26) as u8) as char);
+        column /= 26;
+        if column == 0 {
+            break;
+        }
+        column -= 1;
+    }
+    out.extend(letters.into_iter().rev());
+    if row_absolute {
+        out.push('$');
+    }
+    out.push_str(&(row + 1).to_string());
+    out
+}
+
+/// Best-effort workbook lookup for formula rewriting: sheet ids are always
+/// unique keys, names only when unambiguous. A structural edit must not fail
+/// because some unrelated pair of sheets shares a display name.
+pub fn rewrite_sheet_lookup(model: &SpreadsheetModel) -> HashMap<String, String> {
+    let mut lookup = HashMap::new();
+    for sheet in &model.sheets {
+        lookup.insert(normalize_sheet_name(&sheet.id), sheet.id.clone());
+    }
+    for sheet in &model.sheets {
+        let key = normalize_sheet_name(&sheet.name);
+        match lookup.get(&key) {
+            Some(existing) if existing != &sheet.id => {
+                lookup.remove(&key);
+            }
+            _ => {
+                lookup.insert(key, sheet.id.clone());
+            }
+        }
+    }
+    lookup
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -624,6 +1007,16 @@ mod tests {
     }
 
     #[test]
+    fn copied_formula_translates_relative_absolute_and_cross_sheet_references() {
+        assert_eq!(
+            translate_formula_for_copy(r#"=A1+$B1+C$1+$D$1+'Other Sheet'!E2+\"A1\""#, 2, 3,),
+            r#"=D3+$B3+F$1+$D$1+'Other Sheet'!H4+\"A1\""#
+        );
+        assert_eq!(translate_formula_for_copy("=A1:B2", 1, 1), "=B2:C3");
+        assert_eq!(translate_formula_for_copy("=A1+$B$2", -1, 0), "=#REF!+$B$2");
+    }
+
+    #[test]
     fn parses_lowercase_a1_references() {
         let model = SpreadsheetModel {
             sheets: vec![SheetModel {
@@ -810,8 +1203,8 @@ mod perf_bench {
 
     /// R7 budget: a 10k-node dependency graph must recompute only the affected
     /// topology on a single-node change, not degrade to a full clone/diff.
+    /// Runs in the regular test suite so the budget is enforced in CI.
     #[test]
-    #[ignore = "engine perf harness; run with --release -- --ignored perf_"]
     fn perf_formula_update_recomputes_bounded_subgraph() {
         let model = chain_model(10_000);
         let built = Instant::now();

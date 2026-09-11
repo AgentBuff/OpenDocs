@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createBuiltinPresentationNodeRegistry, PRESENTATION_NODE_TYPES, PresentationExtensionRegistry } from "../src/index.js";
-import type { PresentationV5Node } from "@open-office/schema";
+import { plainPresentationRichText, type PresentationV5Node } from "@open-office/schema";
 import type { PresentationNodeContext } from "../src/index.js";
 
 function context(node: PresentationV5Node, capabilities = new Set<string>()): PresentationNodeContext {
@@ -27,11 +27,11 @@ describe("PresentationNodeRegistry", () => {
     expect(registry.has("text")).toBe(true);
     expect(registry.has("table")).toBe(true);
     expect(registry.has("chart")).toBe(true);
-    const table = { ...base, kind: { type: "table" as const, data: { rows: 1, columns: 1, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: { text: "old", runs: [] }, style: { fill: { type: "none" as const }, horizontalAlign: "left" as const, verticalAlign: "middle" as const } }] } } } satisfies PresentationV5Node;
+    const table = { ...base, kind: { type: "table" as const, data: { rows: 1, columns: 1, cells: [{ row: 0, column: 0, rowSpan: 1, columnSpan: 1, content: plainPresentationRichText("old"), style: { fill: { type: "none" as const }, horizontalAlign: "left" as const, verticalAlign: "middle" as const } }] } } } satisfies PresentationV5Node;
     const source = context(table, new Set(["presentation.setTableCellContent", "presentation.setTableCellStyle"]));
     expect(registry.resolve(source).renderModel).toEqual({ kind: "table", rows: 1, columns: 1 });
-    expect(registry.mapAction("table.cellContent", { context: source, value: { row: 0, column: 0, content: { text: "new", runs: [] } } })).toEqual([
-      { type: "setTableCellContent", slideId: "slide-1", nodeId: "node-1", row: 0, column: 0, content: { text: "new", runs: [] } },
+    expect(registry.mapAction("table.cellContent", { context: source, value: { row: 0, column: 0, content: plainPresentationRichText("new") } })).toEqual([
+      { type: "setTableCellContent", slideId: "slide-1", nodeId: "node-1", row: 0, column: 0, content: plainPresentationRichText("new") },
     ]);
     const tableStyle = { fill: { type: "none" as const }, horizontalAlign: "left" as const, verticalAlign: "middle" as const };
     expect(registry.mapAction("table.cellStyle", { context: source, value: { cells: [{ row: 0, column: 0 }], style: tableStyle } })).toEqual([
@@ -64,14 +64,14 @@ describe("PresentationNodeRegistry", () => {
 
   it("maps text actions to semantic commands without mutating the node", () => {
     const registry = createBuiltinPresentationNodeRegistry();
-    const node = { ...base, kind: { type: "text", data: { frame: { body: { text: "old", runs: [] }, verticalAlign: "top", padding: { top: 0, right: 0, bottom: 0, left: 0 }, autoFit: "none" } } } } satisfies PresentationV5Node;
+    const node = { ...base, kind: { type: "text", data: { frame: { body: plainPresentationRichText("old"), verticalAlign: "top", padding: { top: 0, right: 0, bottom: 0, left: 0 }, autoFit: "none" } } } } satisfies PresentationV5Node;
     const source = context(node, new Set(["presentation.setTextContent"]));
     const resolved = registry.resolve(source);
     expect(resolved.toolbar.map((item) => item.id)).toEqual(["presentation.node.text.content"]);
-    const commands = registry.mapAction("text.content", { context: source, value: { text: "new", runs: [] } });
-    expect(commands).toEqual([{ type: "setTextContent", slideId: "slide-1", nodeId: "node-1", body: { text: "new", runs: [] } }]);
+    const commands = registry.mapAction("text.content", { context: source, value: plainPresentationRichText("new") });
+    expect(commands).toEqual([{ type: "setTextContent", slideId: "slide-1", nodeId: "node-1", body: plainPresentationRichText("new") }]);
     expect(node.kind.data.frame.body.text).toBe("old");
-    expect(() => registry.mapAction("text.content", { context: context(node), value: { text: "blocked", runs: [] } })).toThrow("capability is unavailable");
+    expect(() => registry.mapAction("text.content", { context: context(node), value: plainPresentationRichText("blocked") })).toThrow("capability is unavailable");
   });
 
   it("maps image crop, flip and caption as one strict image config command", () => {
@@ -203,7 +203,7 @@ describe("PresentationNodeRegistry", () => {
     const registry = createBuiltinPresentationNodeRegistry();
     expect(() => registry.register({
       type: "text",
-      renderer: () => ({ kind: "text", body: { text: "", runs: [] } }),
+      renderer: () => ({ kind: "text", body: plainPresentationRichText("") }),
       selectionAdornment: () => [], toolbar: [], inspector: { id: "x", title: "x", fields: [] }, mapAction: () => [],
     })).toThrow("already exists");
   });

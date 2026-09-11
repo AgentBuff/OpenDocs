@@ -37,6 +37,7 @@
 
 .oo-overlay--block-menu {
   max-width: min(320px, calc(100vw - 16px));
+  max-height: none;
   padding: 0;
   border: 0;
   background: transparent;

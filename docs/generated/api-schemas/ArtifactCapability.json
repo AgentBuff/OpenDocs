@@ -1,26 +1,26 @@
 {
   "properties": {
     "commands": {
-      "description": "Empty for planned engines. An empty list is intentional: it is not a\npromise that an unimplemented command exists.",
+      "description": "Empty when editing is planned or unsupported. An empty list is\nintentional: it is not a promise that an unimplemented command exists.",
       "items": {
         "$ref": "#/components/schemas/ArtifactCommandCapability"
       },
       "type": "array"
+    },
+    "features": {
+      "$ref": "#/components/schemas/ArtifactFeatureCapabilities"
     },
     "kind": {
       "$ref": "#/components/schemas/ArtifactKind"
     },
     "namespace": {
       "type": "string"
-    },
-    "status": {
-      "$ref": "#/components/schemas/ArtifactCapabilityStatus"
     }
   },
   "required": [
     "kind",
     "namespace",
-    "status",
+    "features",
     "commands"
   ],
   "type": "object"

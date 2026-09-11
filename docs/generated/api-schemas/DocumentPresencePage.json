@@ -1,0 +1,24 @@
+{
+  "type": "object",
+  "required": [
+    "artifactId",
+    "participants",
+    "ttlMs"
+  ],
+  "properties": {
+    "artifactId": {
+      "type": "string"
+    },
+    "participants": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "ttlMs": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

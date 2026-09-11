@@ -8,10 +8,14 @@
 **/dist/
 **/coverage/
 *.tsbuildinfo
+/.codegraph/
 
 # Generated browser bindings are rebuilt from crates/oo-document-wasm.
 /web/packages/document-engine/wasm/*
 !/web/packages/document-engine/wasm/.gitignore
+
+# Generated mindmap bindings are rebuilt from crates/oo-mindmap-wasm.
+/web/packages/mindmap-engine/wasm/*
 
 # -----------------------------------------------------------------------------
 # Local runtime state and secrets
@@ -19,6 +23,7 @@
 /data/
 /data/schema-backup/
 /.e2e-data/
+/.dev-data/
 /web/test-results/
 /web/playwright-report/
 *.db
@@ -64,3 +69,9 @@
 .vscode/
 *.swp
 *.swo
+
+# Reproducible font download metadata cache
+/web/scripts/fonts/.cache/
+
+# Downloaded Fontsource WOFF2 faces; reproduce with web/scripts/fonts/acquire.py.
+/web/apps/editor/public/fonts/

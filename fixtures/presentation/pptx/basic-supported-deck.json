@@ -13,7 +13,7 @@
             "type": "text",
             "data": {
               "frame": {
-                "body": { "text": "Open Office", "runs": [] },
+                "body": { "text": "Open Office", "runs": [], "paragraphs": [{ "start": 0, "end": 11, "alignment": "left", "list": null, "indentLevel": 0 }] },
                 "verticalAlign": "top",
                 "padding": { "top": 0, "right": 0, "bottom": 0, "left": 0 },
                 "autoFit": "shrinkText"

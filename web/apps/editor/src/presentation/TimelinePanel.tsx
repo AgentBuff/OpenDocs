@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button, Icon, IconButton, Input, Select } from "@open-office/ui";
 import type {
@@ -32,6 +32,7 @@ export function resolveTimelinePanelAvailability(
 
 export interface TimelinePanelProps {
   readonly slide: PresentationSlideProjection;
+  readonly selectedNodeId?: string | null;
   readonly disabled: boolean;
   readonly availableCapabilities: ReadonlySet<string>;
   readonly onTransitionChange: (transition: PresentationV5SlideTransition | null) => void;
@@ -47,6 +48,7 @@ export interface TimelinePanelProps {
  */
 export function TimelinePanel({
   slide,
+  selectedNodeId,
   disabled,
   availableCapabilities,
   onTransitionChange,
@@ -56,7 +58,15 @@ export function TimelinePanel({
 }: TimelinePanelProps) {
   const availability = resolveTimelinePanelAvailability(availableCapabilities);
   const [transition, setTransition] = useState<PresentationV5SlideTransition | null>(slide.transition ?? null);
+  const [newTargetNodeId, setNewTargetNodeId] = useState(selectedNodeId ?? slide.nodes?.[0]?.id ?? "");
+  const [newPreset, setNewPreset] = useState<PresentationV5TimelineEntry["preset"]>("fade");
+  const [newTrigger, setNewTrigger] = useState<PresentationV5TimelineEntry["trigger"]>("onClick");
+  const [draggedAnimationId, setDraggedAnimationId] = useState<string | null>(null);
+  const draggedAnimationIdRef = useRef<string | null>(null);
   useEffect(() => setTransition(slide.transition ?? null), [slide.slideId, slide.transition]);
+  useEffect(() => {
+    setNewTargetNodeId((current) => selectedNodeId ?? (slide.nodes?.some((node) => node.id === current) ? current : slide.nodes?.[0]?.id ?? ""));
+  }, [selectedNodeId, slide.nodes, slide.slideId]);
 
   const entries = useMemo(
     () => [...(slide.timeline?.entries ?? [])].sort((left, right) => left.orderKey.localeCompare(right.orderKey)),
@@ -95,6 +105,29 @@ export function TimelinePanel({
       <span>对象动画</span>
       <span aria-label={`${entries.length} 个动画`}>{entries.length}</span>
     </div>
+    {availability.upsert && (slide.nodes?.length ?? 0) > 0 && <div className="presentation-timeline__create" aria-label="添加对象动画">
+      <label>对象<Select aria-label="动画对象" disabled={disabled} value={newTargetNodeId} onChange={(event) => setNewTargetNodeId(event.target.value)}>
+        {(slide.nodes ?? []).map((node) => <option key={node.id} value={node.id}>{targetNames.get(node.id)}</option>)}
+      </Select></label>
+      <label>效果<Select aria-label="新动画效果" disabled={disabled} value={newPreset} onChange={(event) => setNewPreset(event.target.value as typeof newPreset)}>
+        <option value="appear">出现</option><option value="fade">淡入</option><option value="flyIn">飞入</option><option value="wipe">擦除</option>
+      </Select></label>
+      <label>触发<Select aria-label="新动画触发" disabled={disabled} value={newTrigger} onChange={(event) => setNewTrigger(event.target.value as typeof newTrigger)}>
+        <option value="onClick">单击时</option><option value="withPrevious">与上一动画同时</option><option value="afterPrevious">上一动画之后</option>
+      </Select></label>
+      <Button type="button" size="sm" disabled={disabled || !newTargetNodeId} onClick={() => {
+        const identity = createAnimationIdentity(newTargetNodeId);
+        onAnimationUpsert({
+          id: identity,
+          targetNodeId: newTargetNodeId,
+          trigger: newTrigger,
+          preset: newPreset,
+          durationMs: newPreset === "appear" ? 0 : 300,
+          delayMs: 0,
+          orderKey: appendTimelineOrderKey(entries),
+        });
+      }}>添加动画</Button>
+    </div>}
     {entries.length === 0 ? <p className="presentation-timeline__empty">选择对象后可在对象属性中添加动画。</p> : (
       <ol className="presentation-timeline__entries" aria-label="动画顺序">
         {entries.map((entry, index) => <TimelineEntryEditor
@@ -108,6 +141,15 @@ export function TimelinePanel({
           onUpsert={onAnimationUpsert}
           onDelete={onAnimationDelete}
           onMove={onAnimationMove}
+          dragging={draggedAnimationId === entry.id}
+          onDragStart={() => { draggedAnimationIdRef.current = entry.id; setDraggedAnimationId(entry.id); }}
+          onDragEnd={() => { draggedAnimationIdRef.current = null; setDraggedAnimationId(null); }}
+          onDrop={() => {
+            const sourceId = draggedAnimationIdRef.current;
+            if (sourceId && sourceId !== entry.id) onAnimationMove(sourceId, index);
+            draggedAnimationIdRef.current = null;
+            setDraggedAnimationId(null);
+          }}
         />)}
       </ol>
     )}
@@ -124,6 +166,10 @@ function TimelineEntryEditor({
   onUpsert,
   onDelete,
   onMove,
+  dragging,
+  onDragStart,
+  onDragEnd,
+  onDrop,
 }: {
   entry: PresentationV5TimelineEntry;
   targetName: string;
@@ -134,12 +180,28 @@ function TimelineEntryEditor({
   onUpsert: (animation: PresentationV5TimelineEntry) => void;
   onDelete: (animationId: string) => void;
   onMove: (animationId: string, index: number) => void;
+  dragging: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDrop: () => void;
 }) {
   const [draft, setDraft] = useState(entry);
   useEffect(() => setDraft(entry), [entry]);
 
-  return <li className="presentation-timeline__entry">
+  return <li
+    className={`presentation-timeline__entry${dragging ? " is-dragging" : ""}`}
+    onDragOver={(event) => { if (!disabled && availability.move) event.preventDefault(); }}
+    onDrop={(event) => { event.preventDefault(); onDrop(); }}
+  >
     <div className="presentation-timeline__entry-heading">
+      {availability.move && <span
+        className="presentation-timeline__drag-handle"
+        draggable={!disabled}
+        role="img"
+        aria-label={`拖动第 ${index + 1} 个动画`}
+        onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", entry.id); onDragStart(); }}
+        onDragEnd={onDragEnd}
+      >⋮⋮</span>}
       <span className="presentation-timeline__order" aria-label={`第 ${index + 1} 个动画`}>{index + 1}</span>
       <strong title={targetName}>{targetName}</strong>
       <div className="presentation-timeline__entry-actions" aria-label="调整动画顺序">
@@ -166,4 +228,14 @@ function TimelineEntryEditor({
 
 function boundedMilliseconds(value: string): number {
   return Math.max(0, Math.min(600_000, Number(value) || 0));
+}
+
+export function appendTimelineOrderKey(entries: readonly PresentationV5TimelineEntry[]): string {
+  const last = [...entries].sort((left, right) => left.orderKey.localeCompare(right.orderKey)).at(-1);
+  return `${last?.orderKey ?? ""}\u{10ffff}`;
+}
+
+function createAnimationIdentity(targetNodeId: string): string {
+  const token = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `animation-${targetNodeId}-${token}`;
 }

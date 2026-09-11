@@ -1,7 +1,7 @@
 /** 后端 API 的客户端封装。 */
 
 import { parseCommitResult, parseSnapshot } from "@open-office/schema/artifact";
-import { DOCUMENT_HISTORY_TYPE_ID } from "@open-office/schema/artifact";
+import { DOCUMENT_HISTORY_TYPE_ID, MINDMAP_HISTORY_TYPE_ID } from "@open-office/schema/artifact";
 import { ArtifactApiClient, parseArtifactMeta } from "@open-office/schema/api";
 import type { EventRequest, ProjectionRequest } from "@open-office/schema/api";
 import type { ArtifactMeta as SharedArtifactMeta } from "@open-office/schema/api";
@@ -9,7 +9,6 @@ import type {
   ArtifactCommandEnvelope,
   CommitResult,
   DocumentHistoryAction,
-  SnapshotEnvelope,
 } from "@open-office/schema/artifact";
 
 export type ArtifactKind = SharedArtifactMeta["kind"];
@@ -42,6 +41,7 @@ interface ErrorBody {
   error?: string;
   code?: string;
   requestId?: string;
+  retryable?: boolean;
   details?: Record<string, unknown>;
 }
 
@@ -50,6 +50,7 @@ export class ApiRequestError extends Error {
   readonly status: number;
   readonly code: string | null;
   readonly requestId: string | null;
+  readonly retryable: boolean;
   readonly details: Record<string, unknown> | null;
 
   constructor(
@@ -57,6 +58,7 @@ export class ApiRequestError extends Error {
     message: string,
     code: string | null = null,
     requestId: string | null = null,
+    retryable = false,
     details: Record<string, unknown> | null = null,
   ) {
     super(message);
@@ -64,6 +66,7 @@ export class ApiRequestError extends Error {
     this.status = status;
     this.code = code;
     this.requestId = requestId;
+    this.retryable = retryable;
     this.details = details;
   }
 }
@@ -75,17 +78,19 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
     let message = `请求失败（HTTP ${response.status}）`;
     let code: string | null = null;
     let requestId: string | null = response.headers.get("x-request-id");
+    let retryable = false;
     let details: Record<string, unknown> | null = null;
     try {
       const body = (await response.json()) as ErrorBody;
       if (body.error) message = body.error;
       if (body.code) code = body.code;
       if (body.requestId) requestId = body.requestId;
+      if (typeof body.retryable === "boolean") retryable = body.retryable;
       if (body.details) details = body.details;
     } catch {
       // 响应不是 JSON 时保留默认文案。
     }
-    throw new ApiRequestError(response.status, message, code, requestId, details);
+    throw new ApiRequestError(response.status, message, code, requestId, retryable, details);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -98,6 +103,22 @@ export const api = {
   listBlocks: (id: string, options?: ProjectionRequest) => typedArtifactApi.blocks(id, options),
   block: (id: string, blockId: string, options?: ProjectionRequest) => typedArtifactApi.block(id, blockId, options),
   presentation: (id: string) => typedArtifactApi.presentation(id),
+  mindmap: (id: string, theme?: "light" | "dark" | "highContrast") => typedArtifactApi.mindmap(id, theme),
+  presence: (id: string) => typedArtifactApi.presentationPresence(id),
+  updatePresence: (id: string, sessionId: string, update: Parameters<typeof typedArtifactApi.updatePresentationPresence>[2]) =>
+    typedArtifactApi.updatePresentationPresence(id, sessionId, update),
+  documentPresence: (id: string) => typedArtifactApi.documentPresence(id),
+  updateDocumentPresence: (id: string, sessionId: string, update: Parameters<typeof typedArtifactApi.updateDocumentPresence>[2]) =>
+    typedArtifactApi.updateDocumentPresence(id, sessionId, update),
+  documentReviews: (id: string) => typedArtifactApi.documentReviews(id),
+  createDocumentReview: (id: string, review: Parameters<typeof typedArtifactApi.createDocumentReview>[1]) =>
+    typedArtifactApi.createDocumentReview(id, review),
+  createDocumentSuggestion: (id: string, suggestion: Parameters<typeof typedArtifactApi.createDocumentSuggestion>[1]) =>
+    typedArtifactApi.createDocumentSuggestion(id, suggestion),
+  replyDocumentReview: (id: string, threadId: string, message: Parameters<typeof typedArtifactApi.replyDocumentReview>[2]) =>
+    typedArtifactApi.replyDocumentReview(id, threadId, message),
+  updateDocumentReview: (id: string, threadId: string, state: Parameters<typeof typedArtifactApi.updateDocumentReview>[2]) =>
+    typedArtifactApi.updateDocumentReview(id, threadId, state),
   presentationOutline: (id: string, options?: Parameters<typeof typedArtifactApi.presentationOutline>[1]) => typedArtifactApi.presentationOutline(id, options),
   presentationSlide: (id: string, slideId: string, options?: Parameters<typeof typedArtifactApi.presentationSlide>[2]) => typedArtifactApi.presentationSlide(id, slideId, options),
   events: (id: string, options?: EventRequest) => typedArtifactApi.events(id, options),
@@ -152,17 +173,7 @@ export const api = {
 
   /** 导出当前 canonical DocumentModel；原始上传文件仍由 original 端点提供。 */
   exportDocx: (id: string) => `/api/artifacts/${id}/export/docx`,
-
-  saveArtifact: (id: string, snapshot: SnapshotEnvelope, transactionId = randomId()) =>
-    request<unknown>(`/api/artifacts/${id}/snapshot`, {
-      method: "PUT",
-      headers: {
-        "content-type": "application/json",
-        "if-match": `"${snapshot.artifact.revision}"`,
-        "x-transaction-id": transactionId,
-      },
-      body: JSON.stringify(snapshot),
-    }).then(parseDocumentCommitResult),
+  exportPptx: (id: string) => `/api/artifacts/${id}/export/pptx`,
 
   submitTransaction: (id: string, transaction: ArtifactCommandEnvelope) =>
     request<unknown>(`/api/artifacts/${id}/transactions`, {
@@ -200,14 +211,52 @@ export const api = {
       } satisfies ArtifactCommandEnvelope),
     }).then(parseDocumentCommitResult),
 
-  upload: (file: File) => {
+  /** Mindmap history is also resolved on the server from durable semantic commands. */
+  submitMindmapHistory: (id: string, action: DocumentHistoryAction, baseRevision: number, transactionId = randomId()) =>
+    request<unknown>(`/api/artifacts/${id}/transactions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "if-match": `"${baseRevision}"`,
+        "x-transaction-id": transactionId,
+      },
+      body: JSON.stringify({
+        protocolVersion: 1,
+        transactionId,
+        intentId: randomId(),
+        artifactId: id,
+        actorId: "dev-user",
+        baseRevision,
+        origin: action,
+        commands: [{ commandId: randomId(), typeId: MINDMAP_HISTORY_TYPE_ID, payload: { action } }],
+      } satisfies ArtifactCommandEnvelope),
+    }).then(parseDocumentCommitResult),
+
+  upload: (file: File, mode: "audit" | "strict" = "audit") => {
     const form = new FormData();
     form.append("file", file);
-    return request<unknown>("/api/artifacts/import", { method: "POST", body: form }).then((value) => parseArtifactMeta(value, "imported artifact"));
+    form.append("mode", mode);
+    return request<unknown>("/api/artifacts/import", { method: "POST", body: form }).then(parseImportResult);
   },
 
   remove: (id: string) => request<void>(`/api/artifacts/${id}`, { method: "DELETE" }),
 };
+
+export interface ImportResult {
+  artifact: ArtifactMeta;
+  warnings: string[];
+}
+
+function parseImportResult(value: unknown): ImportResult {
+  const record = asRecord(value, "imported artifact");
+  if (!Array.isArray(record.warnings) || record.warnings.some((warning) => typeof warning !== "string")) {
+    throw new Error("imported artifact.warnings 必须是字符串数组");
+  }
+  return {
+    artifact: parseArtifactMeta(value, "imported artifact"),
+    warnings: record.warnings as string[],
+  };
+}
 
 function randomId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;

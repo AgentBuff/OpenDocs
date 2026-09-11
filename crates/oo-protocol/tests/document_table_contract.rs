@@ -2,8 +2,9 @@
 
 use oo_protocol::{
     ArtifactCapability, ArtifactCapabilityStatus, ArtifactCommandCapability,
-    ArtifactCommandEnvelope, ArtifactTransportCapability, CapabilityCatalog, CommandRecord,
-    OperationRecord, TransactionOrigin, CAPABILITY_CONTRACT_VERSION, CURRENT_PROTOCOL_VERSION,
+    ArtifactCommandEnvelope, ArtifactFeatureCapabilities, ArtifactTransportCapability,
+    CapabilityCatalog, CommandRecord, OperationRecord, TransactionOrigin,
+    CAPABILITY_CONTRACT_VERSION, CURRENT_PROTOCOL_VERSION,
 };
 use oo_schema::ArtifactKind;
 
@@ -37,7 +38,15 @@ fn table_commands_are_discoverable_as_stable_semantic_type_ids() {
         artifacts: vec![ArtifactCapability {
             kind: ArtifactKind::Document,
             namespace: "document".into(),
-            status: ArtifactCapabilityStatus::Stable,
+            features: ArtifactFeatureCapabilities {
+                edit: ArtifactCapabilityStatus::Stable,
+                history: ArtifactCapabilityStatus::Stable,
+                projection: ArtifactCapabilityStatus::Stable,
+                import: ArtifactCapabilityStatus::Stable,
+                export: ArtifactCapabilityStatus::Preview,
+                assets: ArtifactCapabilityStatus::Stable,
+                presence: ArtifactCapabilityStatus::Planned,
+            },
             commands: TABLE_COMMANDS
                 .iter()
                 .map(|type_id| ArtifactCommandCapability {

@@ -18,8 +18,10 @@ const scanRoots = [
   resolve(webRoot, "apps/editor/src"),
   resolve(webRoot, "packages/schema/src"),
   resolve(webRoot, "packages/document-engine/src"),
+  resolve(webRoot, "packages/mindmap-engine/src"),
   resolve(root, "crates/oo-document/src"),
   resolve(root, "crates/oo-document-wasm/src"),
+  resolve(root, "crates/oo-mindmap-wasm/src"),
   resolve(root, "crates/oo-protocol/src"),
   resolve(root, "crates/oo-server/src"),
   // Every non-document Artifact is a first-class runtime as well. Keep their command

@@ -14,5 +14,6 @@ export default defineConfig({
       "/api": { target: API_TARGET, changeOrigin: true },
     },
   },
+  worker: { format: "es" },
   build: { target: "es2022" },
 });

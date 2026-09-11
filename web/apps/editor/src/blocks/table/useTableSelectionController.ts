@@ -214,7 +214,21 @@ export function useTableSelectionController({
   }, [commitSelection]);
 
   const onCellKeyDown = useCallback((event: KeyboardEvent<HTMLTableCellElement>, address: CellAddress) => {
-    if (!table || !event.shiftKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    if (!table) return;
+    if (event.key === "Tab") {
+      const cells = Array.from(rootRef.current?.querySelectorAll<HTMLTableCellElement>("[data-table-cell-id]") ?? []);
+      const index = cells.indexOf(event.currentTarget);
+      const next = cells[index + (event.shiftKey ? -1 : 1)];
+      if (!next) return;
+      const rowId = next.dataset.tableRowId;
+      const cellId = next.dataset.tableCellId;
+      if (!rowId || !cellId) return;
+      event.preventDefault();
+      commitSelection({ kind: "cell", rowId, cellId });
+      next.focus({ preventScroll: true });
+      return;
+    }
+    if (!event.shiftKey || !["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)) return;
     const rowIndex = table.rows.findIndex((row) => row.id === address.rowId);
     const row = table.rows[rowIndex];
     const cellIndex = row?.cells.findIndex((cell) => cell.id === address.cellId) ?? -1;
@@ -242,7 +256,7 @@ export function useTableSelectionController({
     const nextElement = Array.from(rootRef.current?.querySelectorAll<HTMLTableCellElement>("[data-table-cell-id]") ?? [])
       .find((element) => element.dataset.tableCellId === nextCell.id);
     nextElement?.focus({ preventScroll: true });
-  }, [rootRef, selectSelection, table]);
+  }, [commitSelection, rootRef, selectSelection, table]);
 
   useEffect(() => {
     if (table && selection && !selectionStillExists(table, selection)) commitSelection(null);

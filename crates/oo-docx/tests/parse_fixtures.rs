@@ -1,6 +1,8 @@
 //! 针对真实 .docx 包的 canonical Block Tree 集成测试。
 
-use oo_schema::{DocumentBlock, DocumentBlockKind, DocumentModel};
+use oo_schema::{
+    DocumentBlock, DocumentBlockKind, DocumentModel, DocumentPageNumbering, PageNumberFormat,
+};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
@@ -30,6 +32,29 @@ fn text(block: &DocumentBlock) -> &str {
         .unwrap_or("")
 }
 
+#[test]
+fn font_stack_exports_as_a_real_office_family() {
+    let mut original = parse("sample.docx");
+    for block in &mut original.blocks {
+        if let Some(content) = &mut block.content {
+            for run in &mut content.runs {
+                run.style.font_family = Some("\"Noto Serif SC\", serif".into());
+            }
+        }
+    }
+    let bytes = oo_docx::write_docx(&original).unwrap();
+    let imported = oo_docx::parse_docx(&bytes, "font-roundtrip").unwrap();
+    let families: Vec<_> = imported
+        .blocks
+        .iter()
+        .filter_map(|block| block.content.as_ref())
+        .flat_map(|content| &content.runs)
+        .filter_map(|run| run.style.font_family.as_deref())
+        .collect();
+    assert!(!families.is_empty());
+    assert!(families.iter().all(|family| *family == "Noto Serif SC"));
+}
+
 fn image_docx_fixture() -> (Vec<u8>, Vec<u8>) {
     let image = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     let document = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -50,6 +75,33 @@ fn image_docx_fixture() -> (Vec<u8>, Vec<u8>) {
         archive.write_all(content).unwrap();
     }
     (archive.finish().unwrap().into_inner(), image)
+}
+
+#[test]
+fn import_reports_unmapped_header_and_note_parts() {
+    let document = br#"<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>body</w:t></w:r></w:p></w:body></w:document>"#;
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, content) in [
+        ("word/document.xml", document.as_slice()),
+        ("word/header1.xml", b"<w:hdr/>".as_slice()),
+        ("word/footnotes.xml", b"<w:footnotes/>".as_slice()),
+        ("word/endnotes.xml", b"<w:endnotes/>".as_slice()),
+    ] {
+        archive
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        archive.write_all(content).unwrap();
+    }
+    let bytes = archive.finish().unwrap().into_inner();
+    let imported = oo_docx::parse_docx_with_assets(&bytes, "loss-report").unwrap();
+    let capabilities = imported
+        .loss_report
+        .unsupported
+        .iter()
+        .map(|loss| loss.capability)
+        .collect::<Vec<_>>();
+    assert_eq!(capabilities, ["headerFooter", "footnotes", "endnotes"]);
 }
 
 #[test]
@@ -151,11 +203,34 @@ fn soft_break_stays_inside_rich_text() {
 #[test]
 fn section_properties_define_page_setup() {
     let doc = parse("sample.docx");
-    let page = doc.page_setup.unwrap();
+    let page = doc.page_setup.clone().unwrap();
     assert!((page.width - 595.3).abs() < 0.1);
     assert!((page.height - 841.9).abs() < 0.1);
     assert_eq!(page.margin_left, 72.0);
     assert_eq!(page.margin_top, 72.0);
+    assert_eq!(doc.page_semantics.sections.len(), 1);
+    assert_eq!(
+        doc.page_semantics.sections[0].page_setup.as_ref(),
+        Some(&page)
+    );
+}
+
+#[test]
+fn page_numbering_round_trips_through_section_properties() {
+    let mut doc = parse("sample.docx");
+    let section = doc.page_semantics.sections.first_mut().expect("section");
+    section.page_numbering = Some(DocumentPageNumbering {
+        start_at: 3,
+        format: PageNumberFormat::LowerRoman,
+    });
+    let bytes = oo_docx::write_docx(&doc).unwrap();
+    let roundtrip = oo_docx::parse_docx(&bytes, "page-numbering").unwrap();
+    let numbering = roundtrip.page_semantics.sections[0]
+        .page_numbering
+        .as_ref()
+        .expect("page numbering");
+    assert_eq!(numbering.start_at, 3);
+    assert_eq!(numbering.format, PageNumberFormat::LowerRoman);
 }
 
 #[test]

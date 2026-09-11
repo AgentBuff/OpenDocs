@@ -10,6 +10,10 @@ import type {
   DocumentBlock,
   DocumentMutation,
   DocumentCommand,
+  DocumentHeaderFooter,
+  DocumentNote,
+  DocumentPageNumbering,
+  ArtifactPageSetup,
   SnapshotEnvelope,
 } from "@open-office/schema/artifact";
 import { parseSnapshot } from "@open-office/schema/artifact";
@@ -25,6 +29,43 @@ export interface DocumentChangeSet {
   changedContainers: string[];
   structureChanged: boolean;
   mutations: DocumentMutation[];
+}
+
+export interface DocumentSearchOptions {
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+}
+
+export type DocumentTextTarget =
+  | { type: "block"; blockId: string }
+  | { type: "tableCell"; blockId: string; rowId: string; cellId: string };
+
+export interface DocumentSearchMatch {
+  target: DocumentTextTarget;
+  start: number;
+  end: number;
+}
+
+export interface DocumentTocItem {
+  blockId: string;
+  level: number;
+  text: string;
+}
+
+export interface DocumentPrintProjection {
+  revision: number;
+  sections: DocumentPrintSection[];
+  footnotes: DocumentNote[];
+  endnotes: DocumentNote[];
+}
+
+export interface DocumentPrintSection {
+  sectionId: string | null;
+  rootBlockIds: string[];
+  pageSetup: ArtifactPageSetup | null;
+  header: DocumentHeaderFooter | null;
+  footer: DocumentHeaderFooter | null;
+  pageNumbering: DocumentPageNumbering | null;
 }
 
 /** The generated wasm-bindgen module shape. */
@@ -46,6 +87,9 @@ export interface DocumentSessionBinding {
   readBlock(blockId: string): string;
   /** Read invalidated blocks in one wasm JSON crossing; never returns a snapshot. */
   readBlocks(blockIdsJson: string): string;
+  findText(query: string, optionsJson: string): string;
+  tableOfContents(): string;
+  printProjection(): string;
   readChangeSet(): string | null | undefined;
   readSnapshot(): string;
   revision(): number | bigint;
@@ -141,6 +185,66 @@ export class DocumentEngineSession {
     });
   }
 
+  findText(query: string, options: DocumentSearchOptions = {}): DocumentSearchMatch[] {
+    if (typeof query !== "string") throw new Error("搜索文本必须是字符串");
+    const value: unknown = JSON.parse(this.binding.findText(query, JSON.stringify(options)));
+    if (!Array.isArray(value)) throw new Error("DocumentEngine 返回了无效的搜索结果");
+    return value.map((item, index) => parseSearchMatch(item, index));
+  }
+
+  tableOfContents(): DocumentTocItem[] {
+    const value: unknown = JSON.parse(this.binding.tableOfContents());
+    if (!Array.isArray(value)) throw new Error("DocumentEngine 返回了无效的目录投影");
+    return value.map((item, index) => {
+      if (!isRecord(item)) throw new Error(`目录项目 ${index} 无效`);
+      const blockId = item.blockId;
+      const level = item.level;
+      const text = item.text;
+      if (typeof blockId !== "string" || !blockId || !isNonNegativeInteger(level) || level < 1 || level > 6 || typeof text !== "string") {
+        throw new Error(`目录项目 ${index} 无效`);
+      }
+      return { blockId, level, text };
+    });
+  }
+
+  printProjection(): DocumentPrintProjection {
+    const value: unknown = JSON.parse(this.binding.printProjection());
+    if (!isRecord(value)) throw new Error("DocumentEngine 返回了无效的打印投影");
+    const revision = asNonNegativeInteger(value.revision, "printProjection.revision");
+    if (!Array.isArray(value.sections) || !Array.isArray(value.footnotes) || !Array.isArray(value.endnotes)) {
+      throw new Error("DocumentEngine 返回了无效的打印投影");
+    }
+    const sections = value.sections.map((item, index) => {
+      if (!isRecord(item) || !isNullableString(item.sectionId)) {
+        throw new Error(`printProjection.sections[${index}] 无效`);
+      }
+      const rootBlockIds = asStringArray(item.rootBlockIds, `printProjection.sections[${index}].rootBlockIds`);
+      if ((item.pageSetup !== null && !isRecord(item.pageSetup))
+        || (item.header !== null && !isRecord(item.header))
+        || (item.footer !== null && !isRecord(item.footer))
+        || (item.pageNumbering !== null && !isRecord(item.pageNumbering))) {
+        throw new Error(`printProjection.sections[${index}] 无效`);
+      }
+      return {
+        sectionId: item.sectionId,
+        rootBlockIds,
+        pageSetup: item.pageSetup as ArtifactPageSetup | null,
+        header: item.header as DocumentHeaderFooter | null,
+        footer: item.footer as DocumentHeaderFooter | null,
+        pageNumbering: item.pageNumbering as DocumentPageNumbering | null,
+      };
+    });
+    if ([...value.footnotes, ...value.endnotes].some((note) => !isRecord(note) || typeof note.id !== "string" || !isRecord(note.anchor) || !Array.isArray(note.content))) {
+      throw new Error("DocumentEngine 返回了无效的 note 投影");
+    }
+    return {
+      revision,
+      sections,
+      footnotes: value.footnotes as unknown as DocumentNote[],
+      endnotes: value.endnotes as unknown as DocumentNote[],
+    };
+  }
+
   readChangeSet(): DocumentChangeSet | null {
     const raw = this.binding.readChangeSet();
     return raw == null ? null : parseChangeSet(JSON.parse(raw) as unknown);
@@ -184,6 +288,27 @@ function parseChangeSet(value: unknown): DocumentChangeSet {
   };
 }
 
+function parseSearchMatch(value: unknown, index: number): DocumentSearchMatch {
+  if (!isRecord(value) || !isNonNegativeInteger(value.start) || !isNonNegativeInteger(value.end) || value.end < value.start) {
+    throw new Error(`搜索结果 ${index} 范围无效`);
+  }
+  const target = value.target;
+  if (!isRecord(target) || typeof target.blockId !== "string" || !target.blockId) {
+    throw new Error(`搜索结果 ${index} 目标无效`);
+  }
+  if (target.type === "block") {
+    return { target: { type: "block", blockId: target.blockId }, start: value.start, end: value.end };
+  }
+  if (target.type === "tableCell" && typeof target.rowId === "string" && target.rowId && typeof target.cellId === "string" && target.cellId) {
+    return {
+      target: { type: "tableCell", blockId: target.blockId, rowId: target.rowId, cellId: target.cellId },
+      start: value.start,
+      end: value.end,
+    };
+  }
+  throw new Error(`搜索结果 ${index} 目标无效`);
+}
+
 function parseDocumentMutation(value: unknown, index: number): DocumentMutation {
   if (!isDocumentMutation(value)) {
     throw new Error(`ChangeSet.mutations[${index}] 不是合法的 DocumentMutation`);
@@ -213,6 +338,10 @@ function isDocumentMutation(value: unknown): value is DocumentMutation {
     case "setPageSetup":
       return (value.before === null || isRecord(value.before))
         && (value.after === null || isRecord(value.after));
+    case "setPageSemantics":
+      return isRecord(value.before) && isRecord(value.after)
+        && Array.isArray(value.before.sections) && Array.isArray(value.before.footnotes) && Array.isArray(value.before.endnotes)
+        && Array.isArray(value.after.sections) && Array.isArray(value.after.footnotes) && Array.isArray(value.after.endnotes);
     default:
       return false;
   }

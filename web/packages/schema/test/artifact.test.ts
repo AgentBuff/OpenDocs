@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { CURRENT_SCHEMA_VERSION, parseCommitResult, parseSnapshot, type DocumentCommand, type SnapshotEnvelope } from "../src/artifact.js";
+import { CURRENT_SCHEMA_VERSION, defaultImageTransform, parseCommitResult, parseSnapshot, type DocumentCommand, type MindmapModel, type SnapshotEnvelope } from "../src/artifact.js";
 
 function paragraphSnapshot(): SnapshotEnvelope {
   return {
@@ -26,6 +26,7 @@ function paragraphSnapshot(): SnapshotEnvelope {
             },
           ],
           pageSetup: null,
+          pageSemantics: { sections: [], footnotes: [], endnotes: [] },
         },
       },
     },
@@ -122,6 +123,31 @@ describe("Artifact snapshot boundary", () => {
     expect(() => parseSnapshot(snapshot)).toThrow("link 必须包含 link data");
     snapshot.artifact.payload.data.blocks[0].data = { type: "link", data: { url: "https://openoffice.example" } };
     expect(parseSnapshot(snapshot).artifact.payload.kind).toBe("document");
+  });
+
+  it("preserves Unicode image alternative text and rejects oversized descriptions", () => {
+    const snapshot = paragraphSnapshot();
+    if (snapshot.artifact.payload.kind !== "document") throw new Error("expected document payload");
+    const image = snapshot.artifact.payload.data.blocks[0];
+    image.kind = { type: "image" };
+    image.content = null;
+    image.data = {
+      type: "image",
+      data: {
+        assetId: "asset-1",
+        alt: "折线图 📈：九月营收上升",
+        originalAssetId: null,
+        transform: defaultImageTransform(),
+        size: { width: null, height: null, lockAspectRatio: true },
+        placement: { offsetX: 0, offsetY: 0 },
+        caption: "",
+      },
+    };
+    const parsed = parseSnapshot(snapshot);
+    if (parsed.artifact.payload.kind !== "document") throw new Error("expected document payload");
+    expect(parsed.artifact.payload.data.blocks[0].data).toMatchObject({ data: { alt: "折线图 📈：九月营收上升" } });
+    (image.data as Extract<typeof image.data, { type: "image" }>).data.alt = "图".repeat(2_049);
+    expect(() => parseSnapshot(snapshot)).toThrow("替代文本");
   });
 
   it("accepts structured table blocks and rejects malformed rows", () => {
@@ -352,6 +378,7 @@ describe("Artifact snapshot boundary", () => {
               data: { type: "code", data: { language: "rust" } },
             }],
             pageSetup: null,
+            pageSemantics: { sections: [], footnotes: [], endnotes: [] },
           },
         },
       },
@@ -437,7 +464,7 @@ describe("Artifact snapshot boundary", () => {
         payload: {
           kind: "spreadsheet",
           data: {
-            metadata: { activeSheetId: null, calculationMode: "automatic", dateSystem: "excel1900" },
+            metadata: { activeSheetId: null, calculationMode: "automatic", dateSystem: "excel1900", namedRanges: [] },
             sheets: [{
               id: "sheet-1",
               name: "Sheet 1",
@@ -452,6 +479,102 @@ describe("Artifact snapshot boundary", () => {
       },
     };
     expect(() => parseSnapshot(snapshot)).toThrow("重复 cell 坐标");
+  });
+
+  it("parses typed named ranges and rejects duplicate or dangling references", () => {
+    const snapshot: SnapshotEnvelope = {
+      protocolVersion: 1,
+      artifact: {
+        format: "open-office-artifact",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        artifactId: "named-ranges",
+        revision: 0,
+        kind: "spreadsheet",
+        payload: {
+          kind: "spreadsheet",
+          data: {
+            metadata: {
+              activeSheetId: "data",
+              calculationMode: "automatic",
+              dateSystem: "excel1900",
+              namedRanges: [{
+                name: "Revenue",
+                scopeSheetId: "summary",
+                sheetId: "data",
+                range: { startRow: 1, startColumn: 0, endRow: 4, endColumn: 0 },
+              }],
+            },
+            sheets: ["data", "summary"].map((id) => ({
+              id,
+              name: id,
+              cells: [],
+              metadata: { visibility: "visible" as const, rowCount: null, columnCount: null, freeze: { rows: 0, columns: 0 }, autoFilter: null, sort: null, conditionalFormats: [], dataValidations: [], mergedRanges: [], media: [] },
+            })),
+          },
+        },
+      },
+    };
+    expect(parseSnapshot(snapshot).artifact.payload).toMatchObject({
+      kind: "spreadsheet",
+      data: { metadata: { namedRanges: [{ name: "Revenue", sheetId: "data" }] } },
+    });
+
+    const dangling = structuredClone(snapshot);
+    if (dangling.artifact.payload.kind !== "spreadsheet") throw new Error("kind 应为 spreadsheet");
+    dangling.artifact.payload.data.metadata.namedRanges[0].sheetId = "missing";
+    expect(() => parseSnapshot(dangling)).toThrow("namedRanges");
+
+    const duplicate = structuredClone(snapshot);
+    if (duplicate.artifact.payload.kind !== "spreadsheet") throw new Error("kind 应为 spreadsheet");
+    duplicate.artifact.payload.data.metadata.namedRanges.push({
+      ...duplicate.artifact.payload.data.metadata.namedRanges[0],
+      name: "revenue",
+    });
+    expect(() => parseSnapshot(duplicate)).toThrow("namedRanges");
+  });
+
+  it("accepts Rust Option::None serialized as explicit null in spreadsheet cells", () => {
+    // 回归：Rust serde 把 Option::None 序列化为显式 null（不是缺省）。
+    // TS 边界必须与 undefined 一并豁免，否则输入内容后刷新即抛
+    // "formula 必须是字符串"。
+    const snapshot: SnapshotEnvelope = {
+      protocolVersion: 1,
+      artifact: {
+        format: "open-office-artifact",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        artifactId: "sheet-1",
+        revision: 1,
+        kind: "spreadsheet",
+        payload: {
+          kind: "spreadsheet",
+          data: {
+            metadata: { activeSheetId: "s1", calculationMode: "automatic", dateSystem: "excel1900", namedRanges: [] },
+            sheets: [{
+              id: "s1",
+              name: "Sheet 1",
+              cells: [
+                // 服务端实际持久化形态：显式 null 字段 + 一个带边框样式的格子。
+                { row: 6, column: 4, value: "你好", formula: null, attrs: {}, style: null },
+                {
+                  row: 7, column: 4, value: null, formula: null, attrs: {},
+                  style: { numberFormat: null, font: null, fill: null, alignment: null, borders: null },
+                },
+              ],
+              metadata: { visibility: "visible", rowCount: null, columnCount: null, freeze: { rows: 0, columns: 0 }, autoFilter: null, sort: null, conditionalFormats: [], dataValidations: [], mergedRanges: [], media: [] },
+            }],
+          },
+        },
+      },
+    };
+    const parsed = parseSnapshot(snapshot);
+    const payload = parsed.artifact.payload;
+    if (payload.kind !== "spreadsheet") throw new Error("kind 应为 spreadsheet");
+    expect(payload.data.sheets[0].cells[0]).toMatchObject({ row: 6, column: 4, value: "你好" });
+    expect(payload.data.sheets[0].cells[0].formula).toBeUndefined();
+    expect(payload.data.sheets[0].cells[1].value).toBeUndefined();
+    expect(payload.data.sheets[0].cells[1].style).toEqual({
+      numberFormat: null, font: null, fill: null, alignment: null, borders: null,
+    });
   });
 
   it("validates the typed commit result boundary", () => {
@@ -519,6 +642,81 @@ describe("Artifact snapshot boundary", () => {
       events: [],
     })).toThrow("artifactId");
   });
+
+  it("parses typed mindmap settings and keeps viewport state out of the artifact", () => {
+    const snapshot: SnapshotEnvelope = {
+      protocolVersion: 1,
+      artifact: {
+        format: "open-office-artifact",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        artifactId: "map-1",
+        revision: 2,
+        kind: "mindmap",
+        payload: {
+          kind: "mindmap",
+          data: {
+            settings: {
+              layout: "mindMap",
+              themeId: "ocean",
+              connector: { shape: "curve", color: "#88aaff", width: 3, dashed: true },
+            },
+            root: "root",
+            nodes: [{
+              id: "root", parentId: null, content: null, collapsed: false, attrs: {},
+              style: {
+                shape: "pill", fillColor: "#fff", borderColor: null, textColor: null,
+                borderWidth: 1, textAlign: "center", minWidth: 96, maxWidth: 320,
+              },
+              supplement: {
+                note: { text: "detail", runs: [] }, hyperlink: "https://example.com",
+                image: null, markers: ["important"],
+              },
+            }],
+            edges: [],
+            summaries: [],
+            boundaries: [],
+            formulas: [],
+          },
+        },
+      },
+    };
+    const parsed = parseSnapshot(snapshot);
+    if (parsed.artifact.payload.kind !== "mindmap") throw new Error("kind 应为 mindmap");
+    expect(parsed.artifact.payload.data.settings.layout).toBe("mindMap");
+    expect(parsed.artifact.payload.data.nodes[0].style.shape).toBe("pill");
+    expect(parsed.artifact.payload.data.nodes[0].supplement.markers).toEqual(["important"]);
+    expect(parsed.artifact.payload.data).not.toHaveProperty("viewport");
+
+    const invalid = structuredClone(snapshot);
+    const invalidData = invalid.artifact.payload.data as MindmapModel;
+    invalidData.nodes[0]!.style.minWidth = 500;
+    invalidData.nodes[0]!.style.maxWidth = 100;
+    expect(() => parseSnapshot(invalid)).toThrow("宽度约束");
+
+    const advanced = structuredClone(snapshot);
+    const advancedData = advanced.artifact.payload.data as MindmapModel;
+    advancedData.nodes.push(
+      { ...structuredClone(advancedData.nodes[0]!), id: "a", parentId: "root", content: { text: "A", runs: [] } },
+      { ...structuredClone(advancedData.nodes[0]!), id: "b", parentId: "root", content: { text: "B", runs: [] } },
+    );
+    advancedData.summaries.push({ id: "summary", startNodeId: "a", endNodeId: "b", content: { text: "结论", runs: [] } });
+    advancedData.boundaries.push({ id: "boundary", rootNodeId: "a", label: null });
+    advancedData.formulas.push({ id: "formula", nodeId: "b", source: "x^2", display: "block" });
+    const parsedAdvanced = parseSnapshot(advanced);
+    if (parsedAdvanced.artifact.payload.kind !== "mindmap") throw new Error("kind 应为 mindmap");
+    expect(parsedAdvanced.artifact.payload.data.summaries[0]?.content.text).toBe("结论");
+    const reversed = structuredClone(advanced);
+    const reversedData = reversed.artifact.payload.data as MindmapModel;
+    reversedData.summaries[0]!.startNodeId = "b";
+    reversedData.summaries[0]!.endNodeId = "a";
+    expect(() => parseSnapshot(reversed)).toThrow("正向");
+    const duplicate = structuredClone(advanced);
+    (duplicate.artifact.payload.data as MindmapModel).formulas[0]!.id = "a";
+    expect(() => parseSnapshot(duplicate)).toThrow("全局唯一");
+    const unknownAdvancedField = structuredClone(advanced);
+    Object.assign((unknownAdvancedField.artifact.payload.data as MindmapModel).formulas[0]!, { expression: "legacy" });
+    expect(() => parseSnapshot(unknownAdvancedField)).toThrow("不是受支持的字段");
+  });
 });
 
 function plainInlineStyle() {
@@ -537,3 +735,14 @@ function defaultBlockPresentation() {
     namedStyle: null,
   };
 }
+
+
+it("validates sparse row layout at the snapshot boundary", () => {
+  const snapshot = { protocolVersion: 1, artifact: { format: "open-office-artifact", schemaVersion: CURRENT_SCHEMA_VERSION, artifactId: "sheet", revision: 0, kind: "spreadsheet", payload: { kind: "spreadsheet", data: { metadata: {}, sheets: [{ id: "s", name: "Sheet", cells: [], metadata: { rowLayout: [{ row: 2, height: 42, hidden: true }] } }] } } } };
+  expect(() => parseSnapshot(snapshot)).not.toThrow();
+  snapshot.artifact.payload.data.sheets[0].metadata.rowLayout[0].height = -1;
+  expect(() => parseSnapshot(snapshot)).toThrow("rowLayout");
+  snapshot.artifact.payload.data.sheets[0].metadata.rowLayout[0].height = 42;
+  snapshot.artifact.payload.data.sheets[0].metadata.rowLayout.push({ row: 2, height: 21, hidden: false });
+  expect(() => parseSnapshot(snapshot)).toThrow("rowLayout");
+});

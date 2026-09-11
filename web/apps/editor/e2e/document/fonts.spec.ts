@@ -9,7 +9,7 @@ import {
 } from "../support/fixtures.js";
 
 const EDITOR = '[contenteditable="true"]';
-const FONT_STACK = '"Noto Sans SC", "Source Han Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif';
+const FONT_STACK = '"Noto Sans SC", sans-serif';
 
 async function snapshotFontFamilies(request: APIRequestContext, artifactId: string): Promise<string[]> {
   const response = await request.get(`http://127.0.0.1:8788/api/artifacts/${artifactId}/snapshot`);

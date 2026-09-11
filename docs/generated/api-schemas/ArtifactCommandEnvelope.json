@@ -2,6 +2,7 @@
   "description": "一次用户意图或协同更新的网络边界。\n\n这里表达的是语义 command，不是 Document engine 的内部 operation。不同 Artifact\n通过 `type_id` 扩展能力，服务端必须在进入领域 engine 前做对应的 command 校验。",
   "properties": {
     "actorId": {
+      "description": "Client-local device/session identity for correlation only. Servers must\nderive authorization, audit author and event actor from authentication.",
       "type": "string"
     },
     "artifactId": {

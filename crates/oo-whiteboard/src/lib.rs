@@ -17,6 +17,42 @@ pub struct WhiteboardCommandBatch {
     pub commands: Vec<WhiteboardCommand>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhiteboardCommandDescriptor {
+    pub type_id: &'static str,
+    pub scope: &'static str,
+}
+
+pub fn whiteboard_command_registry() -> &'static [WhiteboardCommandDescriptor] {
+    const COMMANDS: &[WhiteboardCommandDescriptor] = &[
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.addElement",
+            scope: "whiteboard.element",
+        },
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.updateElement",
+            scope: "whiteboard.element",
+        },
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.deleteElement",
+            scope: "whiteboard.element",
+        },
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.setCamera",
+            scope: "whiteboard.camera",
+        },
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.panCamera",
+            scope: "whiteboard.camera",
+        },
+        WhiteboardCommandDescriptor {
+            type_id: "whiteboard.zoomCamera",
+            scope: "whiteboard.camera",
+        },
+    ];
+    COMMANDS
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -1132,6 +1168,21 @@ pub enum WhiteboardEngineError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_registry_is_unique_and_engine_owned() {
+        let registry = whiteboard_command_registry();
+        assert_eq!(registry.len(), 6);
+        let unique = registry
+            .iter()
+            .map(|descriptor| descriptor.type_id)
+            .collect::<HashSet<_>>();
+        assert_eq!(unique.len(), registry.len());
+        assert!(registry.iter().all(|descriptor| {
+            descriptor.type_id.starts_with("whiteboard.")
+                && descriptor.scope.starts_with("whiteboard")
+        }));
+    }
 
     fn engine() -> WhiteboardEngine {
         WhiteboardEngine::new(WhiteboardModel::default(), 0).unwrap()

@@ -49,6 +49,7 @@ fn contract_schema_snapshot_is_stable() {
             "ArtifactCapabilityStatus",
             "ArtifactCommandCapability",
             "ArtifactCommandEnvelope",
+            "ArtifactFeatureCapabilities",
             "ArtifactTransportCapability",
             "CapabilityCatalog",
             "CommandRecord",

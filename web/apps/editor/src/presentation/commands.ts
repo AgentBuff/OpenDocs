@@ -1,4 +1,6 @@
-import type {
+import {
+  plainPresentationRichText,
+  type
   PresentationV5Node,
   ConnectorEndpoint,
   PresentationV5Deck,
@@ -103,6 +105,40 @@ export function multiNodeArrangeCommands(
   return commands;
 }
 
+export function groupNodesCommand(
+  slideId: string,
+  slideNodes: readonly PresentationV5Node[],
+  selectedNodeIds: readonly string[],
+  groupId: string,
+  orderKey: string,
+): PresentationSemanticCommand | null {
+  const selectedIds = new Set(selectedNodeIds);
+  const selected = slideNodes.filter((node) => selectedIds.has(node.id));
+  if (selected.length !== selectedIds.size || selected.length < 2) return null;
+  const parentId = selected[0]?.parentId ?? null;
+  if (selected.some((node) => node.locked || node.parentId !== parentId || node.kind.type === "extension" || node.kind.type === "connector")) return null;
+  const left = Math.min(...selected.map((node) => node.transform.x));
+  const top = Math.min(...selected.map((node) => node.transform.y));
+  const right = Math.max(...selected.map((node) => node.transform.x + node.transform.width));
+  const bottom = Math.max(...selected.map((node) => node.transform.y + node.transform.height));
+  const siblings = slideNodes.filter((node) => node.parentId === parentId).sort((a, b) => a.orderKey.localeCompare(b.orderKey));
+  const index = Math.min(...selected.map((node) => siblings.findIndex((candidate) => candidate.id === node.id)));
+  const group: PresentationV5Node = {
+    id: groupId,
+    parentId,
+    orderKey,
+    name: "组合",
+    altText: null,
+    layoutPlaceholderId: null,
+    transform: { x: left, y: top, width: right - left, height: bottom - top, rotation: 0 },
+    visible: true,
+    locked: false,
+    opacity: 1,
+    kind: { type: "group", data: {} },
+  };
+  return { type: "groupNodes", slideId, group, childIds: [...selectedNodeIds], index };
+}
+
 export function textContentCommand(slideId: string, nodeId: string, text: string) {
   return {
     typeId: "presentation.setTextContent",
@@ -110,7 +146,7 @@ export function textContentCommand(slideId: string, nodeId: string, text: string
       type: "setTextContent",
       slideId,
       nodeId,
-      body: { text, runs: [] },
+      body: plainPresentationRichText(text),
     },
   };
 }
@@ -339,7 +375,7 @@ export function createTextNode(id: string, orderKey: string): PresentationV5Node
       type: "text",
       data: {
         frame: {
-          body: { text: "双击输入文本", runs: [] },
+          body: plainPresentationRichText("双击输入文本"),
           verticalAlign: "middle",
           padding: { top: 48_000, right: 48_000, bottom: 48_000, left: 48_000 },
           autoFit: "shrinkText",
@@ -479,6 +515,7 @@ function presentationCommandTypeId(type: PresentationSemanticCommand["type"]): s
   switch (type) {
     case "insertNode": return "presentation.insertNode";
     case "deleteNode": return "presentation.deleteNode";
+    case "groupNodes": return "presentation.groupNodes";
     case "ungroupNodes": return "presentation.ungroupNodes";
     case "reorderNode": return "presentation.reorderNode";
     case "setNodeTransform": return "presentation.setNodeTransform";

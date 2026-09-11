@@ -42,7 +42,7 @@ export type PresentationNodeAdornment =
       kind: "outline";
       node: PresentationNodeRef;
       bounds: Readonly<PresentationV5Transform>;
-      handles: readonly ("northWest" | "northEast" | "southEast" | "southWest" | "rotate")[];
+      handles: readonly ("northWest" | "north" | "northEast" | "east" | "southEast" | "south" | "southWest" | "west" | "rotate")[];
     }
   | { kind: "label"; node: PresentationNodeRef; text: string };
 
@@ -86,6 +86,7 @@ export interface PresentationNodeToolbarDescriptor<ActionId extends string>
 export type PresentationSemanticCommand =
   | { type: "insertNode"; slideId: string; node: PresentationV5Node; index: number }
   | { type: "deleteNode"; slideId: string; nodeId: string }
+  | { type: "groupNodes"; slideId: string; group: PresentationV5Node; childIds: string[]; index: number }
   | { type: "ungroupNodes"; slideId: string; groupId: string }
   | { type: "reorderNode"; slideId: string; nodeId: string; index: number }
   | { type: "setNodeTransform"; slideId: string; nodeId: string; transform: PresentationV5Transform }

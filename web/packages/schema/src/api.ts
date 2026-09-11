@@ -1,10 +1,18 @@
 import {
+  parseCellStyle,
   parseCommitResult,
+  parseSpreadsheetModel,
   type ArtifactCommandEnvelope,
+  type ArtifactKind,
+  type ArtifactPageSetup,
+  type CellStyle,
   type CommitResult,
   type DocumentBlock,
+  type DocumentHeaderFooter,
+  type DocumentNote,
+  type DocumentPageNumbering,
   type SnapshotEnvelope,
-  type ArtifactKind,
+  type SpreadsheetModel,
 } from "./artifact.js";
 import {
   parsePresentationV5ProjectedNode,
@@ -18,8 +26,22 @@ import {
   type PresentationV5TimelineEntry,
 } from "./presentation-v5.js";
 
-export type CapabilityStatus = "stable" | "planned";
-export type ProjectionKind = "outline" | "block" | "presentation" | "presentationOutline" | "presentationSlide" | "presentationNode" | "mindmap" | "whiteboard" | "spreadsheet";
+export type CapabilityStatus = "stable" | "preview" | "planned" | "unsupported";
+export type ProjectionKind = "outline" | "tableOfContents" | "documentPrint" | "block" | "presentation" | "presentationOutline" | "presentationSlide" | "presentationNode" | "mindmap" | "whiteboard" | "spreadsheet";
+
+export interface DocumentPrintProjection {
+  revision: number;
+  sections: Array<{
+    sectionId: string | null;
+    rootBlockIds: string[];
+    pageSetup: ArtifactPageSetup | null;
+    header: DocumentHeaderFooter | null;
+    footer: DocumentHeaderFooter | null;
+    pageNumbering: DocumentPageNumbering | null;
+  }>;
+  footnotes: DocumentNote[];
+  endnotes: DocumentNote[];
+}
 
 export interface ArtifactMeta {
   id: string;
@@ -31,6 +53,25 @@ export interface ArtifactMeta {
   starred: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Immutable renderer projection for a Mindmap graph. Coordinates and routes
+ * are derived by the canonical engine and are deliberately not snapshot state. */
+export interface MindmapProjection {
+  theme: "light" | "dark" | "highContrast";
+  layout: {
+    nodes: Array<{ id: string; depth: number; x: number; y: number; width: number; height: number }>;
+    width: number;
+    height: number;
+  };
+  edges: {
+    routes: Array<{ edgeId: string | null; parentId: string; childId: string; points: Array<{ x: number; y: number }> }>;
+  };
+  advanced: {
+    summaries: Array<{ summaryId: string; nodeIds: string[]; points: Array<{ x: number; y: number }>; labelAnchor: { x: number; y: number } }>;
+    boundaries: Array<{ boundaryId: string; nodeIds: string[]; rect: { x: number; y: number; width: number; height: number }; labelAnchor: { x: number; y: number } }>;
+    formulas: Array<{ formulaId: string; nodeId: string; anchor: { x: number; y: number } }>;
+  };
 }
 
 /** Binary assets are stored beside an Artifact; snapshots retain only assetId. */
@@ -64,8 +105,18 @@ export interface ArtifactCommandCapability {
 export interface ArtifactCapability {
   kind: ArtifactKind;
   namespace: string;
-  status: CapabilityStatus;
+  features: ArtifactFeatureCapabilities;
   commands: ArtifactCommandCapability[];
+}
+
+export interface ArtifactFeatureCapabilities {
+  edit: CapabilityStatus;
+  history: CapabilityStatus;
+  projection: CapabilityStatus;
+  import: CapabilityStatus;
+  export: CapabilityStatus;
+  assets: CapabilityStatus;
+  presence: CapabilityStatus;
 }
 
 export interface CapabilityCatalog {
@@ -84,6 +135,12 @@ export interface ProjectionItem {
   content?: unknown;
   headingPath?: string[];
   sourceRef?: { artifactId: string; blockId: string };
+}
+
+export interface DocumentTocItem {
+  blockId: string;
+  level: number;
+  text: string;
 }
 
 export interface BlockProjectionItem extends ProjectionItem {
@@ -222,6 +279,82 @@ export interface PresentationPresenceUpdate {
   cursor?: PresentationPresenceCursor;
 }
 
+export interface DocumentPresencePoint {
+  blockId: string;
+  rowId?: string;
+  cellId?: string;
+  offset: number;
+}
+export interface DocumentPresenceSelection {
+  anchor: DocumentPresencePoint;
+  focus: DocumentPresencePoint;
+}
+export interface DocumentPresenceParticipant {
+  sessionId: string;
+  actorId: string;
+  displayName: string;
+  revision: number;
+  blockId?: string;
+  selection?: DocumentPresenceSelection;
+}
+export interface DocumentPresencePage {
+  artifactId: string;
+  participants: DocumentPresenceParticipant[];
+  ttlMs: number;
+}
+export interface DocumentPresenceUpdate {
+  revision: number;
+  blockId?: string;
+  selectedNodeIds: [];
+  selection?: DocumentPresenceSelection;
+}
+
+export interface DocumentReviewAnchor {
+  blockId: string;
+  rowId?: string;
+  cellId?: string;
+  start: number;
+  end: number;
+  revision: number;
+}
+export interface DocumentSuggestion { originalText: string; replacement: string; }
+export interface DocumentReviewMessage {
+  messageId: string;
+  authorId: string;
+  body: string;
+  mentions: string[];
+  createdAt: string;
+}
+export interface DocumentReviewThread {
+  threadId: string;
+  artifactId: string;
+  kind: "comment" | "suggestion";
+  state: "open" | "resolved" | "accepted" | "rejected";
+  authorId: string;
+  anchor?: DocumentReviewAnchor;
+  anchorState: "current" | "stale" | "detached";
+  baseRevision: number;
+  suggestion?: DocumentSuggestion;
+  messages: DocumentReviewMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+export interface DocumentReviewPage {
+  artifactId: string;
+  revision: number;
+  threads: DocumentReviewThread[];
+}
+export interface CreateDocumentReview {
+  threadId: string;
+  messageId: string;
+  anchor: DocumentReviewAnchor;
+  body: string;
+  mentions: string[];
+}
+export interface CreateDocumentSuggestion extends CreateDocumentReview {
+  suggestion: DocumentSuggestion;
+}
+
 /** Transport response of an accepted transaction, including history availability. */
 export interface ArtifactTransactionResult extends CommitResult, ArtifactTransactionHistoryState {}
 
@@ -229,7 +362,7 @@ export interface ApiErrorEnvelope {
   error: string;
   code: string;
   requestId: string;
-  retryable?: boolean;
+  retryable: boolean;
   details?: Record<string, unknown>;
 }
 
@@ -248,6 +381,18 @@ export class ArtifactApiError extends Error {
 export interface ArtifactApiClientOptions {
   baseUrl?: string;
   fetcher?: typeof fetch;
+}
+
+export interface ArtifactImportResult {
+  artifact: ArtifactMeta;
+  warnings: string[];
+}
+
+export interface ArtifactExportOptions {
+  paper?: "a4" | "a3";
+  orientation?: "portrait" | "landscape";
+  mode?: "fit" | "tile";
+  margin?: number;
 }
 
 /**
@@ -275,12 +420,63 @@ export class ArtifactApiClient {
     );
   }
 
+  async importArtifact(file: Blob, fileName: string, mode: "audit" | "strict" = "audit"): Promise<ArtifactImportResult> {
+    const form = new FormData();
+    form.append("file", file, fileName);
+    form.append("mode", mode);
+    const value = asRecord(await this.request("/api/artifacts/import", { method: "POST", body: form }), "imported artifact");
+    const warnings = asArray(value.warnings, "imported artifact.warnings").map((warning, index) => asString(warning, `imported artifact.warnings[${index}]`));
+    return { artifact: parseArtifactMeta(value, "imported artifact"), warnings };
+  }
+
+  async exportArtifact(artifactId: string, format: "json" | "md" | "svg" | "pdf", options: ArtifactExportOptions = {}): Promise<Blob> {
+    const query = new URLSearchParams();
+    if (options.paper) query.set("paper", options.paper);
+    if (options.orientation) query.set("orientation", options.orientation);
+    if (options.mode) query.set("mode", options.mode);
+    if (options.margin !== undefined) query.set("margin", String(options.margin));
+    const suffix = query.size ? `?${query}` : "";
+    const response = await this.fetcher(`${this.baseUrl}/api/artifacts/${encodeURIComponent(artifactId)}/export/${format}${suffix}`, { method: "GET", cache: "no-store" });
+    if (!response.ok) await throwApiError(response);
+    return response.blob();
+  }
+
   async outline(
     artifactId: string,
     options: ProjectionRequest = {},
   ): Promise<ProjectionEnvelope<{ items: ProjectionItem[] }>> {
     const envelope = parseProjectionEnvelope(await this.getProjection(artifactId, "outline", options), "outline");
     return { ...envelope, data: parseProjectionItems(envelope.data, "outline.data") };
+  }
+
+  async tableOfContents(
+    artifactId: string,
+    options: ProjectionRequest = {},
+  ): Promise<ProjectionEnvelope<{ items: DocumentTocItem[] }>> {
+    const envelope = parseProjectionEnvelope(
+      await this.getProjection(artifactId, "toc", options),
+      "tableOfContents",
+    );
+    const data = asRecord(envelope.data, "toc.data");
+    const items = asArray(data.items, "toc.data.items").map((value, index) => {
+      const item = asRecord(value, `toc.data.items[${index}]`);
+      const level = asNonNegativeInteger(item.level, `toc.data.items[${index}].level`);
+      if (level < 1 || level > 6) throw new Error(`toc.data.items[${index}].level 无效`);
+      return {
+        blockId: asNonEmptyString(item.blockId, `toc.data.items[${index}].blockId`),
+        level,
+        text: asString(item.text, `toc.data.items[${index}].text`),
+      };
+    });
+    return { ...envelope, data: { items } };
+  }
+
+  async documentPrint(artifactId: string): Promise<ProjectionEnvelope<DocumentPrintProjection>> {
+    const envelope = parseProjectionEnvelope(
+      await this.getProjection(artifactId, "projection/documentPrint", {}),
+      "documentPrint",
+    );
+    return { ...envelope, data: parseDocumentPrintProjection(envelope.data) };
   }
 
   async blocks(
@@ -300,6 +496,15 @@ export class ArtifactApiClient {
   async presentation(artifactId: string): Promise<ProjectionEnvelope<PresentationDeckProjection>> {
     const envelope = parseProjectionEnvelope(await this.getProjection(artifactId, "projection/presentation", {}), "presentation");
     return { ...envelope, data: parsePresentationDeckProjection(envelope.data) };
+  }
+
+  /** Read a renderer-only Mindmap layout. Writes remain semantic transactions. */
+  async mindmap(artifactId: string, theme: MindmapProjection["theme"] = "light"): Promise<ProjectionEnvelope<MindmapProjection>> {
+    const envelope = parseProjectionEnvelope(
+      await this.get(`/api/artifacts/${encodeURIComponent(artifactId)}/projection/mindmap?theme=${encodeURIComponent(theme)}`),
+      "mindmap",
+    );
+    return { ...envelope, data: parseMindmapProjection(envelope.data) };
   }
 
   /** Cursor- and budget-bounded slide outline for agents, indexers and navigators. */
@@ -342,6 +547,38 @@ export class ArtifactApiClient {
     return { ...envelope, data: parsePresentationNodeProjection(envelope.data) };
   }
 
+  /** Read a bounded, read-only spreadsheet grid window. This never enables
+   * spreadsheet writes; edits must use the advertised semantic commands. */
+  async spreadsheet(
+    artifactId: string,
+    options: SpreadsheetProjectionRequest,
+  ): Promise<ProjectionEnvelope<SpreadsheetGridProjection>> {
+    const query = new URLSearchParams();
+    query.set("sheetId", options.sheetId);
+    query.set("startRow", String(options.startRow));
+    query.set("endRow", String(options.endRow));
+    query.set("startColumn", String(options.startColumn));
+    query.set("endColumn", String(options.endColumn));
+    if (options.maxBytes !== undefined) query.set("maxBytes", String(options.maxBytes));
+    const suffix = query.toString() ? `?${query}` : "";
+    const envelope = parseProjectionEnvelope(
+      await this.get(`/api/artifacts/${encodeURIComponent(artifactId)}/projection/spreadsheet${suffix}`),
+      "spreadsheet",
+    );
+    return { ...envelope, data: parseSpreadsheetGridProjection(envelope.data) };
+  }
+
+  async spreadsheetStructure(
+    artifactId: string,
+  ): Promise<ProjectionEnvelope<SpreadsheetStructureProjection>> {
+    const envelope = parseProjectionEnvelope(
+      await this.get(`/api/artifacts/${encodeURIComponent(artifactId)}/projection/spreadsheet`),
+      "spreadsheet",
+    );
+    const data = parseSpreadsheetStructureProjection(envelope.data);
+    return { ...envelope, data };
+  }
+
   /** Read compact undo/redo availability without exposing an editable log. */
   async history(artifactId: string): Promise<ArtifactTransactionHistoryState> {
     return parseArtifactTransactionHistoryState(
@@ -350,7 +587,7 @@ export class ArtifactApiClient {
   }
 
   /**
-   * Read live Presentation collaborators. Presence is intentionally separate
+   * Read live scene/graph collaborators. Presence is intentionally separate
    * from events and transactions: readers must never use it for recovery.
    */
   async presentationPresence(artifactId: string): Promise<PresentationPresencePage> {
@@ -370,6 +607,71 @@ export class ArtifactApiClient {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(update),
+    });
+  }
+
+  async documentPresence(artifactId: string): Promise<DocumentPresencePage> {
+    return parseDocumentPresencePage(
+      await this.get(`/api/artifacts/${encodeURIComponent(artifactId)}/presence`),
+    );
+  }
+
+  async updateDocumentPresence(
+    artifactId: string,
+    sessionId: string,
+    update: DocumentPresenceUpdate,
+  ): Promise<void> {
+    assertPresenceSessionId(sessionId);
+    await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/presence/${encodeURIComponent(sessionId)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(update),
+    });
+  }
+
+  async documentReviews(artifactId: string): Promise<DocumentReviewPage> {
+    return parseDocumentReviewPage(
+      await this.get(`/api/artifacts/${encodeURIComponent(artifactId)}/reviews`),
+    );
+  }
+
+  async createDocumentReview(artifactId: string, review: CreateDocumentReview): Promise<DocumentReviewPage> {
+    return parseDocumentReviewPage(await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/reviews`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(review),
+    }));
+  }
+
+  async createDocumentSuggestion(artifactId: string, suggestion: CreateDocumentSuggestion): Promise<DocumentReviewPage> {
+    return parseDocumentReviewPage(await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/suggestions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(suggestion),
+    }));
+  }
+
+  async replyDocumentReview(
+    artifactId: string,
+    threadId: string,
+    message: { messageId: string; body: string; mentions: string[] },
+  ): Promise<void> {
+    await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/reviews/${encodeURIComponent(threadId)}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(message),
+    });
+  }
+
+  async updateDocumentReview(
+    artifactId: string,
+    threadId: string,
+    state: DocumentReviewThread["state"],
+  ): Promise<void> {
+    await this.request(`/api/artifacts/${encodeURIComponent(artifactId)}/reviews/${encodeURIComponent(threadId)}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ state }),
     });
   }
 
@@ -456,14 +758,18 @@ export class ArtifactApiClient {
       if (response.status === 204) return undefined;
       return response.json() as Promise<unknown>;
     }
-    let envelope: ApiErrorEnvelope | null = null;
-    try {
-      envelope = parseApiError(await response.json());
-    } catch {
-      // Keep a transport error even if a proxy returned non-JSON content.
-    }
-    throw new ArtifactApiError(response.status, envelope?.error ?? `HTTP ${response.status}`, envelope);
+    return throwApiError(response);
   }
+}
+
+async function throwApiError(response: Response): Promise<never> {
+  let envelope: ApiErrorEnvelope | null = null;
+  try {
+    envelope = parseApiError(await response.json());
+  } catch {
+    // Keep a transport error even if a proxy returned non-JSON content.
+  }
+  throw new ArtifactApiError(response.status, envelope?.error ?? `HTTP ${response.status}`, envelope);
 }
 
 export interface ProjectionRequest {
@@ -489,6 +795,66 @@ export interface PresentationNodeRequest {
   maxBytes?: number;
 }
 
+/** Bounded spreadsheet grid window. The window is a read-only request; only
+ * materialized cells in the half-open range are returned, so a million-row sheet
+ * never materializes a million render nodes in the browser. */
+export interface SpreadsheetProjectionRequest {
+  sheetId: string;
+  /** Half-open viewport `[start, end)`, 1-based row/column are 0-based here. */
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+  maxBytes?: number;
+}
+
+/** One materialized cell inside a grid window. `value`/`formula`/`style` mirror
+ * the canonical sparse snapshot; this is a read projection, never an editable model. */
+export interface SpreadsheetGridCell {
+  address: { sheetId: string; row: number; column: number };
+  value?: unknown;
+  formula?: string;
+  attrs: Record<string, unknown>;
+  style?: CellStyle | null;
+}
+
+/** Derived formula value computed by the canonical Rust calculator. The browser
+ * displays it; it never writes a result back into a persisted cell. */
+export type SpreadsheetCalculatedValue =
+  | { type: "blank" }
+  | { type: "number"; value: number }
+  | { type: "text"; value: string }
+  | { type: "bool"; value: boolean }
+  | { type: "error"; value: { code: string; message: string } };
+
+export interface SpreadsheetGridProjection {
+  sheetId: string;
+  startRow: number;
+  endRow: number;
+  startColumn: number;
+  endColumn: number;
+  cells: SpreadsheetGridCell[];
+  cellCount: number;
+  sparse: boolean;
+  /** keyed by `"row:column"` for addresses inside the window. */
+  values: Record<string, SpreadsheetCalculatedValue>;
+  /** 条件格式命中：`"row:column"` -> 命中的规则 id 列表（CellIs 服务端求值）。 */
+  conditionalStyles: Record<string, string[]>;
+  /** 被筛选谓词排除的行号（窗口内）。 */
+  filteredOutRows: number[];
+}
+
+/** Workbook/sheet structure without sparse cell payloads. */
+export type SpreadsheetStructureProjection = SpreadsheetModel;
+
+export function parseSpreadsheetStructureProjection(value: unknown): SpreadsheetStructureProjection {
+  const data = parseSpreadsheetModel(value);
+  if (data.sheets.some((sheet) => sheet.cells.length > 0)) {
+    throw new Error("spreadsheet structure projection 不得包含 cell payload");
+  }
+  return data;
+}
+
 export function parsePresentationPresencePage(value: unknown): PresentationPresencePage {
   const record = asRecord(value, "presentation presence");
   const artifactId = asString(record.artifactId, "presence.artifactId");
@@ -512,6 +878,107 @@ export function parsePresentationPresencePage(value: unknown): PresentationPrese
     };
   });
   return { artifactId, ttlMs, participants };
+}
+
+export function parseDocumentPresencePage(value: unknown): DocumentPresencePage {
+  const record = asRecord(value, "document presence");
+  const participants = asArray(record.participants, "presence.participants").map((value, index) => {
+    const item = asRecord(value, `presence.participants[${index}]`);
+    const selection = item.selection === undefined || item.selection === null
+      ? undefined
+      : parseDocumentPresenceSelection(item.selection, `presence.participants[${index}].selection`);
+    return {
+      sessionId: asString(item.sessionId, `presence.participants[${index}].sessionId`),
+      actorId: asString(item.actorId, `presence.participants[${index}].actorId`),
+      displayName: asString(item.displayName, `presence.participants[${index}].displayName`),
+      revision: asNonNegativeInteger(item.revision, `presence.participants[${index}].revision`),
+      ...(item.blockId === undefined || item.blockId === null ? {} : { blockId: asString(item.blockId, `presence.participants[${index}].blockId`) }),
+      ...(selection ? { selection } : {}),
+    };
+  });
+  return {
+    artifactId: asString(record.artifactId, "presence.artifactId"),
+    ttlMs: asNonNegativeInteger(record.ttlMs, "presence.ttlMs"),
+    participants,
+  };
+}
+
+function parseDocumentPresenceSelection(value: unknown, label: string): DocumentPresenceSelection {
+  const record = asRecord(value, label);
+  return {
+    anchor: parseDocumentPresencePoint(record.anchor, `${label}.anchor`),
+    focus: parseDocumentPresencePoint(record.focus, `${label}.focus`),
+  };
+}
+
+function parseDocumentPresencePoint(value: unknown, label: string): DocumentPresencePoint {
+  const record = asRecord(value, label);
+  return {
+    blockId: asString(record.blockId, `${label}.blockId`),
+    ...(record.rowId === undefined || record.rowId === null ? {} : { rowId: asString(record.rowId, `${label}.rowId`) }),
+    ...(record.cellId === undefined || record.cellId === null ? {} : { cellId: asString(record.cellId, `${label}.cellId`) }),
+    offset: asNonNegativeInteger(record.offset, `${label}.offset`),
+  };
+}
+
+export function parseDocumentReviewPage(value: unknown): DocumentReviewPage {
+  const record = asRecord(value, "document reviews");
+  return {
+    artifactId: asString(record.artifactId, "reviews.artifactId"),
+    revision: asNonNegativeInteger(record.revision, "reviews.revision"),
+    threads: asArray(record.threads, "reviews.threads").map(parseDocumentReviewThread),
+  };
+}
+
+function parseDocumentReviewThread(value: unknown, index: number): DocumentReviewThread {
+  const label = `reviews.threads[${index}]`;
+  const record = asRecord(value, label);
+  const kind = asString(record.kind, `${label}.kind`);
+  const state = asString(record.state, `${label}.state`);
+  const anchorState = asString(record.anchorState, `${label}.anchorState`);
+  if (kind !== "comment" && kind !== "suggestion") throw new Error(`${label}.kind 无效`);
+  if (!["open", "resolved", "accepted", "rejected"].includes(state)) throw new Error(`${label}.state 无效`);
+  if (!["current", "stale", "detached"].includes(anchorState)) throw new Error(`${label}.anchorState 无效`);
+  const anchor = record.anchor === undefined || record.anchor === null ? undefined : parseDocumentReviewAnchor(record.anchor, `${label}.anchor`);
+  const suggestion = record.suggestion === undefined || record.suggestion === null ? undefined : (() => {
+    const item = asRecord(record.suggestion, `${label}.suggestion`);
+    return { originalText: asString(item.originalText, `${label}.suggestion.originalText`), replacement: asString(item.replacement, `${label}.suggestion.replacement`) };
+  })();
+  return {
+    threadId: asString(record.threadId, `${label}.threadId`),
+    artifactId: asString(record.artifactId, `${label}.artifactId`),
+    kind,
+    state: state as DocumentReviewThread["state"],
+    authorId: asString(record.authorId, `${label}.authorId`),
+    ...(anchor ? { anchor } : {}),
+    anchorState: anchorState as DocumentReviewThread["anchorState"],
+    baseRevision: asNonNegativeInteger(record.baseRevision, `${label}.baseRevision`),
+    ...(suggestion ? { suggestion } : {}),
+    messages: asArray(record.messages, `${label}.messages`).map((message, messageIndex) => {
+      const item = asRecord(message, `${label}.messages[${messageIndex}]`);
+      return {
+        messageId: asString(item.messageId, `${label}.messages[${messageIndex}].messageId`),
+        authorId: asString(item.authorId, `${label}.messages[${messageIndex}].authorId`),
+        body: asString(item.body, `${label}.messages[${messageIndex}].body`),
+        mentions: asArray(item.mentions, `${label}.messages[${messageIndex}].mentions`).map((mention, mentionIndex) => asString(mention, `${label}.messages[${messageIndex}].mentions[${mentionIndex}]`)),
+        createdAt: asString(item.createdAt, `${label}.messages[${messageIndex}].createdAt`),
+      };
+    }),
+    createdAt: asString(record.createdAt, `${label}.createdAt`),
+    updatedAt: asString(record.updatedAt, `${label}.updatedAt`),
+  };
+}
+
+function parseDocumentReviewAnchor(value: unknown, label: string): DocumentReviewAnchor {
+  const record = asRecord(value, label);
+  return {
+    blockId: asString(record.blockId, `${label}.blockId`),
+    ...(record.rowId === undefined || record.rowId === null ? {} : { rowId: asString(record.rowId, `${label}.rowId`) }),
+    ...(record.cellId === undefined || record.cellId === null ? {} : { cellId: asString(record.cellId, `${label}.cellId`) }),
+    start: asNonNegativeInteger(record.start, `${label}.start`),
+    end: asNonNegativeInteger(record.end, `${label}.end`),
+    revision: asNonNegativeInteger(record.revision, `${label}.revision`),
+  };
 }
 
 function assertPresenceSessionId(value: string): void {
@@ -552,10 +1019,19 @@ export function parseCapabilityCatalog(value: unknown): CapabilityCatalog {
   const transport = asRecord(record.transport, "capability catalog.transport");
   const artifacts = asArray(record.artifacts, "capability catalog.artifacts").map((item, index) => {
     const artifact = asRecord(item, `capability catalog.artifacts[${index}]`);
+    const features = asRecord(artifact.features, `capability catalog.artifacts[${index}].features`);
     return {
       kind: asArtifactKind(artifact.kind, "capability kind"),
       namespace: asNonEmptyString(artifact.namespace, "capability namespace"),
-      status: asCapabilityStatus(artifact.status, "capability status"),
+      features: {
+        edit: asCapabilityStatus(features.edit, "capability features.edit"),
+        history: asCapabilityStatus(features.history, "capability features.history"),
+        projection: asCapabilityStatus(features.projection, "capability features.projection"),
+        import: asCapabilityStatus(features.import, "capability features.import"),
+        export: asCapabilityStatus(features.export, "capability features.export"),
+        assets: asCapabilityStatus(features.assets, "capability features.assets"),
+        presence: asCapabilityStatus(features.presence, "capability features.presence"),
+      },
       commands: asArray(artifact.commands, "capability commands").map((command, commandIndex) => {
         const item = asRecord(command, `capability command[${commandIndex}]`);
         return {
@@ -595,6 +1071,186 @@ export function parseProjectionEnvelope<T = unknown>(value: unknown, expectedPro
     ...(record.nextCursor === undefined ? {} : { nextCursor: asString(record.nextCursor, "projection.nextCursor") }),
     truncated: asBoolean(record.truncated, "projection.truncated"),
   };
+}
+
+export function parseDocumentPrintProjection(value: unknown): DocumentPrintProjection {
+  const record = asRecord(value, "documentPrint.data");
+  const sections = asArray(record.sections, "documentPrint.data.sections").map((value, index) => {
+    const section = asRecord(value, `documentPrint.data.sections[${index}]`);
+    const sectionId = section.sectionId === null ? null : asNonEmptyString(section.sectionId, `documentPrint.data.sections[${index}].sectionId`);
+    const rootBlockIds = asArray(section.rootBlockIds, `documentPrint.data.sections[${index}].rootBlockIds`).map((id, blockIndex) =>
+      asNonEmptyString(id, `documentPrint.data.sections[${index}].rootBlockIds[${blockIndex}]`),
+    );
+    const nullableRecord = <T>(field: unknown, name: string): T | null => field === null ? null : asRecord(field, name) as T;
+    return {
+      sectionId,
+      rootBlockIds,
+      pageSetup: nullableRecord<ArtifactPageSetup>(section.pageSetup, `documentPrint.data.sections[${index}].pageSetup`),
+      header: nullableRecord<DocumentHeaderFooter>(section.header, `documentPrint.data.sections[${index}].header`),
+      footer: nullableRecord<DocumentHeaderFooter>(section.footer, `documentPrint.data.sections[${index}].footer`),
+      pageNumbering: nullableRecord<DocumentPageNumbering>(section.pageNumbering, `documentPrint.data.sections[${index}].pageNumbering`),
+    };
+  });
+  const parseNotes = (value: unknown, name: string): DocumentNote[] => asArray(value, name).map((item, index) => {
+    const note = asRecord(item, `${name}[${index}]`);
+    const anchor = asRecord(note.anchor, `${name}[${index}].anchor`);
+    asNonEmptyString(note.id, `${name}[${index}].id`);
+    asNonEmptyString(anchor.blockId, `${name}[${index}].anchor.blockId`);
+    asNonNegativeInteger(anchor.start, `${name}[${index}].anchor.start`);
+    asNonNegativeInteger(anchor.end, `${name}[${index}].anchor.end`);
+    asArray(note.content, `${name}[${index}].content`);
+    return item as DocumentNote;
+  });
+  return {
+    revision: asNonNegativeInteger(record.revision, "documentPrint.data.revision"),
+    sections,
+    footnotes: parseNotes(record.footnotes, "documentPrint.data.footnotes"),
+    endnotes: parseNotes(record.endnotes, "documentPrint.data.endnotes"),
+  };
+}
+
+export function parseMindmapProjection(value: unknown): MindmapProjection {
+  const record = asRecord(value, "mindmap projection data");
+  const theme = record.theme;
+  if (theme !== "light" && theme !== "dark" && theme !== "highContrast") {
+    throw new Error("mindmap projection theme 无效");
+  }
+  const layout = asRecord(record.layout, "mindmap projection layout");
+  const edges = asRecord(record.edges, "mindmap projection edges");
+  const advanced = asRecord(record.advanced, "mindmap projection advanced");
+  const point = (value: unknown, name: string) => {
+    const item = asRecord(value, name);
+    return { x: asFiniteNumber(item.x, `${name}.x`), y: asFiniteNumber(item.y, `${name}.y`) };
+  };
+  return {
+    theme,
+    layout: {
+      width: asFiniteNumber(layout.width, "mindmap layout.width"),
+      height: asFiniteNumber(layout.height, "mindmap layout.height"),
+      nodes: asArray(layout.nodes, "mindmap layout.nodes").map((raw, index) => {
+        const node = asRecord(raw, `mindmap layout.nodes[${index}]`);
+        return {
+          id: asNonEmptyString(node.id, `mindmap layout.nodes[${index}].id`),
+          depth: asNonNegativeInteger(node.depth, `mindmap layout.nodes[${index}].depth`),
+          x: asFiniteNumber(node.x, `mindmap layout.nodes[${index}].x`),
+          y: asFiniteNumber(node.y, `mindmap layout.nodes[${index}].y`),
+          width: asFiniteNumber(node.width, `mindmap layout.nodes[${index}].width`),
+          height: asFiniteNumber(node.height, `mindmap layout.nodes[${index}].height`),
+        };
+      }),
+    },
+    edges: {
+      routes: asArray(edges.routes, "mindmap edges.routes").map((raw, index) => {
+        const route = asRecord(raw, `mindmap edges.routes[${index}]`);
+        const edgeId = route.edgeId;
+        if (edgeId !== null && edgeId !== undefined && typeof edgeId !== "string") {
+          throw new Error(`mindmap edges.routes[${index}].edgeId 无效`);
+        }
+        return {
+          edgeId: edgeId ?? null,
+          parentId: asNonEmptyString(route.parentId, `mindmap edges.routes[${index}].parentId`),
+          childId: asNonEmptyString(route.childId, `mindmap edges.routes[${index}].childId`),
+          points: asArray(route.points, `mindmap edges.routes[${index}].points`).map((point, pointIndex) => {
+            const value = asRecord(point, `mindmap edges.routes[${index}].points[${pointIndex}]`);
+            return { x: asFiniteNumber(value.x, "mindmap point.x"), y: asFiniteNumber(value.y, "mindmap point.y") };
+          }),
+        };
+      }),
+    },
+    advanced: {
+      summaries: asArray(advanced.summaries, "mindmap advanced.summaries").map((raw, index) => {
+        const summary = asRecord(raw, `mindmap advanced.summaries[${index}]`);
+        return {
+          summaryId: asNonEmptyString(summary.summaryId, `mindmap advanced.summaries[${index}].summaryId`),
+          nodeIds: asNonEmptyStringArray(summary.nodeIds, `mindmap advanced.summaries[${index}].nodeIds`),
+          points: asArray(summary.points, `mindmap advanced.summaries[${index}].points`).map((item, pointIndex) => point(item, `mindmap advanced.summaries[${index}].points[${pointIndex}]`)),
+          labelAnchor: point(summary.labelAnchor, `mindmap advanced.summaries[${index}].labelAnchor`),
+        };
+      }),
+      boundaries: asArray(advanced.boundaries, "mindmap advanced.boundaries").map((raw, index) => {
+        const boundary = asRecord(raw, `mindmap advanced.boundaries[${index}]`);
+        const rect = asRecord(boundary.rect, `mindmap advanced.boundaries[${index}].rect`);
+        return {
+          boundaryId: asNonEmptyString(boundary.boundaryId, `mindmap advanced.boundaries[${index}].boundaryId`),
+          nodeIds: asNonEmptyStringArray(boundary.nodeIds, `mindmap advanced.boundaries[${index}].nodeIds`),
+          rect: { x: asFiniteNumber(rect.x, "mindmap boundary rect.x"), y: asFiniteNumber(rect.y, "mindmap boundary rect.y"), width: asFiniteNumber(rect.width, "mindmap boundary rect.width"), height: asFiniteNumber(rect.height, "mindmap boundary rect.height") },
+          labelAnchor: point(boundary.labelAnchor, `mindmap advanced.boundaries[${index}].labelAnchor`),
+        };
+      }),
+      formulas: asArray(advanced.formulas, "mindmap advanced.formulas").map((raw, index) => {
+        const formula = asRecord(raw, `mindmap advanced.formulas[${index}]`);
+        return { formulaId: asNonEmptyString(formula.formulaId, `mindmap advanced.formulas[${index}].formulaId`), nodeId: asNonEmptyString(formula.nodeId, `mindmap advanced.formulas[${index}].nodeId`), anchor: point(formula.anchor, `mindmap advanced.formulas[${index}].anchor`) };
+      }),
+    },
+  };
+}
+
+export function parseSpreadsheetGridProjection(value: unknown): SpreadsheetGridProjection {
+  const record = asRecord(value, "spreadsheet projection data");
+  const sheetId = asNonEmptyString(record.sheetId, "spreadsheet data.sheetId");
+  const startRow = asNonNegativeInteger(record.startRow, "spreadsheet data.startRow");
+  const endRow = asNonNegativeInteger(record.endRow, "spreadsheet data.endRow");
+  const startColumn = asNonNegativeInteger(record.startColumn, "spreadsheet data.startColumn");
+  const endColumn = asNonNegativeInteger(record.endColumn, "spreadsheet data.endColumn");
+  if (startRow >= endRow || startColumn >= endColumn) {
+    throw new Error("spreadsheet data 窗口必须是半开区间 [start, end)");
+  }
+  const cells = asArray(record.cells, "spreadsheet data.cells").map((raw, index) => {
+    const cell = asRecord(raw, `spreadsheet data.cells[${index}]`);
+    const address = asRecord(cell.address, `spreadsheet data.cells[${index}].address`);
+    const row = asNonNegativeInteger(address.row, `spreadsheet data.cells[${index}].address.row`);
+    const column = asNonNegativeInteger(address.column, `spreadsheet data.cells[${index}].address.column`);
+    if (address.sheetId !== sheetId) throw new Error(`spreadsheet data.cells[${index}] sheetId 不一致`);
+    return {
+      address: { sheetId, row, column },
+      ...(cell.value === undefined || cell.value === null ? {} : { value: cell.value }),
+      ...(cell.formula === undefined || cell.formula === null ? {} : { formula: asString(cell.formula, `spreadsheet data.cells[${index}].formula`) }),
+      attrs: cell.attrs === undefined || cell.attrs === null ? {} : asRecord(cell.attrs, `spreadsheet data.cells[${index}].attrs`),
+      ...(cell.style === undefined || cell.style === null ? {} : { style: parseCellStyle(cell.style, `spreadsheet data.cells[${index}].style`) }),
+    };
+  });
+  if (cells.length !== record.cellCount) throw new Error("spreadsheet data.cellCount 与 cells 数量不一致");
+  const sparse = asBoolean(record.sparse, "spreadsheet data.sparse");
+  const valuesRecord = asRecord(record.values, "spreadsheet data.values");
+  const values: Record<string, SpreadsheetCalculatedValue> = {};
+  for (const [key, raw] of Object.entries(valuesRecord)) {
+    values[key] = parseSpreadsheetCalculatedValue(raw, `spreadsheet data.values["${key}"]`);
+  }
+  const conditionalStyles: Record<string, string[]> = {};
+  if (record.conditionalStyles !== undefined && record.conditionalStyles !== null) {
+    const stylesRecord = asRecord(record.conditionalStyles, "spreadsheet data.conditionalStyles");
+    for (const [key, raw] of Object.entries(stylesRecord)) {
+      conditionalStyles[key] = asArray(raw, `spreadsheet data.conditionalStyles["${key}"]`).map(
+        (entry, index) => asString(entry, `spreadsheet data.conditionalStyles["${key}"][${index}]`),
+      );
+    }
+  }
+  const filteredOutRows = record.filteredOutRows === undefined || record.filteredOutRows === null
+    ? []
+    : asArray(record.filteredOutRows, "spreadsheet data.filteredOutRows").map(
+        (entry, index) => asNonNegativeInteger(entry, `spreadsheet data.filteredOutRows[${index}]`),
+      );
+  return { sheetId, startRow, endRow, startColumn, endColumn, cells, cellCount: record.cellCount, sparse, values, conditionalStyles, filteredOutRows };
+}
+
+function parseSpreadsheetCalculatedValue(value: unknown, name: string): SpreadsheetCalculatedValue {
+  const record = asRecord(value, name);
+  switch (record.type) {
+    case "blank":
+      return { type: "blank" };
+    case "number":
+      return { type: "number", value: asFiniteNumber(record.value, `${name}.value`) };
+    case "text":
+      return { type: "text", value: asString(record.value, `${name}.value`) };
+    case "bool":
+      return { type: "bool", value: asBoolean(record.value, `${name}.value`) };
+    case "error": {
+      const detail = asRecord(record.value, `${name}.value`);
+      return { type: "error", value: { code: asString(detail.code, `${name}.value.code`), message: asString(detail.message, `${name}.value.message`) } };
+    }
+    default:
+      throw new Error(`${name} 类型无效：${String(record.type)}`);
+  }
 }
 
 export function parsePresentationDeckProjection(value: unknown): PresentationDeckProjection {
@@ -857,7 +1513,7 @@ export function parseApiError(value: unknown): ApiErrorEnvelope {
     error: asString(record.error, "api error.error"),
     code: asNonEmptyString(record.code, "api error.code"),
     requestId: asNonEmptyString(record.requestId, "api error.requestId"),
-    ...(record.retryable === undefined ? {} : { retryable: asBoolean(record.retryable, "api error.retryable") }),
+    retryable: asBoolean(record.retryable, "api error.retryable"),
     ...(record.details === undefined ? {} : { details: asRecord(record.details, "api error.details") }),
   };
 }
@@ -929,11 +1585,16 @@ function asArtifactKind(value: unknown, name: string): ArtifactKind {
   throw new Error(`${name} 类型无效`);
 }
 function asCapabilityStatus(value: unknown, name: string): CapabilityStatus {
-  if (value === "stable" || value === "planned") return value;
+  if (value === "stable" || value === "preview" || value === "planned" || value === "unsupported") return value;
   throw new Error(`${name} 无效`);
 }
 function asProjectionKind(value: unknown, name: string): ProjectionKind {
-  if (value === "outline" || value === "block" || value === "presentation" || value === "presentationOutline" || value === "presentationSlide" || value === "presentationNode") return value;
+  if (
+    value === "outline" || value === "tableOfContents" || value === "documentPrint" || value === "block" || value === "presentation" ||
+    value === "presentationOutline" || value === "presentationSlide" ||
+    value === "presentationNode" || value === "mindmap" ||
+    value === "whiteboard" || value === "spreadsheet"
+  ) return value;
   throw new Error(`${name} 无效`);
 }
 

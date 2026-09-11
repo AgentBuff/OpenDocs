@@ -6,7 +6,7 @@ import { defaultImageTransform, type ImageBlock, type ImageTransform, type RichT
 import type { BlockSessionApi } from "../../hooks/useBlockSession.js";
 import { useManagedOverlay } from "../../interaction/OverlayCoordinator.js";
 
-type ImagePanel = "crop" | "flip" | "caption" | null;
+type ImagePanel = "crop" | "flip" | "caption" | "alt" | null;
 type TextDetectorResult = { rawValue: string };
 type TextDetectorLike = { detect(source: ImageBitmapSource): Promise<TextDetectorResult[]> };
 type TextDetectorConstructor = new () => TextDetectorLike;
@@ -70,6 +70,7 @@ export function ImageBlockToolbar({
   const [busy, setBusy] = useState(false);
   const [transformDraft, setTransformDraft] = useState<ImageTransform | null>(null);
   const [captionDraft, setCaptionDraft] = useState(image.caption);
+  const [altDraft, setAltDraft] = useState(image.alt);
 
   const transform = panel === "crop" ? cropDraft ?? image.transform : transformDraft ?? image.transform;
   const commitTransform = () => {
@@ -83,6 +84,10 @@ export function ImageBlockToolbar({
   const commitCaption = () => {
     const next = captionDraft.trim();
     if (next !== image.caption) session.setImageConfig(blockId, { caption: next });
+  };
+  const commitAlt = () => {
+    const next = altDraft.trim();
+    if (next !== image.alt) session.setImageConfig(blockId, { alt: next });
   };
   const reset = () => {
     session.setImageConfig(blockId, {
@@ -145,6 +150,7 @@ export function ImageBlockToolbar({
     if (panel === next) {
       if (next === "crop") commitTransform();
       if (next === "caption") commitCaption();
+      if (next === "alt") commitAlt();
       setPanel(null);
       if (next === "crop") onCropEditingChange(false);
       return;
@@ -154,12 +160,14 @@ export function ImageBlockToolbar({
       onCropEditingChange(false);
     }
     if (panel === "caption") commitCaption();
+    if (panel === "alt") commitAlt();
     if (next === "crop") {
       onCropDraftChange(image.transform);
       onCropEditingChange(true);
     }
     if (next === "flip") setTransformDraft(image.transform);
     if (next === "caption") setCaptionDraft(image.caption);
+    if (next === "alt") setAltDraft(image.alt);
     setPanel(next);
   };
   const dismissPanel = useCallback(() => {
@@ -170,9 +178,10 @@ export function ImageBlockToolbar({
       onCropEditingChange(false);
     }
     if (panel === "caption") setCaptionDraft(image.caption);
+    if (panel === "alt") setAltDraft(image.alt);
     setTransformDraft(null);
     setPanel(null);
-  }, [image.caption, onCropDraftChange, onCropEditingChange, panel]);
+  }, [image.alt, image.caption, onCropDraftChange, onCropEditingChange, panel]);
   useManagedOverlay({
     id: `image-tool-panel:${blockId}`,
     kind: "dialog",
@@ -211,6 +220,9 @@ export function ImageBlockToolbar({
         </ToolbarButton>
         <ToolbarButton active={panel === "caption"} aria-label="图片题注" title="图片题注" onClick={() => openPanel("caption")}>
           <Icon name="caption" />
+        </ToolbarButton>
+        <ToolbarButton active={panel === "alt"} aria-label="图片替代文本" title="图片替代文本" onClick={() => openPanel("alt")}>
+          <Icon name="text" />
         </ToolbarButton>
       </ToolbarGroup>
       <ToolbarSeparator />
@@ -263,6 +275,32 @@ export function ImageBlockToolbar({
                 }
                 if (event.key === "Escape") {
                   setCaptionDraft(image.caption);
+                  setPanel(null);
+                }
+              }}
+            />
+          </label>
+        </div>
+      )}
+      {panel === "alt" && (
+        <div className="block-image__tool-panel block-image__caption-panel" role="dialog" aria-label="图片替代文本">
+          <label>
+            <span>替代文本</span>
+            <input
+              autoFocus
+              value={altDraft}
+              maxLength={2048}
+              placeholder="描述图片内容；装饰性图片可留空"
+              onChange={(event) => setAltDraft(event.currentTarget.value)}
+              onBlur={commitAlt}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitAlt();
+                  setPanel(null);
+                }
+                if (event.key === "Escape") {
+                  setAltDraft(image.alt);
                   setPanel(null);
                 }
               }}
